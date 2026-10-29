@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "Source adapters, normalization, and symbol extraction for devdocs"
 
+[lib]
+name = "devdocs_ingest"
+path = "src/lib.rs"
+
 [features]
 default = []
 exact-tokens = ["dep:tiktoken-rs", "text-splitter/tiktoken-rs"]
@@ -17,6 +21,8 @@ devdocs-store.workspace = true
 text-splitter.workspace = true
 tiktoken-rs = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[dev-dependencies]
 
 [lints]
 workspace = true

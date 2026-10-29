@@ -7,6 +7,14 @@ license.workspace = true
 repository.workspace = true
 description = "CLI and MCP server for devdocs"
 
+[lib]
+name = "devdocs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "devdocs"
+path = "src/main.rs"
+
 [features]
 default = []
 # Declared now so `just features` exercises every build shape. Both forward to

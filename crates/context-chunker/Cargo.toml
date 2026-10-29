@@ -1,0 +1,10 @@
+[package]
+name = "context-chunker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Placeholder for context chunking utilities"
+
+[dependencies]

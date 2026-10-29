@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "SQLite storage, schema, and migrations for devdocs"
 
+[lib]
+name = "devdocs_store"
+path = "src/lib.rs"
+
 [features]
 default = []
 embeddings = ["dep:fastembed"]

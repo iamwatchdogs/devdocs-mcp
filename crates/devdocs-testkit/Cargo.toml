@@ -8,6 +8,10 @@ repository.workspace = true
 description = "Shared test helpers and fixtures for devdocs"
 publish = false
 
+[lib]
+name = "devdocs_testkit"
+path = "src/lib.rs"
+
 [dependencies]
 devdocs-model.workspace = true
 devdocs-store.workspace = true

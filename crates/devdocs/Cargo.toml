@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 default = []
 # Declared now so `just features` exercises every build shape. Both forward to
-# the core crates once the store and ingest layers land (block 5+).
+# the core crates once the store and ingest layers land (docs/implementation/12).
 exact-tokens = []
 embeddings = []
 

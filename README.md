@@ -2,7 +2,7 @@
 
 Local, read-only documentation server for coding agents, exposed over MCP with a SQLite-backed index and hybrid retrieval.
 
-> **Status: CLI skeleton (M1).** The workspace builds and `devdocs` ships the full clap command tree plus the `config` group. `config init|show|validate|path` and the hidden `__selftest` probe do real work; the store, ingest, retrieval, and MCP commands return `NOT_AVAILABLE` (exit 2) until later blocks land.
+> **Status: scaffold (M0).** Crate sources are stubs; the clap CLI, config commands, and eval harness land in later milestones (docs/implementation/12). See "Scaffold deviations" for where the repo intentionally differs from the docs.
 
 ## Prerequisites
 
@@ -45,13 +45,10 @@ lefthook install
 ## Quickstart
 
 ```sh
-devdocs --help
-devdocs config init
-devdocs config show --json
+devdocs --version
 ```
 
-Only the `config` group does real work at M1; every other command reports
-`NOT_AVAILABLE` with exit code 2. Crate-level docs: `just docs`.
+Everything beyond the version banner lands in later milestones (docs/implementation/12). Crate-level docs: `just docs`.
 
 ## Workspace layout
 
@@ -101,13 +98,16 @@ Optional recipes print an install hint and exit non-zero when the external tool 
 |---|---|---|
 | Toolchain/MSRV 1.85 | Toolchain 1.99.1, workspace `rust-version = 1.90` | Pinned compiler follows dependency MSRVs. rusqlite 0.41 needs 1.89 and text-splitter 0.33 needs 1.90, so 1.90.0 is the first passing MSRV checked by `just msrv` |
 | `resolver = "3"` | `resolver = "2"` | Block 1 chose resolver 2; edition 2024 crates still compile. Revisit when the workspace moves to resolver 3 |
-| `fastembed` optional in `crates/devdocs` | Optional in `devdocs-store` behind `embeddings` | The store owns vector tables and embedding storage; the binary feature forwards to it |
+| `fastembed` optional in `crates/devdocs` | Optional in `devdocs-store` behind `embeddings` | The store owns vector tables and embedding storage; the binary feature forwards to it (target state; the binary flag is currently an empty no-op — see the `exact-tokens` / `embeddings` row below) |
 | `text-splitter` always enables `tiktoken-rs` | `tiktoken-rs` gated behind `exact-tokens` | Keeps the default build small; tokenizer counts are approximate unless the feature is on |
-| `exact-tokens` / `embeddings` forward to the store and ingest crates | Empty no-op flags on `crates/devdocs` | Keeps `just features` green before the store and ingest layers land; repoint in block 5 |
+| `exact-tokens` / `embeddings` forward to the store and ingest crates | Empty no-op flags on `crates/devdocs` | Keeps `just features` green before the store and ingest layers land; repoint when they do (docs/implementation/12) |
 | Structured logs via `tracing` and `tracing-subscriber` | `Reporter` writes plain lines to stderr under `--verbose` | The subscriber crate is not in the lock yet; add it when the ingest layer emits structured events |
-| JSON error envelope on stderr | Under `--json`, errors print to stdout | Keeps stdout a single parseable stream for agents; revisit if a caller needs progress alongside errors |
 | Help groups subcommands under headings | Only `Global options` gets a heading | clap 4.6.7 `next_help_heading` applies to arguments, not subcommands |
+| `MIT OR Apache-2.0` with `LICENSE-MIT` and `LICENSE-APACHE` | `license = "MIT"`, one `LICENSE` file | The scaffold committed a single MIT license; the dual-license path was never set up. Decide at M9 (packaging): add the Apache text or update docs/02 |
+| docs/11 release matrix ships `aarch64-pc-windows-msvc` | `release.yml` excludes it | docs/01 rules Windows ARM64 out of scope for Phase 1; the release matrix follows docs/01. docs/11 needs the fix |
+| docs/04 names a `just test-slow` recipe | No such recipe; `just test-doc` runs `cargo test` | No `#[ignore]` tests exist yet; the recipe lands with the first one |
+| docs/14 says `just eval` runs the default suite | `just eval` runs `--help` (smoke only) | The eval harness lands at M10 |
 
 ## License
 
-MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
+MIT. See `LICENSE`.

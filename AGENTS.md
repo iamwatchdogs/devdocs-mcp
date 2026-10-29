@@ -3,6 +3,8 @@
 This project is a local, read-only documentation MCP server for coding agents. It exposes a documentation index (SQLite-backed) with hybrid retrieval over MCP, so agents can query one source instead of crawling docs sites.
 
 > Note that this project is at its very beginning stage, so you are allowed to make major refactoring and changes across the source code.
+>
+> **Repo state:** scaffold stubs at milestone M0; the build order lives in `docs/implementation/12` and `13`. The `.agents/instructions/` files state contracts in "must" form — they bind code as it lands, and describe current behavior only where the code exists.
 
 ## Tooling
 
@@ -11,6 +13,8 @@ This project is a local, read-only documentation MCP server for coding agents. I
 - `cargo` is the build/test runner; the toolchain is pinned by `rust-toolchain.toml`.
 - `just` is the task runner. All primary commands are aggregated within the justfile; `just` with no target prints the full list.
 - `lefthook` runs the git hooks.
+- Its commit-msg hook enforces Conventional Commits: `type(scope): subject`, scope optional, subject ≤ 72 chars.
+- `just test` runs nextest with `.config/nextest.toml` (`retries = 0`, `fail-fast = false`): a failing test surfaces immediately and is never retried.
 - Use `bash` as your primary terminal and `rg` instead of plain `grep`.
 - Optional cargo tools (`nextest`, `cargo-deny`, `cargo-audit`, `cargo-machete`, `cargo-llvm-cov`, `cargo-mutants`, `cargo-semver-checks`) are installed via `cargo binstall`.
 - `just test` and `just deny` hard-fail locally when nextest/cargo-deny are missing (with a binstall hint); under `DEVDOCS_CI=1` — set in CI and by `just ci` — they fall back to `cargo test` / `cargo audit`. When debugging a CI-only failure, this fallback is why.
@@ -18,7 +22,7 @@ This project is a local, read-only documentation MCP server for coding agents. I
 
 ### Commands
 
-Run everything through the justfile. It mirrors the CI gate (`just ci`); MSRV and coverage run only in CI.
+Run everything through the justfile. `just ci` mirrors CI except two CI-only jobs, `msrv` and `coverage` — run `just msrv` after touching dependencies or using newer std APIs.
 
 Here're the commands that you need for every task,
 
@@ -31,7 +35,7 @@ Here're the commands that you need for every task,
 | Doc tests | `just test-doc` |
 | API docs (warnings are errors) | `just docs` |
 | Dependency checks (deny) | `just deny` |
-| Full local gate (mirrors CI) | `just ci` |
+| Full local gate (CI adds msrv + coverage) | `just ci` |
 
 Style config lives in `rustfmt.toml` and `Cargo.toml` — read them, do not restate them.
 
@@ -62,6 +66,8 @@ Some tasks point into the design docs instead — they are the deeper source of 
 | Changing ingest, fetching, or content filtering | `docs/implementation/07-ingest-pipeline.md` (points into 09 for security) |
 | Changing retrieval behavior, CLI flags, or MCP tool shapes | `docs/implementation/08-retrieval-interfaces.md` |
 | Cutting a release, targets, or publishing | `docs/implementation/11-ci-cd-release.md` |
+| Network access, the fetch guard, or security boundaries | `docs/implementation/09-security-implementation.md` |
+| Eval suites, golden questions, or gate thresholds | `docs/implementation/14-benchmark-eval.md` |
 
 ### Using the design docs and keeping them in sync
 

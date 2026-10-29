@@ -91,7 +91,7 @@ These invariants run as proptest cases. Each has a shrink-friendly design.
 
 ## Coverage
 
-- Command: `just cov` produces `lcov.info` through cargo-llvm-cov.
+- Command: `just coverage` produces `lcov.info` through cargo-llvm-cov.
 - Gate: line coverage at or above 80% for `devdocs-store`, `devdocs-retrieve`, and the guard modules of `devdocs-ingest`. No gate on glue code and the CLI layer.
 - CI uploads to Codecov. The badge lives in the README at M9. Coverage is a signal, not a target: a mutant-surviving line at 100% coverage is still a bug.
 

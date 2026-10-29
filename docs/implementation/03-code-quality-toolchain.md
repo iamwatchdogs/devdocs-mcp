@@ -77,8 +77,8 @@ Clippy churn note. Clippy 1.91 through 1.99 renamed and moved several lints (for
 ## Toolchain and MSRV policy
 
 - `rust-toolchain.toml` pins the exact dev toolchain (1.99.1). CI uses the same pin.
-- `rust-version = "1.85"` is the MSRV. 1.85 is the Edition 2024 floor and matches the MSRV of tokio and clap. It is also the de-facto community floor for 2026 (roughly "latest stable minus 12 to 20 months").
-- CI runs one MSRV job: toolchain 1.85 with `cargo check --workspace --all-targets --locked`. The MSRV-aware resolver (stable since Cargo 1.84) picks compatible dependency versions.
+- `rust-version = "1.90"` is the MSRV (root `Cargo.toml`), enforced by the `just msrv` recipe against toolchain 1.90.0.
+- CI runs one MSRV job: toolchain 1.90.0 with `cargo check --workspace --all-targets --locked`. The MSRV-aware resolver (stable since Cargo 1.84) picks compatible dependency versions.
 - MSRV bumps are minor releases, not breaking. Bump only when a required dependency forces it. Record the bump in the release notes.
 - The pinned toolchain advances on a schedule: at most once per quarter, with a full CI run and a clippy-key check.
 

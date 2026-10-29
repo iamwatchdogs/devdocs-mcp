@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits"],
+  "managers": ["cargo", "github-actions"],
+  "lockFileMaintenance": { "enabled": true },
+  "cargo": {
+    "pinDigests": false
+  },
+  "github-actions": {
+    "pinDigests": true
+  },
+  "packageRules": [
+    {
+      "description": "Group patch and minor updates",
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "deps: patch and minor",
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "Major updates one at a time",
+      "matchUpdateTypes": ["major"],
+      "groupName": null,
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "GitHub Actions digest pinning",
+      "matchManagers": ["github-actions"],
+      "groupName": "ci: actions"
+    }
+  ],
+  "timezone": "UTC",
+  "labels": ["dependencies"]
+}

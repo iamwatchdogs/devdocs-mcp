@@ -1,0 +1,22 @@
+[package]
+name = "devdocs-ingest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Source adapters, normalization, and symbol extraction for devdocs"
+
+[features]
+default = []
+exact-tokens = ["dep:tiktoken-rs", "text-splitter/tiktoken-rs"]
+
+[dependencies]
+devdocs-model.workspace = true
+devdocs-store.workspace = true
+text-splitter.workspace = true
+tiktoken-rs = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[lints]
+workspace = true

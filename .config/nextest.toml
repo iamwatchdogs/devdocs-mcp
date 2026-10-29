@@ -1,0 +1,6 @@
+# CI profile: keep going after the first failure and surface only failures.
+[profile.ci]
+fail-fast = false
+retries = 0
+status-level = "fail"
+slow-timeout = { period = "60s" }

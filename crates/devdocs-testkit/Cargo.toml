@@ -1,0 +1,21 @@
+[package]
+name = "devdocs-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared test helpers and fixtures for devdocs"
+publish = false
+
+[dependencies]
+devdocs-model.workspace = true
+devdocs-store.workspace = true
+insta.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,199 @@
+---
+type: guide
+title: Retrieval and Interfaces (L3 + L4)
+description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
+tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
+timestamp: 2026-10-28T00:00:00Z
+resource: docs
+derives-from: [docs/research]
+---
+
+# Retrieval and Interfaces (L3 + L4)
+
+## Query pipeline
+
+One operation is the normal path: `search` with optional filters. Explicit library resolution is for ambiguity only (research: architecture.md, one-request fast path).
+
+```text
+Query → resolve (library, version) → plan rungs → execute rungs
+      → RRF fusion (k=60) → budget pack → result envelope
+```
+
+## Version resolution
+
+Order, highest first:
+
+1. Explicit `--library` / `--version` flags (or MCP parameters).
+2. Project lockfiles in the current directory or parents. Parsed per this table:
+
+| File | Parser | Notes |
+|---|---|---|
+| `Cargo.lock` | toml | `[package] name, version` rows |
+| `package-lock.json` | serde_json | `packages` map keys strip `node_modules/` |
+| `pnpm-lock.yaml` | serde_yaml_ng | `importers` and `packages` sections |
+| `uv.lock` | toml | `[[package]]` rows |
+| `pyproject.toml` | toml | `[project] dependencies` for the request, lockfile for the pin |
+| `go.mod` | internal line parser | `require (...)` blocks |
+| `Gemfile.lock` | internal line parser | `GEM specs` section (phase 2) |
+
+3. Query text mentions (`next.js 16`) as a weak hint.
+4. Fallback: no library filter. Search all approved sources.
+
+Policy (research: retrieval-design.md §3.4): never serve `latest` silently when a version was requested. The result carries `requested_version`, `served_version`, and `version_status`:
+
+| Status | Meaning |
+|---|---|
+| `verified` | Served version equals the requested exact version |
+| `alias` | Requested `latest` or a major alias, resolved by the declared rule, stated in the result |
+| `fallback` | Requested version absent. Served the nearest available version, named in the result. Counts as a miss for grading |
+| `absent` | Library absent from the index. Exit 2 with `miss_reason` |
+
+Migration questions: when the query matches a migration pattern ("upgrade", "migrate", "breaking changes"), the planner retrieves both the served version and the nearest older version and labels them (research: retrieval-design.md §3.4).
+
+## Rungs
+
+1. **Symbol exact.** `SELECT ... FROM symbols JOIN chunks` on the normalized identifier. Cheap, decisive for API names. Exact identifiers beat dense retrieval for API names (research: retrieval-design.md §3.1).
+2. **FTS5 BM25.** Build the MATCH expression from the query: split on whitespace, drop operators, wrap each token as a quoted literal, append `*` to the last token of each run for prefix matching. Example: query `rewrite proxy request` becomes `"rewrite" "proxy" "request" *`. This construction is a property-tested invariant ([04](04-testing-strategy.md)). Ranking: `bm25(chunks_fts, 5.0, 1.0)` with `LIMIT` at 4× the requested hits for fusion headroom. Attach `snippet(chunks_fts, 1, '⟦', '⟧', '…', 12)` for highlight offsets.
+3. **Vector scan** (feature `embeddings`, phase 3). Embed the query with the same model that built the index, scan `chunks_vec` in-process by hamming distance, take the top 4× hits.
+
+## Fusion and budget
+
+Reciprocal rank fusion with k = 60: `score(d) = Σ_rungs 1 / (60 + rank_rung(d))`. Ties break by lower chunk id (stable order, property-tested). The Redis production eval measured hybrid hit@3 at 0.96 against vector-only 0.88 with this mechanism (research: retrieval-design.md §3.1).
+
+The budget packer walks results in fusion order, accumulates stored `token_count` values, and stops before `max_tokens`. Properties: rank 1 always fits (a result larger than the whole budget is chunked at open time, never dropped). The envelope sets `truncated: true` and a `next_cursor` when content remains. The packer never silently drops the top result (research: retrieval-design.md §3.6).
+
+`max_tokens` default: 2000. The research bundle records a contested spread — DS says 2000 to 4000, GEM's reference uses 1000, GLMP recommends a 1000 to 2000 server-side ceiling. This design takes GLMP's ceiling and DS's floor: 2000, enforced server-side in both the CLI and the MCP path. Per-profile overrides live in config (research: retrieval-design.md §3.6. Recorded, not averaged).
+
+## Fallback ladder
+
+Entered only on low confidence or an explicit `miss_reason` match (research: retrieval-design.md §3.7). The v1 tool implements rungs 1 and 2 in-process and refuses past them:
+
+1. Local exact symbol index
+2. Local hybrid docs index
+3. (refused: external fetch) Official documentation page fetch — a future, explicitly gated feature
+4. (refused) Official GitHub source search
+5. (refused) General web search
+
+A cold miss returns `not_indexed` with a sync hint. An abstention is a valid result (research: retrieval-design.md §3.7).
+
+`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`. The JSON error on exit 2 carries `error = "NO_RESULT"` plus `miss_reason` and a `hint`.
+
+## Result envelope
+
+The unified shape for CLI JSON and MCP structured output (research: retrieval-design.md §3.8):
+
+```json
+{
+  "results": [{
+    "ref": "docs://next.js/v16.2.9/proxy#rewrite",
+    "title": "Proxy rewrite",
+    "section": "Routing > Proxy",
+    "snippet": "...",
+    "examples": [{"language": "tsx", "code": "..."}],
+    "source_url": "https://nextjs.org/docs/proxy",
+    "source_commit": "a1b2c3...",
+    "requested_version": "16",
+    "served_version": "16.2.9",
+    "version_status": "verified",
+    "content_hash": "<hex sha256>",
+    "license_status": "approved_snippet",
+    "confidence": 0.94,
+    "token_count": 142
+  }],
+  "truncated": false,
+  "next_cursor": null,
+  "served_at": "2026-10-28T00:00:00Z"
+}
+```
+
+Session dedup: with `--session <id>` (and session id in MCP calls), served chunk ids land in `session_trajectory`, and later queries in the same session down-rank already-served chunks instead of re-serving identical text (research: retrieval-design.md §3.8. The Ref measurement motivating it: −5,500 tokens average per request).
+
+## CLI contract
+
+Commands:
+
+| Command | Purpose |
+|---|---|
+| `devdocs add <source> [--version V] [--kind K]` | Ingest a source through the ladder |
+| `devdocs sync [library]` | Refresh stale approved sources |
+| `devdocs list [--json]` | List indexed libraries and versions |
+| `devdocs search "query" [--library L] [--version V] [--limit N] [--max-tokens T] [--json]` | Hybrid search |
+| `devdocs symbol <library@version> <symbol> [--json]` | Exact symbol lookup |
+| `devdocs open <ref> [--max-tokens T] [--json]` | Read one section by ref |
+| `devdocs verify <ref> [--json]` | Re-derive and compare the content hash |
+| `devdocs versions <library> [--json]` | List available versions for a library |
+| `devdocs source approve|deny|list` | License registry operations |
+| `devdocs skill install [--path P]` | Write the SKILL.md companion file |
+| `devdocs mcp [--transport stdio]` | Start the MCP server on stdio |
+| `devdocs db migrate|vacuum|stats|quarantine list` | Database operations |
+| `devdocs config init|show|validate|path` | Configuration operations |
+| `devdocs eval run <suite> [--json]` | Run a golden-set suite (see [14](14-benchmark-eval.md)) |
+
+Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
+
+Contract properties (research: architecture.md §L4, GEM §5 checklist):
+
+- JSON mode: `--json` prints the result envelope to stdout and nothing else. Logs always go to stderr.
+- Non-TTY auto-detection: no spinners, no colors, no tables when stdout is not a terminal. Progress goes to stderr as plain lines.
+- Bounded output everywhere: `--max-tokens` caps every read path. `--limit` caps result count (default 8).
+- Deterministic ordering: fusion order, ties by chunk id. Identical DB state gives byte-identical `--json` output.
+- Exit codes 0/1/2/3/4 per [05](05-architecture.md) (usage errors remap clap's default 2 to 1).
+- Progressive disclosure: `devdocs list --json` is the ~20-token discovery surface. `devdocs versions <lib> --json` the per-library surface. `search` and `open` the full read. No prose man page. `--help` stays short.
+- No secrets in argv or stdout. The tool holds no credentials in v1 (public sources only). A future private-source feature will read tokens from the environment or an OS keystore, never from config files.
+- One static binary. No daemon. `devdocs mcp` reuses the same process.
+
+The skill companion (`devdocs skill install`) writes a file of roughly 500 tokens with this shape (research: architecture.md §L4):
+
+```markdown
+---
+name: devdocs
+description: Search pinned, version-exact official docs for project dependencies.
+---
+Use `devdocs` for library documentation. Workflow:
+1. `devdocs search "<one concept>" --json` — search; add --library/--version if known.
+2. `devdocs open <ref> --json` — read one section. Refs come only from search results.
+3. One concept per query. Stop after 3 searches; use the best result.
+4. Exit 2 = no result; run `devdocs sync <library>` if the library is missing.
+Never cite a URL not present in a result. Trust `version_status`; do not mix versions.
+```
+
+## MCP adapter
+
+Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Block goose and Apollo). Features: `server`, `transport-io` (stdio), `macros`, `schemars`. Three tools, not more (research: architecture.md §L4):
+
+| Tool | Parameters | Returns |
+|---|---|---|
+| `search_docs` | `query` (string, required), `library?`, `version?`, `detail?` enum `name\|summary\|full`, `max_tokens?` | Result envelope |
+| `open_doc` | `ref` (string, required. Must come from `search_docs`), `max_tokens?` | One section, bounded |
+| `verify_doc` | `ref` (string, required) | `{"valid": bool, "content_hash": "..."}` |
+
+Tool annotations (MCP spec 2026-07-28. Untrusted hints, set honestly): `readOnlyHint = true`, `destructiveHint = false`, `idempotentHint = true`, `openWorldHint = false`.
+
+Server instructions text (kept short, discriminative. Description quality is a measured failure source, research: retrieval-design.md §3.6):
+
+```text
+devdocs serves version-pinned official docs from a local index.
+search_docs: one concept per query. open_doc: read a section by ref from search_docs results only.
+Stop after 3 searches per question. verify_doc confirms a citation before you rely on it.
+```
+
+Gates:
+
+- The MCP path and the CLI path must produce identical results for the same query against the same DB. The contract test in [04](04-testing-strategy.md) enforces it (research: architecture.md Phase 2 gate).
+- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1).
+
+## Error codes
+
+Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
+
+| Code | Exit | Meaning |
+|---|---|---|
+| `USAGE` | 1 | Bad flags or config |
+| `CONFIG_INVALID` | 1 | Config file failed validation |
+| `NO_RESULT` | 2 | Valid query, nothing served |
+| `PKG_NOT_INDEXED` | 2 | Library or version absent. Hint names the add command |
+| `FETCH_BLOCKED` | 3 | Fetch guard or license gate refused |
+| `UPSTREAM_ERROR` | 3 | Network, git, or parse failure |
+| `BUDGET_EXCEEDED` | 4 | Budget consumed with no deliverable content |
+| `HASH_MISMATCH` | 3 | Index drifted. Re-sync suggested |
+| `NOT_AVAILABLE` | 2 | Source expired or revoked |

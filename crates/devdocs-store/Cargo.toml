@@ -1,0 +1,30 @@
+[package]
+name = "devdocs-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLite storage, schema, and migrations for devdocs"
+
+[features]
+default = []
+embeddings = ["dep:fastembed"]
+
+[dependencies]
+devdocs-model.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+blake3.workspace = true
+time.workspace = true
+fastembed = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

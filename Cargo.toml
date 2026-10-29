@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/devdocs-mcp"
+
+[workspace.dependencies]
+# internal crates: path + version so the workspace publishes in dependency order
+devdocs = { version = "0.1.0", path = "crates/devdocs" }
+devdocs-eval = { version = "0.1.0", path = "crates/devdocs-eval" }
+devdocs-ingest = { version = "0.1.0", path = "crates/devdocs-ingest" }
+devdocs-mcp = { version = "0.1.0", path = "crates/devdocs-mcp" }
+devdocs-model = { version = "0.1.0", path = "crates/devdocs-model" }
+devdocs-retrieve = { version = "0.1.0", path = "crates/devdocs-retrieve" }
+devdocs-store = { version = "0.1.0", path = "crates/devdocs-store" }
+devdocs-testkit = { version = "0.1.0", path = "crates/devdocs-testkit" }
+# runtime
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "signal", "sync"] }
+reqwest = { version = "0.13.5", features = ["gzip"] }
+# storage
+rusqlite = { version = "0.41.0", features = ["bundled"] }
+# cli + serialization
+clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = "3.5.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "0.9"
+serde_yaml_ng = "0.10.0"
+# errors + logging
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# content processing
+comrak = "0.59.0"
+text-splitter = { version = "0.33.1", features = ["markdown"] }
+dom_smoothie = "0.19.0"
+rust-trafilatura = "2.2.8"
+oas3 = "0.22.0"
+tree-sitter = "0.25.8"
+tree-sitter-rust = "0.24.2"
+tree-sitter-go = "0.25.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+# mcp
+rmcp = { version = "3.8.0", features = ["server", "transport-io", "macros", "schemars"] }
+# web + hashing + fs
+url = { version = "2.5.8", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+sha2 = "0.11.1"
+blake3 = "1.8.7"
+regex = "1.13.1"
+dirs = "7.0.0"
+tempfile = "3.27.0"
+walkdir = "2.5.0"
+ignore = "0.4.34"
+# token counting (optional, exact mode)
+tiktoken-rs = "0.12.1"
+# embeddings (optional, phase 3)
+fastembed = "7.5.0"
+# dev
+insta = { version = "1.49.0", features = ["json", "redactions"] }
+proptest = "1.12.0"
+criterion = "0.8.2"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+wiremock = "0.6.5"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+multiple_crate_versions = "allow"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+panic = "abort"

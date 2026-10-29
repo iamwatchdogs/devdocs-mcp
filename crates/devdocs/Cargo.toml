@@ -1,0 +1,33 @@
+[package]
+name = "devdocs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI and MCP server for devdocs"
+
+[features]
+default = []
+# Declared now so `just features` exercises every build shape. Both forward to
+# the core crates once the store and ingest layers land (block 5+).
+exact-tokens = []
+embeddings = []
+
+[dependencies]
+devdocs-model.workspace = true
+devdocs-store.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+devdocs-testkit.workspace = true
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+insta.workspace = true
+
+[lints]
+workspace = true

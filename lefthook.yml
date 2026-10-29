@@ -1,0 +1,21 @@
+pre-commit:
+  skip:
+    - merge
+    - rebase
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all
+      stage_fixed: true
+    clippy:
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+commit-msg:
+  skip:
+    - merge
+    - rebase
+  commands:
+    conventional:
+      run: |
+        head -1 {1} | grep -qE \
+        '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?: .{1,72}$'

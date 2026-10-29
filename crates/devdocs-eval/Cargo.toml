@@ -1,0 +1,18 @@
+[package]
+name = "devdocs-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Evaluation harness for devdocs retrieval quality"
+
+[dependencies]
+devdocs-model.workspace = true
+devdocs-store.workspace = true
+devdocs-retrieve.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

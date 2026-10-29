@@ -1,3 +1,5 @@
+# Hooks run via sh without the user's profile: rustup's cargo (~/.cargo/bin)
+# is not on the default PATH, so every cargo command re-exports it below.
 pre-commit:
   skip:
     - merge
@@ -5,10 +7,14 @@ pre-commit:
   commands:
     fmt:
       glob: "*.rs"
-      run: cargo fmt --all
+      run: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        cargo fmt --all
       stage_fixed: true
     clippy:
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        cargo clippy --workspace --all-targets -- -D warnings
 
 commit-msg:
   skip:

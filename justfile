@@ -1,3 +1,8 @@
+# Hooks, CI, and agent shells run without the user's profile: rustup installs
+# cargo, rustup, and the binstall tools under ~/.cargo/bin, so prepend it once
+# for every recipe instead of per command.
+export PATH := env_var("HOME") / ".cargo" / "bin" + ":" + env_var_or_default("PATH", "")
+
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 default:

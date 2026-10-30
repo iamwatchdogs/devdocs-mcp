@@ -3,23 +3,25 @@ name: publish
 on:
   push:
     branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "release-plz.toml"
   workflow_dispatch:
 
 # Workspace crates are versioned together (release-plz single-version mode,
 # realized via Cargo workspace version inheritance; see release-plz.toml).
 # devdocs-testkit stays `publish = false` and is skipped by release-plz.
-# Setup (one-time): crates.io Trusted Publisher + the RELEASE_PLZ_TOKEN secret —
+# Setup (one-time): crates.io Trusted Publisher + the release GitHub App —
 # see docs/implementation/11-ci-cd-release.md "Publish to crates.io".
 permissions:
   contents: read
 
 jobs:
   release-plz-pr:
-    # Opens/updates the release PR. Uses RELEASE_PLZ_TOKEN (not GITHUB_TOKEN):
-    # pull_request runs from a GITHUB_TOKEN-created PR land in an
-    # approval-required state, while a PAT-created PR gets CI automatically.
-    # The merge push is user-created either way, so the tag chain in
-    # release-plz-release is unaffected.
+    # Opens or updates the release PR. The GitHub App token lets its PR event
+    # start CI without the approval required for GITHUB_TOKEN-created PRs.
     #
     # main-only: a manual dispatch from a feature branch must never evaluate
     # (let alone publish) non-main state; push events to main satisfy this.
@@ -40,28 +42,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
-      - name: Check RELEASE_PLZ_TOKEN
+      - name: Check release App credentials
         env:
-          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          if [ -z "${TOKEN}" ]; then
-            echo "::error::RELEASE_PLZ_TOKEN is not set. Create a fine-grained PAT (Contents: read/write and Pull requests: read/write on this repo) and store it as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+          if [ -z "${CLIENT_ID}" ]; then
+            echo "::error::RELEASE_APP_CLIENT_ID is not set. Add the GitHub App Client ID as a repository variable — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
             exit 1
           fi
+          if [ -z "${PRIVATE_KEY}" ]; then
+            echo "::error::RELEASE_APP_PRIVATE_KEY is not set. Add the GitHub App private key as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+            exit 1
+          fi
+      - name: Create release App token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: devdocs-mcp
+          permission-contents: write
+          permission-pull-requests: write
       # Without `command: release-pr` the action runs BOTH release-pr and
       # release; this job must only open/update the release PR.
       - uses: MarcoIeni/release-plz-action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
 
   release-plz-release:
     # Publishes crates and creates the version tag once the release PR is
-    # merged; no-ops otherwise. Uses RELEASE_PLZ_TOKEN (not GITHUB_TOKEN) so
-    # the tag push triggers release.yml for the binaries — GITHUB_TOKEN-
-    # triggered events never start other workflow runs. release.yml owns the
-    # GitHub release and its notes (release-plz.toml sets
+    # merged; no-ops otherwise. The GitHub App token lets the version-tag push
+    # start release.yml for the binaries; GITHUB_TOKEN does not start workflows
+    # for push events. release.yml owns the GitHub release and its notes
+    # (release-plz.toml sets
     # git_release_enable = false).
     #
     # No concurrency group, deliberately (upstream guidance): with
@@ -91,14 +108,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
-      - name: Check RELEASE_PLZ_TOKEN
+      - name: Check release App credentials
         env:
-          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          if [ -z "${TOKEN}" ]; then
-            echo "::error::RELEASE_PLZ_TOKEN is not set. Create a fine-grained PAT (Contents: read/write and Pull requests: read/write on this repo) and store it as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+          if [ -z "${CLIENT_ID}" ]; then
+            echo "::error::RELEASE_APP_CLIENT_ID is not set. Add the GitHub App Client ID as a repository variable — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
             exit 1
           fi
+          if [ -z "${PRIVATE_KEY}" ]; then
+            echo "::error::RELEASE_APP_PRIVATE_KEY is not set. Add the GitHub App private key as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+            exit 1
+          fi
+      - name: Create release App token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: devdocs-mcp
+          permission-contents: write
+          permission-pull-requests: read
       # Trusted publishing: release-plz exchanges the job's OIDC token with
       # crates.io itself (id-token: write above); no CARGO_REGISTRY_TOKEN and
       # no crates-io-auth-action step.
@@ -106,4 +138,4 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}

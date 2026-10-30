@@ -3,6 +3,13 @@ name: scorecard
 on:
   push:
     branches: [main]
+    paths:
+      - ".github/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - "SECURITY.md"
   schedule:
     # Weekly: supply-chain posture re-check.
     - cron: "19 5 * * 2"

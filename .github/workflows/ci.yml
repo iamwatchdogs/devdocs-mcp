@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           components: rustfmt
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           components: clippy
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           tools: cargo-nextest,just
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           tools: just
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.90.0"
           tools: just
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           tools: just
@@ -142,7 +142,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           components: llvm-tools-preview
@@ -165,7 +165,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup-rust
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.99.1"
           tools: just

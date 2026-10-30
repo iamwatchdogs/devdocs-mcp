@@ -1,7 +1,7 @@
 <!--
 PR body template — the single source of truth for PR structure
 (.agents/instructions/pr-creation.instruction.md points here).
-Delete the "Linked issues" section only when no issue applies.
+Keep the "Linked issues" section. When no issue applies, write `None`.
 -->
 
 ## Summary

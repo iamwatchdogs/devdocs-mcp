@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-10-30T13:00:00Z
+timestamp: 2026-10-30T12:19:11Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -151,10 +151,10 @@ Notes:
 
 ## Publish to crates.io
 
-release-plz (CLI 0.4.2; action v0.5.147, verified 2026-10-29) owns versioning and changelogs. Trusted publishing (GA since mid-2025) removes the long-lived API token. Both jobs use the `RELEASE_PLZ_TOKEN` secret. The workflow runs two jobs on every push to `main` (and on manual dispatch, which both jobs gate to `refs/heads/main` so a stray dispatch from a feature branch can never publish):
+release-plz (CLI 0.4.2; action v0.5.147, verified 2026-10-29) owns versioning and changelogs. Trusted publishing removes the long-lived crates.io API token. The GitHub App token handles GitHub operations and triggers the follow-on CI and binary release workflows. The workflow runs two jobs on every push to `main` (and on manual dispatch, which both jobs gate to `refs/heads/main` so a stray dispatch from a feature branch can never publish):
 
-- `release-plz-pr` — runs `release-pr` (the command input is explicit: without it the action runs both commands), opening/updating the release PR with `contents: write` + `pull-requests: write`. It uses `RELEASE_PLZ_TOKEN` rather than `GITHUB_TOKEN`: `pull_request` runs from a GITHUB_TOKEN-created PR land in an approval-required state that is easy to miss, while a PAT-created PR gets ci.yml automatically. The release PR therefore always runs fmt/lint/test/deny before the human merge. This job has its own concurrency group; the release job must not (see below).
-- `release-plz-release` — runs `release` after the release PR is merged: publishes the workspace crates and creates the version tag; no-ops when there is nothing to release. Permissions: `contents: write`, `pull-requests: read` (to detect the release PR), `id-token: write`. It **must** use `RELEASE_PLZ_TOKEN`, not `GITHUB_TOKEN`: events triggered by the default `GITHUB_TOKEN` never start other workflow runs, so a GITHUB_TOKEN-created tag would never fire `release.yml` and binaries would silently never be published. Both jobs carry a guard step that fails with setup instructions when the secret is missing.
+- `release-plz-pr` — runs `release-pr` (the command input is explicit: without it the action runs both commands), opening or updating the release PR with `contents: write` and `pull-requests: write`. It uses a GitHub App installation token so CI starts on the generated PR without manual approval. This job has its own concurrency group; the release job must not (see below).
+- `release-plz-release` — runs `release` after the release PR is merged: publishes the workspace crates and creates the version tag; no-ops when there is nothing to release. Permissions: `contents: write`, `pull-requests: read` (to detect the release PR), `id-token: write`. It uses a GitHub App installation token so the tag push starts `release.yml`. The `id-token: write` permission is separate; it lets release-plz exchange a GitHub OIDC token with crates.io. Both jobs fail with setup instructions when the App Client ID or private key is missing.
 
 Two deliberate deviations from "add a concurrency group everywhere": the release job has **no** concurrency group — with `cancel-in-progress: false` a newly queued run still replaces a pending one, which can silently skip a release; a superseded run is mostly self-healing (the newer run publishes the same or newer versions), so upstream's guidance (never risk skipping a release) wins. And trusted publishing is release-plz's built-in OIDC exchange (`id-token: write` is all it needs) — no `rust-lang/crates-io-auth-action` step and no `CARGO_REGISTRY_TOKEN`.
 
@@ -162,9 +162,10 @@ Two deliberate deviations from "add a concurrency group everywhere": the release
 
 One-time setup:
 
-1. On crates.io, open the crate Settings and add a Trusted Publisher: this repository, the workflow filename `publish.yml`, **and the environment `release`**. Note the crates.io limitation: a brand-new crate cannot use trusted publishing on its first publish — publish it manually once, then the chain owns it.
-2. Create a fine-grained personal access token (Contents: read/write **and** Pull requests: read/write, on this repository only — creating the release PR needs the Pull requests permission) and store it as the `RELEASE_PLZ_TOKEN` repository secret.
-3. Create the `release` GitHub environment (repo Settings → Environments) restricted to the `main` branch; the release-plz-release job declares it. The environment claim in the Trusted Publisher entry means OIDC tokens minted by any other job in the repo — including the release.yml build legs, which hold `id-token: write` for attestations and execute dependency build scripts — are rejected by crates.io.
+1. On crates.io, open each crate's Settings and add a Trusted Publisher: this repository, the workflow filename `publish.yml`, **and the environment `release`**. A brand-new crate needs one manual first publish before it can use trusted publishing.
+2. Create a GitHub App for this repository. Leave its webhook inactive. Grant repository permissions `Contents: read/write` and `Pull requests: read/write`. Install it on this repository only. Create a private key.
+3. Add the App Client ID as the repository variable `RELEASE_APP_CLIENT_ID`. Add the private key as the repository secret `RELEASE_APP_PRIVATE_KEY`. The workflow creates a short-lived installation token for each job and scopes it to this repository.
+4. Create the `release` GitHub environment (repo Settings → Environments) restricted to the `main` branch; the release-plz-release job declares it. The environment claim in the Trusted Publisher entry means OIDC tokens minted by any other job in the repo — including the release.yml build legs, which hold `id-token: write` for attestations and execute dependency build scripts — are rejected by crates.io.
 
 Flow: push to `main` → release-plz opens a release PR (changelog + version bumps, CI runs on the PR automatically) → a human merges it → the merge push runs `release-plz release`, which publishes crates in dependency order and creates the version tag → the tag push triggers `release.yml` for the binaries and the GitHub release. The human merge is the release gate.
 

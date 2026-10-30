@@ -49,7 +49,8 @@ These apply to every task:
 
 - Study official sources first — library docs, wikis, changelogs. Use the Context7 MCP tools for official documentation when they are available; add other relevant sources on top.
 - Dispatch subagents for leg work. Every task gets at least one subagent for research, exploration, or verification before the main work.
-- Write all communication in ASD-STE100: replies to the user, and everything you publish on GitHub — PRs, issues, and review comments.
+- Write all communication and documentation in ASD-STE100: replies to the user, commit messages, design docs, and everything you publish on GitHub — PRs, issues, and review comments.
+- Label new issues with the ticket-set pattern: `ready-for-agent`, one `phase-*`, and the relevant `area:*` labels.
 
 ## Instructions
 

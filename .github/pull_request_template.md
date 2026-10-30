@@ -22,6 +22,5 @@ Delete the "Linked issues" section only when no issue applies.
 
 ## Checklist
 
-- [ ] The PR is assigned to its author.
-- [ ] The issue link is present (or `None` is stated).
+- [ ] The PR follows `.agents/instructions/pr-creation.instruction.md` (issue link, author assignee).
 - [ ] `just ci` is green.

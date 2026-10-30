@@ -65,8 +65,7 @@ devdocs-mcp/
 │   └── workflows/
 │       ├── ci.yml
 │       └── release.yml
-├── LICENSE-APACHE
-├── LICENSE-MIT
+├── LICENSE                        # MIT
 ├── README.md
 ├── docs/
 │   ├── 00-implementation-guide.md   # this guide
@@ -85,7 +84,9 @@ devdocs-mcp/
 ├── devdocs-mcp/         # L4: rmcp server adapter
 ├── devdocs/             # binary crate named `devdocs` (the CLI)
 ├── devdocs-eval/        # eval harness binary
-└── devdocs-testkit/     # shared test helpers and fixtures
+├── devdocs-testkit/     # shared test helpers and fixtures
+├── context-chunker/     # internal helper: chunking utilities (outside the devdocs graph)
+└── context-file/        # internal helper: file utilities (outside the devdocs graph)
 ```
 
 Note. `cargo new --bin crates/devdocs` creates a crate named `devdocs`. The binary is `devdocs`. The tree entry above shows the alias for clarity only.
@@ -395,7 +396,7 @@ The hook block above uses a shell one-liner. Keep the regex simple. A failed mat
 
 ## Licenses and README
 
-- Add `LICENSE-MIT` and `LICENSE-APACHE` with the standard texts. The workspace `license` field is `MIT OR Apache-2.0`.
+- Add one `LICENSE` file with the MIT text. The workspace `license` field is `MIT`. The dual-license plan from the first scaffold draft was never set up; the single-MIT choice is final (recorded in [01](01-tech-stack-decision.md)).
 - `README.md` starts as a stub: one paragraph, one install line, one example command. Expand it at milestone M9 (release).
 - Add `CONTRIBUTING.md` at milestone M9. It records the PR checklist from [03](03-code-quality-toolchain.md).
 

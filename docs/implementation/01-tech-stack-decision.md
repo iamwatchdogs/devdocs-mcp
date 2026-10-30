@@ -103,6 +103,13 @@ The decision stands until one of these conditions holds. Re-run the evaluation w
 3. Grounded Docs (arabold/docs-mcp-server) adds per-span provenance or license gating. Then re-run the differentiation claim before Phase 1 (research: architecture.md, competitive boundary).
 4. The tree-sitter grammar conflict blocks a needed language for more than one quarter. Then evaluate an alternative symbol extractor.
 
+## Revised decisions
+
+The scaffold exposed conflicts between this decision record and the committed repository. The M0 reconciliation ticket resolved them. Each entry states the change and the reason.
+
+- **2026-10-31 — License: single MIT.** The first draft planned `MIT OR Apache-2.0` with two license files. The scaffold committed one MIT `LICENSE` and the dual-license path was never used. The workspace `license` field and the docs now state `MIT`. Revisit only if a downstream embedding requirement demands it.
+- **2026-10-31 — MSRV 1.90.** The first draft planned 1.85. Dependency MSRVs forced the floor up: rusqlite 0.41 needs 1.89 and text-splitter 0.33 needs 1.90. The workspace `rust-version`, the docs, and `just msrv` name 1.90.
+
 ## Out of scope by decision
 
 - Code Mode adapter. Ships only after the sandbox contract passes (research: security-licensing.md §4).

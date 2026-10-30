@@ -46,8 +46,8 @@ All compiling jobs share one composite action, `.github/actions/setup-rust` (too
 
 ```yaml
 jobs:
-  fmt:        # toolchain 1.99.1 + rustfmt + just, runs `just fmt-check`
-  lint:       # toolchain 1.99.1 + clippy + just, runs `just lint`
+  fmt:        # toolchain from rust-toolchain.toml + rustfmt + just, runs `just fmt-check`
+  lint:       # toolchain from rust-toolchain.toml + clippy + just, runs `just lint`
   test:       # 3-OS matrix (ubuntu/macos/windows), runs `just test`
   test-doc:   # runs `just test-doc` (cargo test --doc; nextest does not run doctests)
   msrv:       # toolchain 1.90.0, runs `just msrv`
@@ -67,7 +67,7 @@ Notes:
 
 - All cargo-invoking recipes (`lint`, `test`, `test-doc`, `docs`, `features`) run `--locked`: CI tests the committed lockfile, not whatever cargo would resolve today. A Cargo.toml edit without a matching Cargo.lock fails loudly instead of silently regenerating the dependency set.
 - `just test` / `just deny` hard-fail when their tool is missing — everywhere, with no fallback. CI installs tools explicitly via the composite action, so a missing tool is a loud environment failure, not a silent downgrade.
-- The composite action's install-action tools (`just`, `cargo-nextest`, `cargo-llvm-cov`) and audit.yml's (`cargo-audit`, `cargo-machete`) deliberately float at latest: Renovate cannot bump install-action inputs, so a pin would go stale silently, and security scanners must see new releases. The release-critical toolchain (`cargo-zigbuild@0.24.0` + `ziglang==0.17.0`) is pinned where it is used; those two pins are human-maintained (no manager covers install-action inputs or inline pip pins) — review them at each release rehearsal. Same policy for the Rust toolchain literals: Renovate is configured to leave the dtolnay/rust-toolchain `toolchain` input alone (dep `rust` disabled) because `rust-toolchain.toml` is the toolchain's source of truth — an auto-bumped release/publish compiler desynchronized from the CI-validated one would erode the release gate.
+- The composite action's install-action tools (`just`, `cargo-nextest`, `cargo-llvm-cov`) and audit.yml's (`cargo-audit`, `cargo-machete`) deliberately float at latest: Renovate cannot bump install-action inputs, so a pin would go stale silently, and security scanners must see new releases. The release-critical toolchain (`cargo-zigbuild@0.24.0` + `ziglang==0.17.0`) is pinned where it is used; those two pins are human-maintained (no manager covers install-action inputs or inline pip pins) — review them at each release rehearsal. The Rust toolchain has a single source of truth: `rust-toolchain.toml`. The composite action resolves the channel from it when a caller omits `toolchain` (dtolnay/rust-toolchain does not read the file itself), and release.yml/publish.yml resolve the channel from the file with a dedicated step. Only the `msrv` job passes an explicit toolchain (1.90.0, the workspace `rust-version`). Renovate is configured to leave toolchain inputs alone (dep `rust` disabled) — an auto-bumped release/publish compiler desynchronized from the CI-validated one would erode the release gate; a toolchain bump edits `rust-toolchain.toml` only.
 - The `msrv` recipe validates the real lock file against toolchain 1.90 (the workspace `rust-version` in `Cargo.toml`; do not restate the literal here — this file references it).
 - The coverage job necessarily re-runs the full suite: instrumented builds cannot share the nextest cache profile. `cargo llvm-cov` accepts nextest as its runner if a speed-up is ever needed.
 - codecov uploads carry `token: ${{ secrets.CODECOV_TOKEN }}` (optional secret, not in the setup list): codecov-action v4+ supports tokenless uploads only from fork PRs to public repos, so an unset secret degrades main-branch uploads to a logged failure — which does not fail the job (`fail_ci_if_error` is unset).

@@ -51,7 +51,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           components: rustfmt
           tools: just
       - run: just fmt-check
@@ -65,7 +64,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           components: clippy
           tools: just
       - run: just lint
@@ -83,7 +81,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           tools: cargo-nextest,just
       - run: just test
 
@@ -96,7 +93,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           tools: just
       - run: just test-doc
 
@@ -122,7 +118,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           tools: just
       - run: just features
 
@@ -144,7 +139,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           components: llvm-tools-preview
           tools: cargo-llvm-cov,just
       - run: just coverage
@@ -167,7 +161,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.99.1"
           tools: just
       - run: just docs
 

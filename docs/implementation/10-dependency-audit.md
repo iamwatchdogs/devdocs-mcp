@@ -19,12 +19,14 @@ derives-from: [docs/research]
 
 ## Audit workflow
 
+The audit tools float at latest, both locally through `cargo binstall` and in CI. Pinning the scanner versions would go stale silently, because Renovate cannot bump install-action inputs (see [11](11-ci-cd-release.md)). The Rust toolchain stays pinned through `rust-toolchain.toml`.
+
 | Check | Tool | When | Gate |
 |---|---|---|---|
-| Licenses, advisories, sources, duplicate versions | cargo-deny 0.20.2 | every PR + daily schedule | block on failure |
-| RustSec advisories | cargo-audit 0.22.2 | daily schedule + release | block on vulnerabilities. Triage notes required for warnings |
-| Unused dependencies | cargo-machete 0.9.2 | weekly schedule | block on findings |
-| Public API breaks between lib releases | cargo-semver-checks 0.51.0 | on release PRs | block on unexpected breaking change |
+| Licenses, advisories, sources, duplicate versions | cargo-deny | every PR + daily schedule | block on failure |
+| RustSec advisories | cargo-audit | daily schedule + release | block on vulnerabilities. Triage notes required for warnings |
+| Unused dependencies | cargo-machete | weekly schedule | block on findings |
+| Public API breaks between lib releases | cargo-semver-checks | on release PRs | block on unexpected breaking change |
 | Duplicate-version drift | cargo-deny `[bans] multiple-versions = "warn"` | every PR | review note required |
 
 The advisory-db received commits one day before the 2026-10-28 verification, so the daily schedule sees fresh advisories. A `RUSTSEC-2026-XXXX` advisory on a direct dependency is same-day work: patch, bump, or replace with a documented decision in the PR.

@@ -49,7 +49,7 @@ test-doc:
 # Run the #[ignore]d tests (network, embedding model) on demand. CI never
 # runs them; see docs/implementation/04 §Ignored and slow tests.
 test-slow:
-    cargo test --workspace --all-targets -- --ignored
+    cargo test --workspace --all-targets --locked -- --ignored
 
 # Build API docs. Warnings are errors.
 docs:

@@ -218,14 +218,14 @@ The `[lints] workspace = true` line applies the workspace lint table to every cr
 Cargo declares features per crate, not per workspace. Ownership follows the crate that owns the data the dependency feeds:
 
 - `fastembed` lives in `crates/devdocs-store`, optional behind the `embeddings` feature. The store owns the vector tables and the embedding blobs, so it owns the dependency.
-- `tiktoken-rs` will live in `crates/devdocs-ingest`, optional behind the `exact-tokens` feature, once the ingest layer lands. The ingest pipeline owns token counting ([07](07-ingest-pipeline.md)).
+- `tiktoken-rs` lives in `crates/devdocs-ingest`, optional behind the `exact-tokens` feature. It also enables the `tiktoken-rs` feature of `text-splitter`. The ingest pipeline owns token counting ([07](07-ingest-pipeline.md)).
 - `crates/devdocs` declares `exact-tokens` and `embeddings` as forwarding features. Until the store and ingest layers land ([12](12-roadmap-milestones.md)), the binary features are declared but empty so `just features` exercises every build shape. They forward to the owning crates when those layers land.
 
 A feature-gated build must still compile with `--no-default-features`. CI checks both states.
 
 ## Crate dependency rules
 
-The crate graph is acyclic. Enforce it in review with this table. The `context-chunker` and `context-file` crates are internal helpers outside the devdocs graph. They must not depend on any devdocs crate, and no devdocs crate may depend on them until a milestone assigns them a role.
+The crate graph is acyclic. Enforce it in review with this table. The `context-chunker` and `context-file` crates are internal helpers outside the devdocs graph. They must not depend on a devdocs crate. No devdocs crate depends on them until a milestone assigns them a role.
 
 | Crate | Depends on | Must not depend on |
 |---|---|---|
@@ -246,7 +246,7 @@ channel = "1.99.1"
 components = ["rustfmt", "clippy"]
 ```
 
-This file pins the developer and CI toolchain. The workspace MSRV stays at 1.90 in `rust-version`. Dependency MSRVs forced the floor up from the planned 1.85: rusqlite 0.41 needs 1.89 and text-splitter 0.33 needs 1.90, so 1.90.0 is the first MSRV that `just msrv` passes. See [03](03-code-quality-toolchain.md) for the MSRV policy.
+This file pins the developer and CI toolchain. The workspace MSRV stays at 1.90 in `rust-version`. The reason for the 1.90 floor is in [01](01-tech-stack-decision.md) §Revised decisions. See [03](03-code-quality-toolchain.md) for the MSRV policy.
 
 ## deny.toml
 
@@ -320,7 +320,7 @@ The committed `justfile` at the repository root is the source of truth for the r
 | `features` | Build `devdocs` in every feature state CI checks |
 | `eval` | Eval harness smoke run until the harness lands ([14](14-benchmark-eval.md)) |
 | `semver`, `mutants`, `bench` | Release-quality checks, run on demand |
-| `ci` | `fmt-check` + `lint` + `test` + `docs` + `deny` + `features` |
+| `ci` | `fmt-check` + `lint` + `test` + `test-doc` + `docs` + `deny` + `features` |
 ## lefthook.yml
 
 ```yaml

@@ -41,6 +41,8 @@ cargo new --lib crates/devdocs-mcp
 cargo new --lib crates/devdocs-testkit
 cargo new --bin crates/devdocs
 cargo new --bin crates/devdocs-eval
+cargo new --lib crates/context-chunker
+cargo new --lib crates/context-file
 
 mkdir -p eval/golden eval/runs migrations .github/workflows
 ```

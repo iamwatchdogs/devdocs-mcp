@@ -19,7 +19,7 @@ derives-from: [docs/research]
 
 ## Audit workflow
 
-The audit tools float at latest, both locally through `cargo binstall` and in CI. Pinning the scanner versions would go stale silently, because Renovate cannot bump install-action inputs (see [11](11-ci-cd-release.md)). The Rust toolchain stays pinned through `rust-toolchain.toml`.
+The audit tools float at latest, both locally through `cargo binstall` and in CI. A scanner version pin goes stale silently, because Renovate cannot bump install-action inputs (see [11](11-ci-cd-release.md)). The Rust toolchain stays pinned through `rust-toolchain.toml`.
 
 | Check | Tool | When | Gate |
 |---|---|---|---|
@@ -94,10 +94,10 @@ Direct dependencies with the alternates considered. Keep this table current when
 
 | Dependency | Picked | Alternates considered | Why picked |
 |---|---|---|---|
-| async runtime | tokio 1.54.1 | smol, async-std (stale) | Standard, MSRV 1.85, maintained |
+| async runtime | tokio 1.54.1 | smol, async-std (stale) | Standard, maintained |
 | HTTP client | reqwest 0.13.5 | hyper direct (more code), ureq (sync, no custom resolver path) | dns_resolver hook for SSRF pinning. Rustls default |
 | SQLite | rusqlite 0.41.0 bundled | sqlx (heavy, async driver), Turso (pre-1.0) | Bundled FTS5, sync API fits spawn_blocking design |
-| CLI | clap 4.6.7 derive | argh (too thin), bpaf | Standard, completions, MSRV 1.85 |
+| CLI | clap 4.6.7 derive | argh (too thin), bpaf | Standard, completions |
 | Markdown | comrak 0.59.0 | pulldown-cmark (no GFM tables by default, no sourcepos parity), markdown-rs (younger) | Reliable sourcepos for code blocks |
 | HTML extraction | dom_smoothie 0.19.0 | scraper (raw DOM, more code), readability ports list | Active, Markdown out |
 | Extraction fallback | rust-trafilatura 2.2.8 | htmd 0.5.6 | Published F1 scores. Keep htmd as a noted alternate |

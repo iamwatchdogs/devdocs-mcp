@@ -69,6 +69,25 @@ Some tasks point into the design docs instead — they are the deeper source of 
 | Network access, the fetch guard, or security boundaries | `docs/implementation/09-security-implementation.md` |
 | Eval suites, golden questions, or gate thresholds | `docs/implementation/14-benchmark-eval.md` |
 
+## Git commits
+
+Apply to every commit you make, always — read this before committing anything:
+
+- Never squash a whole feature, fix, ticket, or GitHub issue into a single big commit. Split the work into meaningful commits — one per logical step (e.g. model/types, store/schema, retrieval, CLI/MCP wiring, docs).
+- Each commit must keep the application in a working state: it compiles and `just test` stays green at that commit. Never leave a commit half-migrated or mid-refactor.
+- Commit messages follow one unified structure:
+
+  ```text
+  <type>(<scope>): <imperative subject, ≤ 72 chars>
+
+  <optional body: what changed and why, wrapped ~ 72 chars>
+
+  Co-authored-by: ZCode (GLM-5.3-Flash) <noreply@z.ai>
+  ```
+
+- `<type>(<scope>)` is the Conventional Commits shape enforced by the commit-msg hook (§Environment). Omit the scope when the change spans multiple crates.
+- When an agent harness produced the change, credit the harness and the driving model as a `Co-authored-by:` trailer, in the `Harness (model) <email>` form above; keep one trailer per harness/model pair.
+
 ### Using the design docs and keeping them in sync
 
 `docs/implementation/` holds the decided design — why the repo is shaped the way it is. `00-implementation-guide.md` is its index: the file map, the reading order, and the change procedure. When you build in an area for the first time, read the doc that owns it before writing code.

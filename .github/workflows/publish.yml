@@ -128,6 +128,10 @@ jobs:
           # surrounding whitespace; the BRE backreference keeps the quotes
           # paired (ERE backreferences are not POSIX-defined).
           channel="$(sed -n "s/^[[:space:]]*channel[[:space:]]*=[[:space:]]*\([\"']\)\([^\"']*\)\1.*/\2/p" rust-toolchain.toml | head -n 1)"
+          if [ -z "${channel}" ]; then
+            echo "::error::Could not read channel from rust-toolchain.toml" >&2
+            exit 1
+          fi
           echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:

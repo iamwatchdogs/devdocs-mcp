@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-10-30T13:11:16Z
+timestamp: 2026-10-30T14:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -23,7 +23,7 @@ Eight workflows:
 | `codeql.yml` | Rust/Cargo or Actions paths on push/PR, weekly schedule, manual dispatch | CodeQL SAST over Rust and workflow definitions |
 | `scorecard.yml` | security/dependency configuration paths on push to `main`, branch-protection rule changes, weekly schedule, manual dispatch | OSSF Scorecard supply-chain posture, published to the OpenSSF API |
 | `dependency-review.yml` | Cargo manifest, lockfile, or deny policy paths on pull requests | advisory/license diff gate on dependency changes |
-| `zizmor.yml` | workflow or composite-action paths on push/PR; manual dispatch | zizmor static analysis of every workflow and composite action |
+| `zizmor.yml` | workflow or composite-action paths on push/PR; weekly schedule; manual dispatch | zizmor static analysis of every workflow and composite action |
 
 Two invariants hold across all eight workflows:
 
@@ -109,8 +109,9 @@ jobs:
         a release build must not consume cache entries that PR workflows
         can write (docs 09; the release is the cache-poisoning "sink")
       - [zig targets] taiki-e/install-action for cargo-zigbuild@0.24.0
-        (checksum-verified); pip install ziglang==0.17.0 for the zig backend —
-        ziglang ships only on PyPI, so its pin is version-only (accepted
+        (checksum-verified); pip install --require-hashes ziglang==0.17.0 for the
+        zig backend — ziglang ships only on PyPI, so the install hash-pins
+        the exact wheel digests (x86_64 + aarch64) from the PyPI JSON API
         residual trust; cargo-zigbuild itself is checksummed)
       - cargo [zig]build -p devdocs --release --locked --target ${{ matrix.target }}
       - smoke test: run the built binary's `--version` (skipped where the
@@ -180,7 +181,7 @@ Four workflows form the supply-chain/SAST layer. They are **advisory, not gating
 - `codeql.yml` — CodeQL for `rust` and `actions` (the workflows and composite actions are themselves an attack surface). All legs use `build-mode: none`: the Rust analysis is autobuild-free (no compile needed for Rust extraction), and the Actions analysis needs no build at all. The Rust leg reuses the `./.github/actions/setup-rust` composite action; schedule and manual dispatch exist because a push/PR-only CodeQL config silently stops analysing after the default 300 analysis-minute budget. Findings land in the Security tab via `security-events: write`.
 - `scorecard.yml` — OSSF Scorecard, published to the OpenSSF API (`publish_results: true`, which requires a **public** repository and `id-token: write`; make the repo public before relying on this workflow). The job carries the official starter's `if: github.event.repository.default_branch == github.ref_name` guard, because the OpenSSF API only accepts results published from the default branch — an off-branch dispatch skips cleanly instead of failing. Runs on push to `main`, on branch-protection rule changes (`branch_protection_rule` trigger, so the score reflects protection edits promptly), and weekly. Artifacts and SARIF are uploaded for the badge and the Security tab. No `repo_token` PAT: with repository rulesets (not classic branch protection) the default `GITHUB_TOKEN` is sufficient.
 - `dependency-review.yml` — PR-only advisory diff gate (`fail-on-severity: moderate`, scopes `runtime, development`, `retry-on-snapshot-warnings: true` to cover the race between the head commit's manifest scan and the check start). No dependency-submission workflow is needed: GitHub's dependency graph parses `Cargo.lock` server-side via static analysis, provided **Dependency graph** is enabled in the repository's code-security settings (it is the same setting Dependabot alerts need). It deliberately declares **no license inputs**: license policy lives in `deny.toml` as the single source of truth (docs 09), and duplicating it here would create two places to keep in sync. It complements rather than duplicates audit.yml: dependency-review catches newly *introduced* advisories and license changes on the diff, while cargo-deny/cargo-audit scan the full graph on a schedule.
-- `zizmor.yml` — zizmor static analysis of every workflow and composite action at `persona: regular`. It runs in annotations mode (`advanced-security: false`, `annotations: true`), not the default SARIF/Advanced Security mode: with `--format=sarif` zizmor always exits 0 (findings are only communicated through the Security tab), which would make the check a no-op; annotations preserve zizmor's real exit code so findings fail the check and render inline on the PR diff. Its job needs only `contents: read`.
+- `zizmor.yml` — zizmor static analysis of every workflow and composite action at `persona: regular` (plus a weekly scheduled run that observes rule-pack drift of the floating zizmor binary independently of pushes). It runs in annotations mode (`advanced-security: false`, `annotations: true`), not the default SARIF/Advanced Security mode: with `--format=sarif` zizmor always exits 0 (findings are only communicated through the Security tab), which would make the check a no-op; annotations preserve zizmor's real exit code so findings fail the check and render inline on the PR diff. Its job needs only `contents: read`.
 
 ## Versioning policy
 

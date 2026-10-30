@@ -61,11 +61,18 @@ jobs:
         if: matrix.zig
         shell: bash
         run: |
-          # ziglang ships on PyPI only; no checksum-verified distribution
-          # exists, so the pin is version-only. cargo-zigbuild itself comes
+          # ziglang ships on PyPI only. pip --require-hashes pins the exact
+          # wheel digests (x86_64 + aarch64 ubuntu runners) fetched from
+          # https://pypi.org/pypi/ziglang/0.17.0/json at pin time; bump the
+          # version and both hashes together. cargo-zigbuild itself comes
           # from taiki-e/install-action below, which embeds per-release
           # checksums.
-          python3 -m pip install --user ziglang==0.17.0
+          cat > "${RUNNER_TEMP}/ziglang-requirements.txt" <<'REQ'
+          ziglang==0.17.0 \
+              --hash=sha256:97079827064a7492cce5541ceb438ae8003ce1e54e399676da2d62fb7a5dc08b \
+              --hash=sha256:d2804f94f54f7fcf8169f4b212a619ad688a4e2e6592e976f0cf2e58e2cd8af3
+          REQ
+          python3 -m pip install --user --require-hashes -r "${RUNNER_TEMP}/ziglang-requirements.txt"
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       - name: Install cargo-zigbuild
         if: matrix.zig

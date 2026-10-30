@@ -45,6 +45,18 @@ jobs:
         # check any manually pushed v*.*.* tag would build, attest, and
         # publish binaries from a commit that never passed ci.yml.
         run: git merge-base --is-ancestor HEAD origin/main
+      - name: Verify tag name is semver
+        shell: bash
+        # Defense-in-depth on top of the `v*.*.*` trigger glob, which also
+        # matches names like `v1.2.3$(cmd)`: only accept well-formed semver
+        # tags so the ref name is safe to embed in archive names and gh calls
+        # below without quoting concerns.
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' is not a semver tag (expected vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD])"
+            exit 1
+          fi
       - id: toolchain
         name: Resolve pinned toolchain from rust-toolchain.toml
         shell: bash

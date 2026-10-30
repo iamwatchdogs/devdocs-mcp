@@ -2,7 +2,7 @@
 //!
 //! Every command from docs/08 is registered here. Commands whose owning
 //! milestones have not landed print the empty result envelope and exit 0;
-//! `config` is real. The CLI edge in [`crate::main_entry`] maps errors to
+//! `config` is real. The CLI edge in the binary entry point maps errors to
 //! exit codes and JSON error envelopes on stderr.
 
 use std::path::PathBuf;

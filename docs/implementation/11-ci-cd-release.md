@@ -1,9 +1,9 @@
 ---
 type: guide
 title: CI/CD and Release
-description: The GitHub Actions workflows, the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-29.
-tags: [devdocs, ci, github-actions, release, crates-io]
-timestamp: 2026-10-30T00:00:00Z
+description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-30.
+tags: [devdocs, ci, github-actions, release, crates-io, security]
+timestamp: 2026-10-30T13:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -12,7 +12,7 @@ derives-from: [docs/research]
 
 ## Workflows
 
-Four workflows:
+Eight workflows:
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
@@ -20,16 +20,21 @@ Four workflows:
 | `release.yml` | push of `v*.*.*` tags | binary build matrix, build provenance attestation, GitHub release |
 | `publish.yml` | push to `main`, manual dispatch | release-plz release PR + crates.io publish + version tag |
 | `audit.yml` | daily + weekly schedules, manual dispatch | cargo-deny + cargo-audit daily, cargo-machete weekly |
+| `codeql.yml` | push to `main`, pull requests, weekly schedule, manual dispatch | CodeQL SAST over the Rust crates and the Actions definitions themselves |
+| `scorecard.yml` | push to `main`, branch-protection rule changes, weekly schedule, manual dispatch | OSSF Scorecard supply-chain posture, published to the OpenSSF API |
+| `dependency-review.yml` | pull requests | advisory/license diff gate on dependency changes |
+| `zizmor.yml` | push to `main`, pull requests, manual dispatch | zizmor static analysis of every workflow and composite action |
 
-Two invariants hold across all four workflows:
+Two invariants hold across all eight workflows:
 
-- **Digest pinning.** Every action is pinned to a full commit SHA with a `# vX.Y.Z` version comment. Renovate (`github-actions.pinDigests: true`) keeps the pins current and opens a single grouped `ci: actions` PR per update batch; action majors are grouped deliberately (cheap to revert). Pinned versions verified 2026-10-29:
+- **Digest pinning.** Every action is pinned to a full commit SHA with a `# vX.Y.Z` version comment. Renovate (`github-actions.pinDigests: true`) keeps the pins current and opens a single grouped `ci: actions` PR per update batch; action majors are grouped deliberately (cheap to revert). Pinned versions verified 2026-10-30:
 
 - `actions/checkout` v7.0.1, `actions/upload-artifact` v7.0.2, `actions/download-artifact` v8.0.2, `actions/github-script` v9.0.0
 - `actions/attest-build-provenance` v4.2.2, `actions/attest` ecosystem for provenance
-- `softprops/action-gh-release` v3.0.3, `codecov/codecov-action` v7.1.1
-- `dtolnay/rust-toolchain` v1, `Swatinem/rust-cache` v2.9.3, `taiki-e/install-action` v2.88.0, `EmbarkStudios/cargo-deny-action` v2.1.1
+- `codecov/codecov-action` v7.1.1 — release creation uses the runner-preinstalled `gh` CLI, not `softprops/action-gh-release`
+- `dtolnay/rust-toolchain` v1, `Swatinem/rust-cache` v2.9.3 (CI only; release builds deliberately run cacheless), `taiki-e/install-action` v2.88.0, `EmbarkStudios/cargo-deny-action` v2.1.1
 - `MarcoIeni/release-plz-action` v0.5.147
+- `github/codeql-action` v4.39.1, `ossf/scorecard-action` v2.5.0, `actions/dependency-review-action` v5.0.0, `zizmorcore/zizmor-action` v0.8.0
 
 - **Token hygiene.** Every `checkout` runs with `persist-credentials: false` — the job token is never left in the runner's git config where dependency build scripts (or a compromised step) could read it. The one exception-free rule: no step in any workflow pushes via git credentials (release-plz authenticates through its `GITHUB_TOKEN` env; release upload and attestations go through APIs).
 
@@ -100,9 +105,9 @@ jobs:
         tag commit is reachable from origin/main — branch protection gates main
         pushes, not tag pushes, so without this a manually pushed tag could
         build, attest, and publish binaries from un-gated code
-      - toolchain (targets: matrix.target), rust-cache keyed by matrix.target
-        (the default key omits matrix values, so the Linux legs sharing job id
-        `build` would overwrite one entry)
+      - toolchain (targets: matrix.target); deliberately no cache restore:
+        a release build must not consume cache entries that PR workflows
+        can write (docs 09; the release is the cache-poisoning "sink")
       - [zig targets] taiki-e/install-action for cargo-zigbuild@0.24.0
         (checksum-verified); pip install ziglang==0.17.0 for the zig backend —
         ziglang ships only on PyPI, so its pin is version-only (accepted
@@ -128,10 +133,12 @@ jobs:
       contents: write
     steps:
       - download-artifact (merge-multiple) into dist/   # no checkout: the job
-        only consumes artifacts; softprops resolves the tag from the event
+        only consumes artifacts; the release step takes GH_REPO explicitly
       - smoke test: extract the linux-gnu archive, run `--version`
-      - softprops/action-gh-release uploads dist/*.tar.gz, dist/*.zip,
-        dist/*.sha256 with generated release notes
+      - `gh release create`/`gh release upload` (runner-preinstalled CLI,
+        GH_TOKEN + GH_REPO env): uploads dist/*.tar.gz, dist/*.zip,
+        dist/*.sha256 with generated release notes; an existing release is
+        updated in place so a re-run is idempotent
 ```
 
 Notes:
@@ -151,7 +158,7 @@ release-plz (CLI 0.4.2; action v0.5.147, verified 2026-10-29) owns versioning an
 
 Two deliberate deviations from "add a concurrency group everywhere": the release job has **no** concurrency group — with `cancel-in-progress: false` a newly queued run still replaces a pending one, which can silently skip a release; a superseded run is mostly self-healing (the newer run publishes the same or newer versions), so upstream's guidance (never risk skipping a release) wins. And trusted publishing is release-plz's built-in OIDC exchange (`id-token: write` is all it needs) — no `rust-lang/crates-io-auth-action` step and no `CARGO_REGISTRY_TOKEN`.
 
-`release.yml` owns the GitHub release object and its notes (it has the artifacts). `release-plz.toml` sets `git_release_enable = false` so release-plz only publishes crates and pushes the tag, and disables per-package tags: release-plz's multi-package default is `{package}-v{version}`, which `release.yml`'s `v*.*.*` trigger would never match — the binaries, attestations, and GitHub release would silently never run. Instead, the `devdocs` crate alone pushes `v{{ version }}` (package-section override); it is released last in dependency order, so the single tag is created only after every other crate has published, and release-plz skips tag creation when the tag already exists. Two automated writers on one release would race, and the softprops update path overwrites the release body by default (`append_body` defaults to replacement), which would clobber release-plz's changelog — so the ownership is single and decided, not emergent.
+`release.yml` owns the GitHub release object and its notes (it has the artifacts). `release-plz.toml` sets `git_release_enable = false` so release-plz only publishes crates and pushes the tag, and disables per-package tags: release-plz's multi-package default is `{package}-v{version}`, which `release.yml`'s `v*.*.*` trigger would never match — the binaries, attestations, and GitHub release would silently never run. Instead, the `devdocs` crate alone pushes `v{{ version }}` (package-section override); it is released last in dependency order, so the single tag is created only after every other crate has published, and release-plz skips tag creation when the tag already exists. Two automated writers on one release would race, and two different note sources would fight: `gh release create --generate-notes` derives notes from GitHub's commit data on the release.yml side, while release-plz owns the changelog file — so the ownership is single and decided, not emergent (the re-run path re-uploads assets and never rewrites the body).
 
 One-time setup:
 
@@ -164,6 +171,15 @@ Flow: push to `main` → release-plz opens a release PR (changelog + version bum
 ## Scheduled audits
 
 `audit.yml` runs `cargo-deny` and `cargo-audit` daily and `cargo-machete` weekly (the job-level `if:` guards compare against the exact cron strings — change them together). Runs are serialized by a concurrency group (`cancel-in-progress: false`): a manual dispatch queues behind an in-flight scheduled run instead of cancelling it, because a cancelled run reports `cancelled` — not `failure` — and its result would never reach the report job. Only scheduled failures open a `dependencies`-labeled issue; recurrences add comments to the existing issue instead of spawning duplicates (dedup paginates all open issues). Note the platform behavior: GitHub auto-disables scheduled workflows after 60 days without repository activity — Renovate's automated PRs keep this repo active, but if activity ever stops, re-enable the workflow from the Actions tab.
+
+## Security workflows
+
+Four workflows form the supply-chain/SAST layer. They are **advisory, not gating**: only ci.yml's `gate` job is a required branch-protection check, so a new finding can never block a PR that gate would have passed — they are meant to surface regressions, not to hold merges hostage. All four follow the repo-wide invariants (top-level `contents: read` with per-job escalation, SHA-pinned actions, `persist-credentials: false`).
+
+- `codeql.yml` — CodeQL for `rust` and `actions` (the workflows and composite actions are themselves an attack surface). All legs use `build-mode: none`: the Rust analysis is autobuild-free (no compile needed for Rust extraction), and the Actions analysis needs no build at all. The Rust leg reuses the `$/​.github/actions/setup-rust` composite action; schedule and manual dispatch exist because a push/PR-only CodeQL config silently stops analysing after the default 300 analysis-minute budget. Findings land in the Security tab via `security-events: write`.
+- `scorecard.yml` — OSSF Scorecard, published to the OpenSSF API (`publish_results: true`, which requires a **public** repository and `id-token: write`; make the repo public before relying on this workflow). The job carries the official starter's `if: github.event.repository.default_branch == github.ref_name` guard, because the OpenSSF API only accepts results published from the default branch — an off-branch dispatch skips cleanly instead of failing. Runs on push to `main`, on branch-protection rule changes (`branch_protection_rule` trigger, so the score reflects protection edits promptly), and weekly. Artifacts and SARIF are uploaded for the badge and the Security tab. No `repo_token` PAT: with repository rulesets (not classic branch protection) the default `GITHUB_TOKEN` is sufficient.
+- `dependency-review.yml` — PR-only advisory diff gate (`fail-on-severity: moderate`, scopes `runtime, development`, `retry-on-snapshot-warnings: true` to cover the race between the head commit's manifest scan and the check start). No dependency-submission workflow is needed: GitHub's dependency graph parses `Cargo.lock` server-side via static analysis, provided **Dependency graph** is enabled in the repository's code-security settings (it is the same setting Dependabot alerts need). It deliberately declares **no license inputs**: license policy lives in `deny.toml` as the single source of truth (docs 09), and duplicating it here would create two places to keep in sync. It complements rather than duplicates audit.yml: dependency-review catches newly *introduced* advisories and license changes on the diff, while cargo-deny/cargo-audit scan the full graph on a schedule.
+- `zizmor.yml` — zizmor static analysis of every workflow and composite action at `persona: regular`. It runs in annotations mode (`advanced-security: false`, `annotations: true`), not the default SARIF/Advanced Security mode: with `--format=sarif` zizmor always exits 0 (findings are only communicated through the Security tab), which would make the check a no-op; annotations preserve zizmor's real exit code so findings fail the check and render inline on the PR diff. Its job needs only `contents: read`.
 
 ## Versioning policy
 
@@ -185,4 +201,4 @@ cargo build --release
 
 Then merge the release PR (or `git tag vX.Y.Z && git push origin vX.Y.Z` for a tag without a crates.io publish).
 
-The first real release doubles as a rehearsal for the paths `just ci` cannot reach: the zig install on the ubuntu runner image, the `cargo-zigbuild@0.24.0` × `ziglang==0.17.0` pairing (no upstream compatibility matrix exists — record the verified pairing in the workflow comment once confirmed), the per-target rust-cache keys, and the release.yml tag→release chain. Treat its first run as supervised.
+The first real release doubles as a rehearsal for the paths `just ci` cannot reach: the zig install on the ubuntu runner image, the `cargo-zigbuild@0.24.0` × `ziglang==0.17.0` pairing (no upstream compatibility matrix exists — record the verified pairing in the workflow comment once confirmed), the cold-cache release build (deliberately no rust-cache in release.yml), and the release.yml tag→release chain. Treat its first run as supervised.

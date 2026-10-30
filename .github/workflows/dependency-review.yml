@@ -1,0 +1,35 @@
+name: dependency-review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Deliberately no license inputs: deny.toml is the single license
+      # policy (enforced by cargo-deny in ci.yml). A second, diverging
+      # allowlist here would drift. This action contributes what cargo-deny
+      # cannot: GitHub advisory and license data applied to the PR diff,
+      # including dependencies added by non-Cargo manifest changes.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: "runtime, development"
+          # GitHub's dependency graph parses Cargo.lock server-side (static
+          # analysis), so no dependency-submission workflow is needed; this
+          # retry papers over the race where the head commit's manifest scan
+          # has not landed when the check starts (GitHub's own recommendation
+          # for review-without-co-located-submission setups).
+          retry-on-snapshot-warnings: true

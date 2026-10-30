@@ -49,11 +49,8 @@ jobs:
         with:
           toolchain: "1.99.1"
           targets: ${{ matrix.target }}
-      # The default cache key excludes matrix values, so the four Linux legs
-      # (shared job id `build`) would overwrite one entry without this key.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ matrix.target }}
+      # Deliberately no rust-cache here: a release build must not depend on
+      # cache state that PR workflows can write (docs 11).
       - name: Install zig (PyPI)
         if: matrix.zig
         shell: bash
@@ -129,8 +126,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      # No checkout: this job only consumes downloaded artifacts, and
-      # softprops/action-gh-release resolves the tag from the event context.
+      # No checkout: this job only consumes downloaded artifacts, and the
+      # release step gets its repo from GH_REPO (see below).
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           merge-multiple: true
@@ -141,10 +138,21 @@ jobs:
           archive="dist/devdocs-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
           tar -xzf "${archive}" -C "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/devdocs-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu/devdocs" --version
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.sha256
-          generate_release_notes: true
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repo from a git
+          # remote and must be told explicitly.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Idempotent re-runs: keep an existing release and its notes
+          # (release.yml owns the notes; see docs 11) and only re-upload the
+          # assets; create the release with generated notes otherwise.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.zip dist/*.sha256 --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes \
+              dist/*.tar.gz dist/*.zip dist/*.sha256
+          fi

@@ -1,0 +1,57 @@
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly: pick up refreshed query packs.
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    strategy:
+      fail-fast: false
+      matrix:
+        # rust: SAST over the workspace crates.
+        # actions: SAST over the workflow files themselves (template
+        # injection, script injection into github-script, and similar).
+        language: [rust, actions]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # security-events: write uploads results to the Security tab.
+      # actions: read and packages: read are needed only in private
+      # repositories; they are harmless reads in a public one.
+      security-events: write
+      actions: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'rust'
+        # Rust analysis uses build-mode none, which extracts via
+        # rust-analyzer instead of compiling. It still needs a toolchain
+        # that parses edition 2024, so use the CI-validated one.
+        uses: $/.github/actions/setup-rust
+        with:
+          toolchain: "1.99.1"
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          # none is valid for both: Rust is a compiled language that
+          # supports it, and actions is an interpreted language.
+          build-mode: none
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: "/language:${{ matrix.language }}"

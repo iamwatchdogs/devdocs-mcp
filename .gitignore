@@ -56,3 +56,7 @@ rustc-ice-*.txt
 *~
 Thumbs.db
 desktop.ini
+
+# Agent/session tooling working directories
+.zcode/
+.mimosa/

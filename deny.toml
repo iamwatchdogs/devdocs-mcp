@@ -15,6 +15,8 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    "NCSA",
+    "CDLA-Permissive-2.0",
 ]
 # aws-lc-rs (reqwest 0.13 default crypto) is Apache-2.0 OR ISC. No OpenSSL entry needed.
 confidence-threshold = 0.93
@@ -22,7 +24,9 @@ confidence-threshold = 0.93
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    "RUSTSEC-2024-0436", # paste - unmaintained, no safe upgrade available
+]
 
 [bans]
 multiple-versions = "warn"

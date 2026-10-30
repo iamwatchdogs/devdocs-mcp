@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-10-28T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -17,7 +17,7 @@ The research bundle states that no controlled docs-domain benchmark exists, and 
 - `crates/devdocs-eval` — the harness binary. Reads a suite, runs the retrieve crate, scores results, writes artifacts.
 - `eval/golden/*.jsonl` — golden question files, one suite per file.
 - `eval/runs/<date>-<suite>/` — run artifacts. Gitignored.
-- `just eval` — runs the default suite and prints the gate table.
+- `just eval` — runs the default suite and prints the gate table. Until the harness binary lands at M10 ([12](12-roadmap-milestones.md)), the recipe is a smoke check: it runs `devdocs-eval -- --help` and stops.
 
 ## Golden-set format
 

@@ -46,6 +46,11 @@ test:
 test-doc:
     cargo test --workspace --doc --locked
 
+# Run the #[ignore]d tests (network, embedding model) on demand. CI never
+# runs them; see docs/implementation/04 §Ignored and slow tests.
+test-slow:
+    cargo test --workspace --all-targets -- --ignored
+
 # Build API docs. Warnings are errors.
 docs:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked

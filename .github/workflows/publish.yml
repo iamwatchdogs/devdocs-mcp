@@ -68,7 +68,9 @@ jobs:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: devdocs-mcp
+          # Follow the repo instead of a literal: a rename or fork keeps
+          # publishing working (and the token stays scoped to this repo).
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
       # Without `command: release-pr` the action runs BOTH release-pr and
@@ -140,7 +142,9 @@ jobs:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: devdocs-mcp
+          # Follow the repo instead of a literal: a rename or fork keeps
+          # publishing working (and the token stays scoped to this repo).
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: read
       # Trusted publishing: release-plz exchanges the job's OIDC token with

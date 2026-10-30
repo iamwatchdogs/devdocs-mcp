@@ -6,7 +6,8 @@ labels: ['ready-for-agent']
 ---
 
 <!-- The ticket body follows the repo's de-facto ticket skeleton
-     (see issues #3–#23). Keep the headings in this order. -->
+     (see issues #3–#23). Keep the headings in this order, and keep the
+     labeling pattern from AGENTS.md §Agent conduct. -->
 
 ## What to build
 

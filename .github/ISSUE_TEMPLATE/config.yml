@@ -1,3 +1,3 @@
-# Every issue goes through the implementation-ticket template, so the
-# ticket set keeps one body structure.
-blank_issues_enabled: false
+# Blank issues stay enabled for anything that fits no template; the
+# implementation-ticket template covers the roadmap ticket set.
+blank_issues_enabled: true

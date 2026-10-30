@@ -11,6 +11,11 @@ on:
       - ".github/workflows/**"
       - ".github/actions/**"
   workflow_dispatch:
+  # Weekly drift observation: the zizmor binary floats at latest, so a new
+  # rule release can flip the main-branch push check red with no PR warning.
+  # The scheduled run surfaces rule-pack drift independently of pushes.
+  schedule:
+    - cron: "23 4 * * 3"
 
 permissions:
   contents: read

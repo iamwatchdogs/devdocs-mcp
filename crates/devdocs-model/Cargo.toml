@@ -12,6 +12,7 @@ name = "devdocs_model"
 path = "src/lib.rs"
 
 [dependencies]
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

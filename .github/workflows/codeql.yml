@@ -59,7 +59,7 @@ jobs:
         # Rust analysis uses build-mode none, which extracts via
         # rust-analyzer instead of compiling. It still needs a toolchain
         # that parses edition 2024, so use the CI-validated one.
-        uses: ./.github/actions/setup-rust
+        uses: $/.github/actions/setup-rust
         with:
           # build-mode: none extracts via rust-analyzer without compiling, so
           # the dependency cache would be pure overhead and would let a

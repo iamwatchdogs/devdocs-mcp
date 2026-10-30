@@ -3,7 +3,7 @@ type: guide
 title: Project Scaffolding
 description: The exact commands, file tree, Cargo workspace, and config files that create the devdocs repository. Run the steps in order from an empty directory.
 tags: [devdocs, scaffolding, cargo, workspace]
-timestamp: 2026-10-28T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -98,16 +98,8 @@ Create this file at the repository root. Workspace dependencies are declared onc
 ```toml
 [workspace]
 resolver = "3"
-members = [
-    "crates/devdocs",
-    "crates/devdocs-model",
-    "crates/devdocs-store",
-    "crates/devdocs-ingest",
-    "crates/devdocs-retrieve",
-    "crates/devdocs-mcp",
-    "crates/devdocs-eval",
-    "crates/devdocs-testkit",
-]
+# The glob picks up every crate under crates/, including the context-* helpers.
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -135,7 +127,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # content processing
 comrak = "0.59.0"
-text-splitter = { version = "0.33.1", features = ["markdown", "tiktoken-rs"] }
+text-splitter = { version = "0.33.1", features = ["markdown"] }
 dom_smoothie = "0.19.0"
 rust-trafilatura = "2.2.8"
 oas3 = "0.22.0"
@@ -156,10 +148,10 @@ dirs = "7.0.0"
 tempfile = "3.27.0"
 walkdir = "2.5.0"
 ignore = "0.4.34"
-# token counting (optional, exact mode)
-tiktoken-rs = { version = "0.12.1", optional = true }
-# embeddings (optional, phase 3)
-fastembed = { version = "7.5.0", optional = true }
+# token counting (optional in devdocs-ingest behind `exact-tokens`; see Optional features)
+tiktoken-rs = "0.12.1"
+# embeddings (optional in devdocs-store behind `embeddings`; see Optional features)
+fastembed = "7.5.0"
 # dev
 insta = { version = "1.49.0", features = ["json", "redactions"] }
 proptest = "1.12.0"
@@ -223,24 +215,17 @@ The `[lints] workspace = true` line applies the workspace lint table to every cr
 
 ## Optional features
 
-Cargo declares features per crate, not per workspace. The two optional dependency groups live in the binary crate `crates/devdocs/Cargo.toml`:
+Cargo declares features per crate, not per workspace. Ownership follows the crate that owns the data the dependency feeds:
 
-```toml
-[features]
-default = []
-exact-tokens = ["dep:tiktoken-rs"]
-embeddings = ["dep:fastembed"]
+- `fastembed` lives in `crates/devdocs-store`, optional behind the `embeddings` feature. The store owns the vector tables and the embedding blobs, so it owns the dependency.
+- `tiktoken-rs` will live in `crates/devdocs-ingest`, optional behind the `exact-tokens` feature, once the ingest layer lands. The ingest pipeline owns token counting ([07](07-ingest-pipeline.md)).
+- `crates/devdocs` declares `exact-tokens` and `embeddings` as forwarding features. Until the store and ingest layers land ([12](12-roadmap-milestones.md)), the binary features are declared but empty so `just features` exercises every build shape. They forward to the owning crates when those layers land.
 
-[dependencies]
-tiktoken-rs = { workspace = true, optional = true }
-fastembed = { workspace = true, optional = true }
-```
-
-`embeddings` also gates the vector tables in `devdocs-store` with the same feature name. A feature-gated build must still compile with `--no-default-features`. CI checks both states.
+A feature-gated build must still compile with `--no-default-features`. CI checks both states.
 
 ## Crate dependency rules
 
-The crate graph is acyclic. Enforce it in review with this table.
+The crate graph is acyclic. Enforce it in review with this table. The `context-chunker` and `context-file` crates are internal helpers outside the devdocs graph. They must not depend on any devdocs crate, and no devdocs crate may depend on them until a milestone assigns them a role.
 
 | Crate | Depends on | Must not depend on |
 |---|---|---|

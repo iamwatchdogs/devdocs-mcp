@@ -43,6 +43,14 @@ Style config lives in `rustfmt.toml` and `Cargo.toml` — read them, do not rest
 
 Crate sources live under `crates/`: `devdocs` (CLI/MCP binary), `devdocs-model`, `devdocs-ingest`, `devdocs-store`, `devdocs-retrieve`, `devdocs-mcp`, `devdocs-eval`, `devdocs-testkit`, plus `context-*` helpers. Design and testing strategy docs live under `docs/implementation/`.
 
+## Agent conduct
+
+These apply to every task:
+
+- Study official sources first — library docs, wikis, changelogs. Use the Context7 MCP tools for official documentation when they are available; add other relevant sources on top.
+- Dispatch subagents for leg work. Every task gets at least one subagent for research, exploration, or verification before the main work.
+- Write all communication in ASD-STE100: replies to the user, and everything you publish on GitHub — PRs, issues, and review comments.
+
 ## Instructions
 
 `.agents/instructions/` holds per-concept guidelines. Read only the file matching the task at hand:
@@ -55,6 +63,9 @@ Crate sources live under `crates/`: `devdocs` (CLI/MCP binary), `devdocs-model`,
 | Async/Tokio code, SQLite access, or blocking work | `async-and-performance.instruction.md` |
 | Adding or upgrading a dependency, or feature gating | `dependency-discipline.instruction.md` |
 | Changing AGENTS.md, hooks, or the instruction layer | `agent-ready-repo.instruction.md` |
+| Creating a pull request | `pr-creation.instruction.md` |
+| Reviewing review-bot comments on a PR (the user says "babysit the PR") | `pr-babysitting.instruction.md` |
+| The user says to implement a ticket or a GitHub issue | `ticket-workflow.instruction.md` |
 
 Some tasks point into the design docs instead — they are the deeper source of truth:
 

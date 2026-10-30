@@ -61,6 +61,10 @@ jobs:
         # that parses edition 2024, so use the CI-validated one.
         uses: ./.github/actions/setup-rust
         with:
+          # build-mode: none extracts via rust-analyzer without compiling, so
+          # the dependency cache would be pure overhead and would let a
+          # scheduled run churn the cache key namespace shared with ci.yml.
+          cache: false
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}

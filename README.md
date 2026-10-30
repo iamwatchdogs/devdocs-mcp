@@ -62,6 +62,8 @@ Everything beyond the version banner lands in later milestones (docs/implementat
 | `crates/devdocs` | `devdocs` binary: CLI plus MCP entry point |
 | `crates/devdocs-eval` | Golden-set evaluation harness |
 | `crates/devdocs-testkit` | Shared test helpers and fixtures |
+| `crates/context-chunker` | Internal helper: chunking utilities (outside the devdocs graph) |
+| `crates/context-file` | Internal helper: file utilities (outside the devdocs graph) |
 | `migrations/` | Embedded SQL migrations |
 | `eval/golden/` | Golden question files (JSONL) |
 | `docs/` | Implementation guide and research bundle |
@@ -94,18 +96,12 @@ Optional recipes print an install hint and exit non-zero when the external tool 
 
 ## Scaffold deviations
 
+Intentional deviations between the implementation docs and the repository. Resolved conflicts live in the owning docs, not here.
+
 | Doc says | Repo does | Why |
 |---|---|---|
-| Toolchain/MSRV 1.85 | Toolchain 1.99.1, workspace `rust-version = 1.90` | Pinned compiler follows dependency MSRVs. rusqlite 0.41 needs 1.89 and text-splitter 0.33 needs 1.90, so 1.90.0 is the first passing MSRV checked by `just msrv` |
-| `resolver = "3"` | `resolver = "2"` | Block 1 chose resolver 2; edition 2024 crates still compile. Revisit when the workspace moves to resolver 3 |
-| `fastembed` optional in `crates/devdocs` | Optional in `devdocs-store` behind `embeddings` | The store owns vector tables and embedding storage; the binary feature forwards to it (target state; the binary flag is currently an empty no-op — see the `exact-tokens` / `embeddings` row below) |
-| `text-splitter` always enables `tiktoken-rs` | `tiktoken-rs` gated behind `exact-tokens` | Keeps the default build small; tokenizer counts are approximate unless the feature is on |
-| `exact-tokens` / `embeddings` forward to the store and ingest crates | Empty no-op flags on `crates/devdocs` | Keeps `just features` green before the store and ingest layers land; repoint when they do (docs/implementation/12) |
-| Structured logs via `tracing` and `tracing-subscriber` | `Reporter` writes plain lines to stderr under `--verbose` | The subscriber crate is not in the lock yet; add it when the ingest layer emits structured events |
-| Help groups subcommands under headings | Only `Global options` gets a heading | clap 4.6.7 `next_help_heading` applies to arguments, not subcommands |
-| `MIT OR Apache-2.0` with `LICENSE-MIT` and `LICENSE-APACHE` | `license = "MIT"`, one `LICENSE` file | The scaffold committed a single MIT license; the dual-license path was never set up. Decide at M9 (packaging): add the Apache text or update docs/02 |
-| docs/04 names a `just test-slow` recipe | No such recipe; `just test-doc` runs `cargo test` | No `#[ignore]` tests exist yet; the recipe lands with the first one |
-| docs/14 says `just eval` runs the default suite | `just eval` runs `--help` (smoke only) | The eval harness lands at M10 |
+| Structured logs via `tracing` and `tracing-subscriber` ([01](docs/implementation/01-tech-stack-decision.md)) | `Reporter` writes plain lines to stderr under `--verbose` | The subscriber crate is not in the lock yet; add it when the ingest layer emits structured events |
+| Help groups subcommands under headings ([08](docs/implementation/08-retrieval-interfaces.md)) | Only `Global options` gets a heading | clap 4.6.7 `next_help_heading` applies to arguments, not subcommands |
 
 ## License
 

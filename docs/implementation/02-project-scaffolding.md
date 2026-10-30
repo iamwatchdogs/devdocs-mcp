@@ -304,55 +304,23 @@ allow-git = []
 
 ## justfile
 
-```just
-default:
-    @just --list
+The committed `justfile` at the repository root is the source of truth for the recipes. Run `just` with no target to print the list. The recipes and their gates:
 
-fmt:
-    cargo fmt --all
-
-fmt-check:
-    cargo fmt --all --check
-
-lint:
-    cargo clippy --workspace --all-targets -- -D warnings
-
-lint-fix:
-    cargo clippy --workspace --all-targets --fix --allow-dirty
-
-test:
-    cargo nextest run --workspace --all-targets
-
-test-slow:
-    cargo test --workspace --all-targets   # doc tests and ignored tests
-
-cov:
-    cargo llvm-cov --workspace --lcov --output-path lcov.info
-
-deny:
-    cargo deny check
-
-audit:
-    cargo audit
-
-machete:
-    cargo machete
-
-semver:
-    cargo semver-checks --release
-
-mutants:
-    cargo mutants --workspace --exclude devdocs-testkit
-
-docs:
-    cargo doc --workspace --no-deps -D warnings
-
-bench:
-    cargo bench --workspace
-
-ci: fmt-check lint test deny
-```
-
+| Recipe | What it does |
+|---|---|
+| `fmt`, `fmt-check` | Format, or check without writing |
+| `lint`, `lint-fix` | Clippy, all targets, warnings denied |
+| `test` | nextest over the workspace. Missing `cargo-nextest` fails loudly |
+| `test-doc` | Doc tests only |
+| `test-slow` | The `#[ignore]`d tests (network, embedding model). Never in CI ([04](04-testing-strategy.md)) |
+| `docs` | `cargo doc` with warnings denied |
+| `deny`, `audit`, `machete` | Dependency checks. Missing tools fail loudly |
+| `coverage` | `cargo llvm-cov` to `lcov.info` |
+| `msrv` | `cargo +<MSRV> check` against the workspace `rust-version` toolchain |
+| `features` | Build `devdocs` in every feature state CI checks |
+| `eval` | Eval harness smoke run until the harness lands ([14](14-benchmark-eval.md)) |
+| `semver`, `mutants`, `bench` | Release-quality checks, run on demand |
+| `ci` | `fmt-check` + `lint` + `test` + `docs` + `deny` + `features` |
 ## lefthook.yml
 
 ```yaml

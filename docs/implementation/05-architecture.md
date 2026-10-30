@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-10-28T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -50,6 +50,8 @@ The corpus is the product. The adapters are swappable (research: architecture.md
 ```
 
 Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
+
+The `context-chunker` and `context-file` crates are internal helpers outside this graph. No devdocs crate depends on them and they depend on no devdocs crate ([02](02-project-scaffolding.md)).
 
 ## Data flow
 

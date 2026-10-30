@@ -404,12 +404,16 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// The user config file path: `$XDG_CONFIG_HOME/devdocs/config.toml` on
-/// Linux, `~/Library/Application Support/devdocs/config.toml` on macOS.
+/// The user config file path: `$XDG_CONFIG_HOME/devdocs/config.toml` when
+/// the variable is set, else the platform config dir
+/// (`~/Library/Application Support/devdocs/config.toml` on macOS).
 ///
 /// # Errors
 /// [`Error::ConfigInvalid`] when no home directory can be resolved.
 pub fn user_config_path() -> Result<PathBuf, Error> {
+    if let Some(dir) = env_string("XDG_CONFIG_HOME") {
+        return Ok(Path::new(&dir).join("devdocs").join("config.toml"));
+    }
     dirs::config_dir()
         .map(|dir| dir.join("devdocs").join("config.toml"))
         .ok_or_else(|| Error::ConfigInvalid {

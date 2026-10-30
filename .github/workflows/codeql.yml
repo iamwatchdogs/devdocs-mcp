@@ -3,7 +3,23 @@ name: codeql
 on:
   push:
     branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/**"
+      - ".github/actions/**"
   pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/**"
+      - ".github/actions/**"
   schedule:
     # Weekly: pick up refreshed query packs.
     - cron: "27 4 * * 1"

@@ -3,6 +3,11 @@ name: publish
 on:
   push:
     branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "release-plz.toml"
   workflow_dispatch:
 
 # Workspace crates are versioned together (release-plz single-version mode,

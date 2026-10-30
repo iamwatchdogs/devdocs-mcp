@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-10-30T12:19:11Z
+timestamp: 2026-10-30T13:11:16Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -16,14 +16,14 @@ Eight workflows:
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| `ci.yml` | push to `main`, pull requests, manual dispatch | fmt, lint, tests (3 OS), doc tests, msrv, features, deny, coverage, docs |
+| `ci.yml` | Rust workspace/build/config paths on push to `main` and pull requests; manual dispatch | fmt, lint, tests (3 OS), doc tests, msrv, features, deny, coverage, docs |
 | `release.yml` | push of `v*.*.*` tags | binary build matrix, build provenance attestation, GitHub release |
-| `publish.yml` | push to `main`, manual dispatch | release-plz release PR + crates.io publish + version tag |
+| `publish.yml` | workspace source/manifest or release-plz config paths on push to `main`; manual dispatch | release-plz release PR + crates.io publish + version tag |
 | `audit.yml` | daily + weekly schedules, manual dispatch | cargo-deny + cargo-audit daily, cargo-machete weekly |
-| `codeql.yml` | push to `main`, pull requests, weekly schedule, manual dispatch | CodeQL SAST over the Rust crates and the Actions definitions themselves |
-| `scorecard.yml` | push to `main`, branch-protection rule changes, weekly schedule, manual dispatch | OSSF Scorecard supply-chain posture, published to the OpenSSF API |
-| `dependency-review.yml` | pull requests | advisory/license diff gate on dependency changes |
-| `zizmor.yml` | push to `main`, pull requests, manual dispatch | zizmor static analysis of every workflow and composite action |
+| `codeql.yml` | Rust/Cargo or Actions paths on push/PR, weekly schedule, manual dispatch | CodeQL SAST over Rust and workflow definitions |
+| `scorecard.yml` | security/dependency configuration paths on push to `main`, branch-protection rule changes, weekly schedule, manual dispatch | OSSF Scorecard supply-chain posture, published to the OpenSSF API |
+| `dependency-review.yml` | Cargo manifest, lockfile, or deny policy paths on pull requests | advisory/license diff gate on dependency changes |
+| `zizmor.yml` | workflow or composite-action paths on push/PR; manual dispatch | zizmor static analysis of every workflow and composite action |
 
 Two invariants hold across all eight workflows:
 
@@ -151,7 +151,7 @@ Notes:
 
 ## Publish to crates.io
 
-release-plz (CLI 0.4.2; action v0.5.147, verified 2026-10-29) owns versioning and changelogs. Trusted publishing removes the long-lived crates.io API token. The GitHub App token handles GitHub operations and triggers the follow-on CI and binary release workflows. The workflow runs two jobs on every push to `main` (and on manual dispatch, which both jobs gate to `refs/heads/main` so a stray dispatch from a feature branch can never publish):
+release-plz (CLI 0.4.2; action v0.5.147, verified 2026-10-29) owns versioning and changelogs. Trusted publishing removes the long-lived crates.io API token. The GitHub App token handles GitHub operations and triggers the follow-on CI and binary release workflows. Documentation-only and GitHub workflow-only pushes do not start this workflow. For other pushes to `main` (and on manual dispatch, which both jobs gate to `refs/heads/main` so a stray dispatch from a feature branch can never publish), it runs two jobs:
 
 - `release-plz-pr` — runs `release-pr` (the command input is explicit: without it the action runs both commands), opening or updating the release PR with `contents: write` and `pull-requests: write`. It uses a GitHub App installation token so CI starts on the generated PR without manual approval. This job has its own concurrency group; the release job must not (see below).
 - `release-plz-release` — runs `release` after the release PR is merged: publishes the workspace crates and creates the version tag; no-ops when there is nothing to release. Permissions: `contents: write`, `pull-requests: read` (to detect the release PR), `id-token: write`. It uses a GitHub App installation token so the tag push starts `release.yml`. The `id-token: write` permission is separate; it lets release-plz exchange a GitHub OIDC token with crates.io. Both jobs fail with setup instructions when the App Client ID or private key is missing.

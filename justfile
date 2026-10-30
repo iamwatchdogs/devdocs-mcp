@@ -16,42 +16,37 @@ fmt:
 fmt-check:
     cargo fmt --all --check
 
-# Lint every target. Warnings are errors.
+# Lint every target. Warnings are errors. --locked: CI tests the committed
+# lockfile, not whatever cargo would resolve today.
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # Lint and apply machine-applicable fixes.
 lint-fix:
     cargo clippy --workspace --all-targets --fix --allow-dirty
 
-# Run tests with nextest. In CI, fall back to cargo test when nextest is missing.
+# Run tests with nextest. A missing tool fails loudly everywhere: CI installs
+# it explicitly, so a missing tool means the install step failed.
 test:
     @if command -v cargo-nextest >/dev/null 2>&1; then \
-        cargo nextest run --profile ci --workspace --all-targets --no-tests=pass; \
-    elif [ "${DEVDOCS_CI:-0}" = "1" ]; then \
-        echo "cargo-nextest missing; ci fallback: cargo test"; \
-        cargo test --workspace --all-targets; \
+        cargo nextest run --profile ci --workspace --all-targets --no-tests=pass --locked; \
     else \
         echo "cargo-nextest not installed: cargo binstall --no-confirm cargo-nextest"; \
         exit 1; \
     fi
 
-# Run unit and doc tests with cargo test (doc tests included).
+# Run doc tests. (`--all-targets` would exclude them; unit tests run in `test`.)
 test-doc:
-    cargo test --workspace --all-targets
+    cargo test --workspace --doc --locked
 
 # Build API docs. Warnings are errors.
 docs:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 
 # License, advisory, ban, and source checks.
 deny:
     @if command -v cargo-deny >/dev/null 2>&1; then \
         cargo deny check; \
-    elif [ "${DEVDOCS_CI:-0}" = "1" ]; then \
-        echo "cargo-deny missing; ci fallback: cargo audit"; \
-        if command -v cargo-audit >/dev/null 2>&1; then cargo audit; \
-        else echo "cargo-audit also missing; ci fallback: skipping dependency audit"; fi; \
     else \
         echo "cargo-deny not installed: cargo binstall --no-confirm cargo-deny"; \
         exit 1; \
@@ -78,7 +73,7 @@ machete:
 # Line coverage (lcov).
 coverage:
     @if command -v cargo-llvm-cov >/dev/null 2>&1; then \
-        cargo llvm-cov --workspace --lcov --output-path lcov.info; \
+        cargo llvm-cov --workspace --lcov --locked --output-path lcov.info; \
     else \
         echo "cargo-llvm-cov not installed: cargo binstall --no-confirm cargo-llvm-cov"; \
         exit 1; \
@@ -95,9 +90,9 @@ msrv:
 
 # Compile the binary in every feature state CI checks.
 features:
-    cargo build -p devdocs --no-default-features
-    cargo build -p devdocs --no-default-features --features exact-tokens
-    cargo build -p devdocs --no-default-features --features embeddings
+    cargo build --locked -p devdocs --no-default-features
+    cargo build --locked -p devdocs --no-default-features --features exact-tokens
+    cargo build --locked -p devdocs --no-default-features --features embeddings
 
 # Harmless eval harness smoke run (runner lands later).
 eval:
@@ -129,7 +124,8 @@ bench:
 ci:
     @just fmt-check
     @just lint
-    @DEVDOCS_CI=1 just test
+    @just test
+    @just test-doc
     @just docs
-    @DEVDOCS_CI=1 just deny
+    @just deny
     @just features

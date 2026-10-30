@@ -3,7 +3,7 @@ type: decision record
 title: Tech Stack Decision
 description: The technology decision for devdocs, the score matrix behind it, the rejected alternatives, and the conditions that would reverse it. All versions verified 2026-10-28.
 tags: [devdocs, tech-stack, rust, decision]
-timestamp: 2026-10-28T00:00:00Z
+timestamp: 2026-10-29T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---

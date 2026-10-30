@@ -5,7 +5,12 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write
+  contents: read
+
+# Two near-simultaneous tag pushes must not run the 7-leg matrix twice.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -13,8 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-apple-darwin, os: macos-latest, zig: false, smoke: false }
-          - { target: aarch64-apple-darwin, os: macos-latest, zig: false, smoke: true }
+          - { target: x86_64-apple-darwin, os: macos-15, zig: false, smoke: false }
+          - { target: aarch64-apple-darwin, os: macos-15, zig: false, smoke: true }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, zig: false, smoke: true }
           # Windows ARM64 is out of scope (docs 01); do not add a Windows ARM64 target.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, zig: true, smoke: true }
@@ -22,24 +27,55 @@ jobs:
           - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true, smoke: true }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true, smoke: false }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # Dependency build scripts run in this job; do not leave the job
+          # token in .git/config for them to read.
+          persist-credentials: false
+      - name: Verify tag is on main
+        shell: bash
+        # Branch protection gates main pushes, not tag pushes; without this
+        # check any manually pushed v*.*.* tag would build, attest, and
+        # publish binaries from a commit that never passed ci.yml.
+        run: git merge-base --is-ancestor HEAD origin/main
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Install zig and cargo-zigbuild
+      # The default cache key excludes matrix values, so the four Linux legs
+      # (shared job id `build`) would overwrite one entry without this key.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+      - name: Install zig (PyPI)
         if: matrix.zig
         shell: bash
         run: |
-          python3 -m pip install --user ziglang==0.17.0 cargo-zigbuild==0.24.0
+          # ziglang ships on PyPI only; no checksum-verified distribution
+          # exists, so the pin is version-only. cargo-zigbuild itself comes
+          # from taiki-e/install-action below, which embeds per-release
+          # checksums.
+          python3 -m pip install --user ziglang==0.17.0
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Install cargo-zigbuild
+        if: matrix.zig
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
       - name: Build (zigbuild)
         if: matrix.zig
+        shell: bash
         run: cargo zigbuild -p devdocs --release --locked --target ${{ matrix.target }}
       - name: Build (native)
         if: ${{ !matrix.zig }}
+        shell: bash
         run: cargo build -p devdocs --release --locked --target ${{ matrix.target }}
       - name: Smoke test
         if: matrix.smoke
@@ -59,25 +95,43 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/devdocs" "dist/${out}/"
           fi
+          # sha256sum comes with Git Bash on Windows runners and coreutils on
+          # Linux; macOS ships only shasum (Perl), not GNU coreutils.
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            (cd dist && 7z a "${out}.zip" "${out}" >/dev/null)
-            (cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum "${out}.zip" > "${out}.zip.sha256"; else shasum -a 256 "${out}.zip" > "${out}.zip.sha256"; fi)
+            (cd dist && 7z a "${out}.zip" "${out}" >/dev/null && sha256sum "${out}.zip" > "${out}.zip.sha256")
           else
             (cd dist && tar -czf "${out}.tar.gz" "${out}")
-            (cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"; else shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"; fi)
+            if [[ "${RUNNER_OS}" == "macOS" ]]; then
+              (cd dist && shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256")
+            else
+              (cd dist && sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256")
+            fi
           fi
-      - uses: actions/upload-artifact@v4
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
-          path: dist/*
+          # Only the archives and their checksums; the unpacked staging
+          # directories under dist/ are not consumed by any step.
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
           if-no-files-found: error
 
   publish-github:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      # No checkout: this job only consumes downloaded artifacts, and
+      # softprops/action-gh-release resolves the tag from the event context.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           merge-multiple: true
           path: dist
@@ -87,7 +141,7 @@ jobs:
           archive="dist/devdocs-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
           tar -xzf "${archive}" -C "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/devdocs-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu/devdocs" --version
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/*.tar.gz

@@ -90,7 +90,7 @@ Everything beyond the version banner lands in later milestones (docs/implementat
 | `just bench` | `cargo bench --workspace` |
 | `just ci` | `fmt-check` + `lint` + `test` + `docs` + `deny` + `features` |
 
-Optional recipes print an install hint and exit non-zero when the external tool is missing. Inside `just ci`, `test` falls back to `cargo test` and `deny` falls back to `cargo audit` (or skips with a message) so local CI stays green without every tool.
+Optional recipes print an install hint and exit non-zero when the external tool is missing — locally and inside `just ci` alike. A missing tool is never silently downgraded: CI installs its tools explicitly, so a missing tool there means the install step failed.
 
 ## Scaffold deviations
 
@@ -104,7 +104,6 @@ Optional recipes print an install hint and exit non-zero when the external tool 
 | Structured logs via `tracing` and `tracing-subscriber` | `Reporter` writes plain lines to stderr under `--verbose` | The subscriber crate is not in the lock yet; add it when the ingest layer emits structured events |
 | Help groups subcommands under headings | Only `Global options` gets a heading | clap 4.6.7 `next_help_heading` applies to arguments, not subcommands |
 | `MIT OR Apache-2.0` with `LICENSE-MIT` and `LICENSE-APACHE` | `license = "MIT"`, one `LICENSE` file | The scaffold committed a single MIT license; the dual-license path was never set up. Decide at M9 (packaging): add the Apache text or update docs/02 |
-| docs/11 release matrix ships `aarch64-pc-windows-msvc` | `release.yml` excludes it | docs/01 rules Windows ARM64 out of scope for Phase 1; the release matrix follows docs/01. docs/11 needs the fix |
 | docs/04 names a `just test-slow` recipe | No such recipe; `just test-doc` runs `cargo test` | No `#[ignore]` tests exist yet; the recipe lands with the first one |
 | docs/14 says `just eval` runs the default suite | `just eval` runs `--help` (smoke only) | The eval harness lands at M10 |
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", ":semanticCommits"],
-  "managers": ["cargo", "github-actions"],
+  "enabledManagers": ["cargo", "github-actions"],
   "lockFileMaintenance": { "enabled": true },
   "cargo": {
     "pinDigests": false
@@ -23,9 +23,22 @@
       "schedule": ["before 6am on monday"]
     },
     {
-      "description": "GitHub Actions digest pinning",
+      "description": "GitHub Actions digest pinning; action majors are grouped deliberately (cheap to revert, low risk)",
       "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["patch", "minor", "major"],
       "groupName": "ci: actions"
+    },
+    {
+      "description": "The Rust toolchain is hand-maintained (rust-toolchain.toml is the source of truth); Renovate must not bump the dtolnay/rust-toolchain toolchain input, which would desynchronize release/publish from CI",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["rust"],
+      "enabled": false
+    },
+    {
+      "description": "Delay cargo updates (majors and lockfile-maintenance included — a fresh crate is the least-reviewed entry in a lockfile) to shrink the freshly-published-crate supply-chain window",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["major", "minor", "patch", "lockFileMaintenance"],
+      "minimumReleaseAge": "7 days"
     }
   ],
   "timezone": "UTC",

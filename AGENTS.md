@@ -17,7 +17,7 @@ This project is a local, read-only documentation MCP server for coding agents. I
 - `just test` runs nextest with `.config/nextest.toml` (`retries = 0`, `fail-fast = false`): a failing test surfaces immediately and is never retried.
 - Use `bash` as your primary terminal and `rg` instead of plain `grep`.
 - Optional cargo tools (`nextest`, `cargo-deny`, `cargo-audit`, `cargo-machete`, `cargo-llvm-cov`, `cargo-mutants`, `cargo-semver-checks`) are installed via `cargo binstall`.
-- `just test` and `just deny` hard-fail locally when nextest/cargo-deny are missing (with a binstall hint); under `DEVDOCS_CI=1` — set in CI and by `just ci` — they fall back to `cargo test` / `cargo audit`. When debugging a CI-only failure, this fallback is why.
+- `just test` and `just deny` hard-fail when nextest/cargo-deny are missing (with a binstall hint). CI installs the tools explicitly, so a missing tool there means the install step failed and fails the job loudly; there is no fallback.
 - The dev toolchain is pinned to 1.99.1, but code must compile on MSRV 1.90 (`just msrv`): no std APIs newer than 1.90.
 
 ### Commands

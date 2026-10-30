@@ -111,8 +111,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+license = "MIT"
 repository = "https://github.com/OWNER/devdocs-mcp"
 
 [workspace.dependencies]
@@ -260,7 +260,7 @@ channel = "1.99.1"
 components = ["rustfmt", "clippy"]
 ```
 
-This file pins the developer and CI toolchain. The workspace MSRV stays at 1.85 in `rust-version`. See [03](03-code-quality-toolchain.md) for the MSRV policy.
+This file pins the developer and CI toolchain. The workspace MSRV stays at 1.90 in `rust-version`. Dependency MSRVs forced the floor up from the planned 1.85: rusqlite 0.41 needs 1.89 and text-splitter 0.33 needs 1.90, so 1.90.0 is the first MSRV that `just msrv` passes. See [03](03-code-quality-toolchain.md) for the MSRV policy.
 
 ## deny.toml
 

@@ -3,7 +3,7 @@ type: guide
 title: Dependency Audit
 description: The dependency policy, the audit tool workflow, the Renovate configuration, the new-dependency checklist, and the verified crate-selection table with alternates.
 tags: [devdocs, dependencies, cargo-deny, renovate, supply-chain]
-timestamp: 2026-10-28T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -15,7 +15,7 @@ derives-from: [docs/research]
 1. Small dependency graph. The tool is a local, read-only binary. Every dependency is attack surface and compile time.
 2. Deny by default: unknown registries and git sources fail `cargo deny check` (see [02](02-project-scaffolding.md)).
 3. Cargo.lock is committed and pinned. Renovate updates it through reviewable PRs.
-4. MSRV 1.85 stays intact. A dependency that forces a higher MSRV needs an explicit decision (see [03](03-code-quality-toolchain.md)).
+4. MSRV 1.90 stays intact. A dependency that forces a higher MSRV needs an explicit decision (see [03](03-code-quality-toolchain.md)).
 
 ## Audit workflow
 
@@ -78,7 +78,7 @@ Every new direct dependency answers these ten questions in the PR description. O
 1. Is there no reasonable way to write this ourselves in under 200 lines?
 2. Is the license on the `deny.toml` allow list?
 3. Is the crate maintained (release or commit inside the last 6 months)?
-4. Does the crate have an MSRV at or below 1.85?
+4. Does the crate have an MSRV at or below 1.90?
 5. Does it compile with `--no-default-features` for our feature set?
 6. How many transitive dependencies does it add? (`cargo tree -i <crate>`, plus a before-and-after `cargo tree | wc -l` count in the PR.)
 7. Is it on the alternates table below, or is a better-known alternative documented and rejected?
@@ -119,5 +119,5 @@ Rejected on evidence: `sitemap` crate (unmaintained since 2020. Sitemap parsing 
 
 ## MSRV and feature gates in CI
 
-- The MSRV job runs `cargo check --workspace --all-targets --locked` on toolchain 1.85. Renovate PRs run it too, because a fresh lock file can pull a dependency that needs a newer toolchain.
+- The MSRV job runs `cargo check --workspace --all-targets --locked` on toolchain 1.90. Renovate PRs run it too, because a fresh lock file can pull a dependency that needs a newer toolchain.
 - `--no-default-features` job state: one CI job builds the binary with no features, one with `exact-tokens`, one with `embeddings`. All three must compile ([02](02-project-scaffolding.md)).

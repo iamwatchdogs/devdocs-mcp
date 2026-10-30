@@ -3,7 +3,7 @@ type: decision record
 title: Tech Stack Decision
 description: The technology decision for devdocs, the score matrix behind it, the rejected alternatives, and the conditions that would reverse it. All versions verified 2026-10-28.
 tags: [devdocs, tech-stack, rust, decision]
-timestamp: 2026-10-29T00:00:00Z
+timestamp: 2026-10-31T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -25,7 +25,7 @@ All versions verified 2026-10-28 against crates.io, docs.rs, and the release pag
 | Component | Choice | Version | Reason |
 |---|---|---|---|
 | Language | Rust, edition 2024 | 1.99.1 | One binary, no runtime install, memory safety, smallest risk profile for this domain |
-| Async runtime | tokio | 1.54.1 | De-facto standard. MSRV 1.85 matches the workspace floor |
+| Async runtime | tokio | 1.54.1 | De-facto standard. MSRV 1.90 matches the workspace floor |
 | HTTP client | reqwest | 0.13.5 | rustls default TLS. `dns_resolver` hook stays available for SSRF pinning |
 | Storage | rusqlite, `bundled` feature | 0.41.0 | Bundles SQLite 3.54.0 with FTS5 compiled in. No system SQLite dependency |
 | CLI parser | clap, `derive` feature | 4.6.7 | De-facto standard for Rust CLIs |

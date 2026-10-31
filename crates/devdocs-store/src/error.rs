@@ -62,6 +62,14 @@ pub enum StoreError {
         status: LicenseStatus,
     },
 
+    /// A chunk in a publish batch carries an inconsistent shape.
+    #[error("invalid chunk: {0}")]
+    InvalidChunk(String),
+
+    /// The fetched-at instant could not be formatted as RFC 3339.
+    #[error("timestamp formatting failed: {0}")]
+    Timestamp(#[from] time::error::Format),
+
     /// The store mutex was poisoned by a panic in an earlier operation.
     #[error("store mutex poisoned by an earlier panic")]
     LockPoisoned,

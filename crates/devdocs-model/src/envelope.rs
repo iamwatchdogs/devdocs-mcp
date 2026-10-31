@@ -8,6 +8,22 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+/// The version status of a served result
+/// (docs/implementation/08 §CLI contract: `verified`, `alias`, `fallback`,
+/// `absent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionStatus {
+    /// The content hash was re-derived and matched.
+    Verified,
+    /// The version served through a documented alias.
+    Alias,
+    /// The version served through a fallback rule.
+    Fallback,
+    /// The library is absent from the index.
+    Absent,
+}
+
 /// One search/open/symbol result in the docs/08 result envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResultItem {
@@ -30,8 +46,8 @@ pub struct ResultItem {
     pub requested_version: Option<String>,
     /// The version that actually served the query.
     pub served_version: String,
-    /// The version status: `verified`, `alias`, `fallback`, or `absent`.
-    pub version_status: String,
+    /// The version status of the served result.
+    pub version_status: VersionStatus,
     /// The hex sha256 of the section content.
     pub content_hash: String,
     /// The license status of the source.

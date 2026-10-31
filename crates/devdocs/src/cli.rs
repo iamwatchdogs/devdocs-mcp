@@ -292,12 +292,21 @@ fn print_line<T: Serialize>(value: &T) -> Result<(), Error> {
     write_stdout_line(&line)
 }
 
-/// Write one line to stdout without panicking. A closed pipe (the reader
-/// went away, for example `| head`) is a normal end for a CLI; other
-/// failures map to the upstream code under the same decision as above.
-fn write_stdout_line(line: &str) -> Result<(), Error> {
+/// Write raw text to stdout without panicking. A closed pipe (the reader
+/// went away, for example `| head`) is a normal end for a CLI and maps to
+/// success; any other write failure maps to the upstream code, the same
+/// decision the envelope serialization carries. The envelope lines, the
+/// help text, and the version text all go through here, so the policy
+/// lives once.
+///
+/// # Errors
+/// [`Error::Upstream`] when stdout fails for a reason other than a closed
+/// pipe.
+pub fn write_stdout_text(text: &str) -> Result<(), Error> {
     let mut stdout = std::io::stdout().lock();
-    let result = writeln!(stdout, "{line}").and_then(|()| stdout.flush());
+    let result = stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush());
     match result {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
@@ -306,6 +315,11 @@ fn write_stdout_line(line: &str) -> Result<(), Error> {
             detail: format!("cannot write to stdout: {e}"),
         }),
     }
+}
+
+/// Write one envelope line to stdout, newline included.
+fn write_stdout_line(line: &str) -> Result<(), Error> {
+    write_stdout_text(&format!("{line}\n"))
 }
 
 /// Build the flag layer from the parsed global flags.
@@ -384,14 +398,13 @@ fn config_init(path: &std::path::Path, force: bool) -> Result<(), Error> {
 fn config_validate(path: Option<&std::path::Path>) -> Result<(), Error> {
     if let Some(path) = path {
         Config::validate_file(path)?;
-        println!(
-            "{}",
-            serde_json::json!({"valid": true, "path": path.display().to_string()})
-        );
+        write_stdout_line(
+            &serde_json::json!({"valid": true, "path": path.display().to_string()}).to_string(),
+        )?;
     } else {
         // No path given: the merged load validates every layer in turn.
         Config::load(&Overrides::default())?;
-        println!("{}", serde_json::json!({"valid": true}));
+        write_stdout_line(&serde_json::json!({"valid": true}).to_string())?;
     }
     Ok(())
 }

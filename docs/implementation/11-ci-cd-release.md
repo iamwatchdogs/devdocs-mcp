@@ -33,7 +33,7 @@ Two invariants hold across all eight workflows:
 - `actions/attest-build-provenance` v4.2.2, `actions/attest` ecosystem for provenance
 - `codecov/codecov-action` v7.1.1 — release creation uses the runner-preinstalled `gh` CLI, not `softprops/action-gh-release`
 - `dtolnay/rust-toolchain` v1, `Swatinem/rust-cache` v2.9.3 (CI only; release builds deliberately run cacheless), `taiki-e/install-action` v2.88.0, `EmbarkStudios/cargo-deny-action` v2.1.1
-- `MarcoIeni/release-plz-action` v0.5.147
+- `release-plz/action` v0.5.147 (org renamed from `MarcoIeni`)
 - `github/codeql-action` v4.39.1, `ossf/scorecard-action` v2.5.0, `actions/dependency-review-action` v5.0.0, `zizmorcore/zizmor-action` v0.8.0
 
 - **Token hygiene.** Every `checkout` runs with `persist-credentials: false` — the job token is never left in the runner's git config where dependency build scripts (or a compromised step) could read it. The one exception-free rule: no step in any workflow pushes via git credentials (release-plz authenticates through its `GITHUB_TOKEN` env; release upload and attestations go through APIs).

@@ -154,6 +154,7 @@ The scan is in-process Rust over the blobs (hamming distance on bytes). sqlite-v
   2. Every migration is idempotent under failure because it runs in one transaction. SQLite DDL is transactional.
   3. `devdocs db migrate` runs at CLI start and at MCP server start. It is fast (one read of `user_version`) and safe to run concurrently thanks to the write lock.
   4. Destructive migrations (drops) require a `--force` flag on `devdocs db migrate` for that migration only, recorded in the migration header comment.
+  5. Migration tests cover the up direction on a temp file, the no-op re-run on an up-to-date database, and rollback of a failed migration inside its transaction. There is no down direction to test: applied migrations never change (rule 1), so a failure rolls back to the previous version's schema and nothing else exists to roll back to.
 
 Runner signature in `devdocs-store`:
 

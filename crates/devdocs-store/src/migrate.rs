@@ -1,10 +1,7 @@
 //! Migration runner.
 //!
 //! Contract: docs/implementation/06 §Migrations. Applied migrations never
-//! change; a schema change is a new `NNNN_description.sql` file. The runner
-//! reads `PRAGMA user_version` and applies pending files in order inside one
-//! transaction each, then sets `user_version` inside that transaction, so a
-//! failure mid-migration leaves `user_version` unchanged.
+//! change; a schema change is a new `NNNN_description.sql` file.
 
 use rusqlite::Connection;
 use rusqlite::TransactionBehavior;

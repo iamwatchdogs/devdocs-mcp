@@ -1,9 +1,6 @@
 //! Filesystem checks run at `Store::open`.
 //!
-//! Contract: docs/implementation/09 §Local storage controls — the DB file is
-//! 0600, the directory 0700, symlinked paths into another user's territory
-//! are refused via an ownership check on the resolved path, and network
-//! filesystems are refused because SQLite locking over them is unreliable.
+//! Contract: docs/implementation/09 §Local storage controls.
 
 use std::fs;
 use std::path::Path;

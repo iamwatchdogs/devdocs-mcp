@@ -1,10 +1,9 @@
 //! The store handle: one SQLite connection behind a mutex.
 //!
-//! Contract: docs/implementation/06 §Connection pragmas and
-//! docs/implementation/09 §Local storage controls. rusqlite lives only
-//! inside this crate; async callers reach it through
-//! `tokio::task::spawn_blocking` and release the guard before every await
-//! (docs/implementation/05 §Concurrency model).
+//! Contracts: docs/implementation/06 §Connection pragmas,
+//! docs/implementation/09 §Local storage controls, and
+//! docs/implementation/05 §Concurrency model (rusqlite lives only inside
+//! this crate).
 
 use std::path::Path;
 use std::sync::Mutex;

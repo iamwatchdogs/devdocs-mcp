@@ -1,9 +1,10 @@
 //! Canonical-body hashing.
 //!
-//! Contract: docs/implementation/06 §Hashing policy — `chunks.content_hash`
-//! is SHA-256 of the canonical chunk body (the text without the contextual
-//! header, UTF-8, LF line endings). blake3 serves as the in-memory prefilter
-//! for the ingest hot path and never leaves the process.
+//! Contract: docs/implementation/06 §Hashing policy. The caller hashes the
+//! body WITHOUT the contextual header — stripping the header is the ingest
+//! layer's job (docs/implementation/07); these helpers normalize line
+//! endings to LF and hash UTF-8 bytes. blake3 is the in-memory prefilter
+//! and never leaves the process.
 
 use sha2::Sha256;
 
@@ -20,6 +21,9 @@ pub fn canonical_body(body: &str) -> std::borrow::Cow<'_, str> {
 
 /// SHA-256 of the canonical body — the value stored in
 /// `chunks.content_hash`.
+///
+/// `body` is the chunk body without the contextual header; the header is
+/// prepended later, when the stored `text` is assembled.
 #[must_use]
 pub fn content_hash(body: &str) -> [u8; 32] {
     use sha2::Digest;

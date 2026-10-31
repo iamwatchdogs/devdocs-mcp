@@ -1,11 +1,7 @@
 //! Atomic generation publish.
 //!
-//! Contract: docs/implementation/07 §Atomic publish — an ingest run writes
-//! nothing visible until it succeeds; inside one transaction the old chunk
-//! set is removed, the new chunks and symbols are inserted (the FTS
-//! triggers fire), and the source row flips to `active`. On any error the
-//! transaction rolls back and the previous generation stays active and
-//! queryable.
+//! Contract: docs/implementation/07 §Atomic publish. On any error the
+//! transaction rolls back and the previous generation stays queryable.
 
 use rusqlite::TransactionBehavior;
 use rusqlite::params;
@@ -26,7 +22,9 @@ pub struct NewChunk {
     pub text: String,
     /// Token count of `text`.
     pub token_count: u32,
-    /// SHA-256 of the canonical body (see the hashing helpers).
+    /// SHA-256 of the canonical body without the contextual header
+    /// (docs/implementation/06 §Hashing policy); the caller strips the
+    /// header before hashing.
     pub content_hash: [u8; 32],
     /// Position of the chunk inside its source, zero-based.
     pub ordinal: u32,

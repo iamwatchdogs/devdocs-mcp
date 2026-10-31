@@ -442,18 +442,18 @@ fn parse_section<T: DeserializeOwned>(name: &str, value: toml::Value) -> Result<
 }
 
 /// A config error inside a known section. The leaf field comes from serde's
-/// "unknown field" message, else from the "in `x`" tail that wrong-type and
-/// missing-field messages carry; without either the path stays at the
-/// section and the message carries the rest.
+/// "unknown field" message, else from the final "in `x`" tail that
+/// wrong-type and missing-field messages carry. The final tail wins, so
+/// backticks inside a value cannot masquerade as the field name. Without
+/// either the path stays at the section and the message carries the rest.
 fn leaf_error(section: &str, message: String) -> Error {
     let unknown = message
         .split("unknown field `")
         .nth(1)
         .and_then(|rest| rest.split('`').next());
     let typed = message
-        .split("in `")
-        .nth(1)
-        .and_then(|rest| rest.split('`').next());
+        .rsplit_once("in `")
+        .and_then(|(_, rest)| rest.split('`').next());
     let key_path = unknown
         .or(typed)
         .map_or_else(|| section.to_owned(), |f| format!("{section}.{f}"));
@@ -487,20 +487,30 @@ fn expand_home(path: &str) -> PathBuf {
 
 /// The user config file path: `$XDG_CONFIG_HOME/devdocs/config.toml` when
 /// the variable is set, else the platform config dir
-/// (`~/Library/Application Support/devdocs/config.toml` on macOS).
+/// (`~/Library/Application Support/devdocs/config.toml` on macOS). `None`
+/// means no home directory could be resolved.
 ///
 /// # Errors
-/// [`Error::ConfigInvalid`] when no home directory can be resolved.
-pub fn user_config_path() -> Result<PathBuf, Error> {
+/// [`Error::ConfigInvalid`] when a set `XDG_CONFIG_HOME` is not valid
+/// UTF-8.
+pub fn user_config_path() -> Result<Option<PathBuf>, Error> {
     if let Some(dir) = env_string("XDG_CONFIG_HOME")? {
-        return Ok(Path::new(&dir).join("devdocs").join("config.toml"));
+        return Ok(Some(Path::new(&dir).join("devdocs").join("config.toml")));
     }
-    dirs::config_dir()
-        .map(|dir| dir.join("devdocs").join("config.toml"))
-        .ok_or_else(|| Error::ConfigInvalid {
-            key_path: "$HOME".to_owned(),
-            reason: "cannot resolve a user config directory; is HOME set?".to_owned(),
-        })
+    Ok(dirs::config_dir().map(|dir| dir.join("devdocs").join("config.toml")))
+}
+
+/// The user config file path when a home directory exists. This is the
+/// form every command that must write or print the path needs.
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when a set `XDG_CONFIG_HOME` is not valid
+/// UTF-8 or when no home directory can be resolved.
+pub fn require_user_config_path() -> Result<PathBuf, Error> {
+    user_config_path()?.ok_or_else(|| Error::ConfigInvalid {
+        key_path: "$HOME".to_owned(),
+        reason: "cannot resolve a user config directory; is HOME set?".to_owned(),
+    })
 }
 
 /// The data root: `$DEVDOCS_HOME` when set, else `$XDG_DATA_HOME/devdocs`
@@ -540,22 +550,30 @@ impl Config {
     pub fn load(over: &Overrides) -> Result<Self, Error> {
         let mut merged = PartialConfig::default();
 
-        if let Ok(user) = user_config_path()
+        if let Some(user) = user_config_path()?
             && user.is_file()
         {
             merged.merge(read_layer(&user)?);
         }
 
         match &over.config_path {
-            // An explicit --config file is required to exist; silently
-            // skipping it would run on defaults without telling the user.
-            Some(path) if !path.is_file() => {
-                return Err(Error::ConfigInvalid {
-                    key_path: path.display().to_string(),
-                    reason: "the --config file does not exist".to_owned(),
-                });
+            // An explicit --config file is required to be a readable file;
+            // silently skipping it would run on defaults without telling
+            // the user.
+            Some(path) => {
+                if !path.is_file() {
+                    let reason = if path.exists() {
+                        "the --config path is not a regular file"
+                    } else {
+                        "the --config file does not exist"
+                    };
+                    return Err(Error::ConfigInvalid {
+                        key_path: path.display().to_string(),
+                        reason: reason.to_owned(),
+                    });
+                }
+                merged.merge(read_layer(path)?);
             }
-            Some(path) => merged.merge(read_layer(path)?),
             // A discovered devdocs.toml stays optional.
             None => {
                 if let Some(path) =
@@ -655,8 +673,9 @@ impl Config {
             .config_path
             .clone()
             .or_else(|| find_project_config(&std::env::current_dir().unwrap_or_default()));
+        let user = require_user_config_path()?;
         Ok(Paths {
-            user_config: user_config_path()?,
+            user_config: user,
             project_config: project,
             data_root: data_root()?,
             index_db: config.index.path,
@@ -882,8 +901,40 @@ refresh_days = 2
     /// The user config path sits under the platform config dir.
     #[test]
     fn user_config_path_resolves() {
-        let path = user_config_path().unwrap();
+        let path = user_config_path().unwrap().expect("a home exists");
         assert!(path.ends_with("devdocs/config.toml"));
+    }
+
+    /// A value that itself contains backticks cannot masquerade as the
+    /// failing field: the final "in `key`" tail wins.
+    #[test]
+    fn backtick_value_does_not_break_the_leaf_key() {
+        let error = PartialConfig::parse("[fetch]\nconcurrency = \"four in `x`\"\n").unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "fetch.concurrency");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    /// An existing non-file `--config` path reports a different reason than
+    /// a missing one.
+    #[test]
+    fn non_file_explicit_config_reports_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let over = Overrides {
+            config_path: Some(dir.path().to_path_buf()),
+            ..Overrides::default()
+        };
+        let error = Config::load(&over).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, reason } => {
+                assert_eq!(key_path, dir.path().display().to_string());
+                assert!(reason.contains("not a regular file"), "reason: {reason}");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     /// The env-var constants follow the `DEVDOCS_*` prefix rule.

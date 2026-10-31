@@ -343,7 +343,7 @@ fn run_config(cli: &Cli, op: &ConfigOp) -> Result<(), Error> {
             let paths = Config::paths(&overrides(cli))?;
             print_line(&paths)
         }
-        ConfigOp::Init { force } => config_init(&config::user_config_path()?, *force),
+        ConfigOp::Init { force } => config_init(&config::require_user_config_path()?, *force),
         ConfigOp::Validate { path } => config_validate(path.as_deref()),
     }
 }

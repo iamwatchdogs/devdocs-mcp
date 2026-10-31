@@ -234,6 +234,8 @@ fn config_init_refuses_overwrite_without_force() {
     assert!(written.contains("[fetch]"));
     assert!(written.contains("[search]"));
 
+    // The refusal comes from the exclusive create, so it holds even when
+    // the file appears after the command starts.
     let (code, stdout, stderr) = output(env.cmd(), &["config", "init"]);
     assert_eq!(code, 1);
     assert_eq!(stdout, "");
@@ -277,6 +279,57 @@ fn config_validate_names_the_source_entry_path() {
     let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
     assert_eq!(error["error"], "CONFIG_INVALID");
     assert_eq!(error["key_path"], "sources.nextjs.urll");
+}
+
+/// `config validate` rejects a malformed source URL and names the entry.
+#[test]
+fn config_validate_rejects_a_bad_source_url() {
+    let env = Env::new();
+    let bad = env.root.join("urls.toml");
+    std::fs::write(&bad, "[sources.nextjs]\nurl = \"not a url\"\n").expect("write bad config");
+    let bad = bad.display().to_string();
+    let (code, _stdout, stderr) = output(env.cmd(), &["config", "validate", &bad]);
+    assert_eq!(code, 1);
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "CONFIG_INVALID");
+    assert_eq!(error["key_path"], "sources.nextjs.url");
+}
+
+/// A missing explicit `--config` file fails instead of silently running on
+/// defaults; a discovered devdocs.toml stays optional.
+#[test]
+fn missing_explicit_config_fails() {
+    let env = Env::new();
+    let missing = env.root.join("missing.toml");
+    let missing = missing.display().to_string();
+    let (code, stdout, stderr) = output(env.cmd(), &["config", "show", "--config", &missing]);
+    assert_eq!(code, 1);
+    assert_eq!(stdout, "");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "CONFIG_INVALID");
+    assert_eq!(error["key_path"], missing);
+}
+
+/// `mcp --transport` accepts only the documented `stdio` value.
+#[test]
+fn mcp_transport_rejects_unknown_values() {
+    let env = Env::new();
+    let (code, stdout, stderr) = output(env.cmd(), &["mcp", "--transport", "http"]);
+    assert_eq!(code, 1);
+    assert_eq!(stdout, "");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "USAGE");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stdio")
+    );
+
+    let (code, stdout, stderr) = output(env.cmd(), &["mcp"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let value: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(value["results"], serde_json::json!([]));
 }
 
 /// `config validate` passes a well-formed file and exits 0.

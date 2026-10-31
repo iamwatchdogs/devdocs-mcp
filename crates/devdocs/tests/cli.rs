@@ -249,14 +249,21 @@ fn config_validate_reports_the_failing_key_path() {
     assert_eq!(stdout, "");
     let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
     assert_eq!(error["error"], "CONFIG_INVALID");
-    assert!(
-        error["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("conkurrency"),
-        "detail names the key: {:?}",
-        error["detail"]
-    );
+    assert_eq!(error["key_path"], "fetch.conkurrency");
+}
+
+/// `config validate` names the entry and the key for a bad source key.
+#[test]
+fn config_validate_names_the_source_entry_path() {
+    let env = Env::new();
+    let bad = env.root.join("sources.toml");
+    std::fs::write(&bad, "[sources.nextjs]\nurll = \"https://x\"\n").expect("write bad config");
+    let bad = bad.display().to_string();
+    let (code, _stdout, stderr) = output(env.cmd(), &["config", "validate", &bad]);
+    assert_eq!(code, 1);
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "CONFIG_INVALID");
+    assert_eq!(error["key_path"], "sources.nextjs.urll");
 }
 
 /// `config validate` passes a well-formed file and exits 0.

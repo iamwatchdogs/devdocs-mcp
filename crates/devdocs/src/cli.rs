@@ -276,6 +276,10 @@ fn print_placeholder() -> Result<(), Error> {
 
 /// Print one JSON value as a single line on stdout.
 fn print_line<T: Serialize>(value: &T) -> Result<(), Error> {
+    // A serialization failure of our own plain structs is a local bug, not
+    // a fetch/network failure. docs/05 reserves exit 3 for fetch, network,
+    // git, or parse failures; a local serialization bug is the closest
+    // parse failure until docs/05 gains an internal-error kind.
     let line = serde_json::to_string(value).map_err(|e| Error::Upstream {
         code: devdocs_model::UpstreamCode::UpstreamError,
         detail: format!("cannot serialize the output: {e}"),
@@ -313,6 +317,8 @@ fn run_config(cli: &Cli, op: &ConfigOp) -> Result<(), Error> {
 /// Write the commented user config file; refuse to overwrite without force.
 fn config_init(path: &std::path::Path, force: bool) -> Result<(), Error> {
     if path.exists() && !force {
+        // docs/08 defines no code for "file exists". USAGE (exit 1) is the
+        // least-wrong documented code, and the detail names --force.
         return Err(Error::Usage(format!(
             "user config already exists at {}; pass --force to overwrite",
             path.display()

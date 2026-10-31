@@ -102,6 +102,10 @@ pub(crate) fn check_network_mount(path: &Path) -> Result<(), StoreError> {
     const OCFS2: i64 = 0x7461_636F;
 
     let mount = statfs_of(path)?;
+    // f_type is __fsword_t: already i64 on 64-bit targets, i32 on 32-bit,
+    // so the identity-or-widening cast is required to compare in i64 space
+    // (issue #5).
+    #[allow(clippy::unnecessary_cast)]
     let fs_type = mount.f_type as i64;
     if matches!(fs_type, NFS | CIFS | SMB2 | AFS | NCP | CODA | V9FS | OCFS2) {
         return Err(StoreError::NetworkFsPath {
@@ -169,6 +173,27 @@ fn statfs_of(path: &Path) -> Result<libc::statfs, StoreError> {
         });
     }
     Ok(buf)
+}
+
+/// Fails with the path attached when the database directory does not exist.
+///
+/// Platform-neutral: without it, non-Unix open paths surface the missing
+/// directory as a SQLite `CannotOpen` error instead of a filesystem error.
+pub(crate) fn check_parent_exists(path: &Path) -> Result<(), StoreError> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if !parent.exists() {
+        return Err(StoreError::Io {
+            path: path.to_owned(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "database directory does not exist",
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Creates the database file with mode 0600 when this call creates it.

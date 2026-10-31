@@ -64,6 +64,11 @@ fn allow_network_fs_option_opens_local_paths() {
 
 /// Concurrent first opens of the same fresh path all succeed: the loser of
 /// the `create_new` race falls through to a normal open instead of failing.
+///
+/// Unix-only: the pre-creation the race runs through is a no-op elsewhere,
+/// and the Windows VFS can refuse a concurrent journal-mode switch without
+/// retrying the busy handler.
+#[cfg(unix)]
 #[test]
 fn concurrent_first_opens_all_succeed() {
     use std::sync::Arc;

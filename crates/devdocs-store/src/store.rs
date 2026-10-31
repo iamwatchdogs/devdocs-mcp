@@ -43,6 +43,7 @@ impl Store {
 
     /// Opens the database with explicit options.
     pub fn open_with(path: &Path, options: &StoreOptions) -> Result<Store, StoreError> {
+        fschecks::check_parent_exists(path)?;
         fschecks::check_symlink_owner(path)?;
         if !options.allow_network_fs {
             fschecks::check_network_mount(path)?;
@@ -59,11 +60,10 @@ impl Store {
         )
         .map_err(StoreError::Sql)?;
 
+        // Set the busy timeout before any locking-sensitive statement, so
+        // concurrent opens and migrations wait instead of failing fast.
+        conn.busy_timeout(Duration::from_secs(5))?;
         apply_pragmas(&conn)?;
-
-        // Migration runs concurrently-safe on the write lock; the default
-        // 5 s rusqlite busy timeout covers the concurrent-open case.
-        let _ = conn.busy_timeout(Duration::from_secs(5));
 
         fschecks::warn_on_mode_drift(path);
         Ok(Store {

@@ -22,8 +22,7 @@ struct Rig {
 
 fn rig() -> Rig {
     let dir = tempdir().unwrap();
-    let store = Store::open(&dir.path().join("docs.db")).unwrap();
-    store.migrate().unwrap();
+    let store = devdocs_testkit::open_migrated(&dir.path().join("docs.db"));
     let conn = Connection::open(dir.path().join("docs.db")).unwrap();
     Rig {
         store,

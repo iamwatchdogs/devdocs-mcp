@@ -31,6 +31,7 @@ fastembed = { workspace = true, optional = true }
 tempfile.workspace = true
 url.workspace = true
 proptest.workspace = true
+devdocs-testkit.workspace = true
 
 [lints]
 workspace = true

@@ -931,6 +931,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "devdocs-model",
+ "devdocs-testkit",
  "fastembed",
  "libc",
  "proptest",
@@ -951,6 +952,7 @@ dependencies = [
  "devdocs-model",
  "devdocs-store",
  "insta",
+ "rusqlite",
  "tempfile",
  "thiserror",
  "time",

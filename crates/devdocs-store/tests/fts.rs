@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 /// Opens a store on a migrated temp file and seeds one source plus three
-/// chunks: a title match for "router", a body match for "router", and an
+/// chunks: a title match for "routing", a body match for "routing", and an
 /// unrelated body chunk.
 struct Seeded {
     store: Store,
@@ -25,32 +25,27 @@ struct Seeded {
 
 fn seeded() -> Seeded {
     let dir = tempdir().unwrap();
-    let store = Store::open(&dir.path().join("docs.db")).unwrap();
-    store.migrate().unwrap();
+    let store = devdocs_testkit::open_migrated(&dir.path().join("docs.db"));
     let conn = Connection::open(dir.path().join("docs.db")).unwrap();
-    conn.execute(
-        "INSERT INTO sources(library, version, kind, origin_url, license_status, fetched_at, active) \
-         VALUES ('next.js', '16.2.9', 'llms_txt', 'https://example.test/next', 'approved_index', \
-                 '2026-01-01T00:00:00Z', 1)",
-        [],
-    )
-    .unwrap();
+    let source_id = devdocs_testkit::seed_source(&conn, "next.js", true);
     // Title hit: the FTS title column is section_path + symbol.
-    conn.execute(
-        "INSERT INTO chunks(source_id, content_hash, section_path, symbol, text, token_count, ordinal) \
-         VALUES (1, ?1, '[\"Routing\",\"use_router\"]', 'use_router', 'Unrelated body about storage.', 5, 0)",
-        rusqlite::params![&[7u8; 32][..]],
-    )
-    .unwrap();
-    let title_chunk = conn.last_insert_rowid();
+    let title_chunk = devdocs_testkit::seed_chunk(
+        &conn,
+        source_id,
+        0,
+        "[\"Routing\",\"use_router\"]",
+        Some("use_router"),
+        "Unrelated body about storage.",
+    );
     // Body hit only.
-    conn.execute(
-        "INSERT INTO chunks(source_id, content_hash, section_path, text, token_count, ordinal) \
-         VALUES (1, ?1, '[\"Storage\"]', 'The routing hook configures navigation.', 5, 1)",
-        rusqlite::params![&[7u8; 32][..]],
-    )
-    .unwrap();
-    let body_chunk = conn.last_insert_rowid();
+    let body_chunk = devdocs_testkit::seed_chunk(
+        &conn,
+        source_id,
+        1,
+        "[\"Storage\"]",
+        None,
+        "The routing hook configures navigation.",
+    );
     conn.execute(
         "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('use_router', ?1, 'function')",
         rusqlite::params![title_chunk],
@@ -107,13 +102,14 @@ fn snippet_marks_the_matched_term() {
 #[test]
 fn tokenizer_keeps_code_tokens_whole() {
     let s = seeded();
-    s.conn
-        .execute(
-            "INSERT INTO chunks(source_id, content_hash, section_path, symbol, text, token_count, ordinal) \
-             VALUES (1, ?1, '[\"Hooks\"]', 'use-route', 'Composes with use-route helpers and routes requests.', 8, 2)",
-            rusqlite::params![&[7u8; 32][..]],
-        )
-        .unwrap();
+    devdocs_testkit::seed_chunk(
+        &s.conn,
+        1,
+        2,
+        "[\"Hooks\"]",
+        Some("use-route"),
+        "Composes with use-route helpers and routes requests.",
+    );
 
     // Both spellings stay whole tokens and match their own symbols.
     let hyphen = build_match_query("use-route").into_owned();

@@ -55,6 +55,35 @@ fn section_path(
     })
 }
 
+/// The chunk and source columns both queries share, in a fixed order:
+/// `chunk_id, source_id, library, version, section_path, symbol, text,
+/// token_count` at indices 0..8.
+struct BaseColumns {
+    chunk_id: i64,
+    source_id: i64,
+    library: String,
+    version: String,
+    section_path: Vec<String>,
+    symbol: Option<String>,
+    text: String,
+    token_count: u32,
+}
+
+/// Reads [`BaseColumns`] from a row laid out at the shared column order.
+fn base_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaseColumns> {
+    let chunk_id: i64 = row.get(0)?;
+    Ok(BaseColumns {
+        chunk_id,
+        source_id: row.get(1)?,
+        library: row.get(2)?,
+        version: row.get(3)?,
+        section_path: section_path(row, 4, chunk_id)?,
+        symbol: row.get(5)?,
+        text: row.get(6)?,
+        token_count: row.get(7)?,
+    })
+}
+
 impl Store {
     /// Full-text search over active sources with the documented bm25
     /// weights.
@@ -76,18 +105,18 @@ impl Store {
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![match_expr, limit], |row| {
-            let chunk_id: i64 = row.get(0)?;
+            let base = base_columns(row)?;
             Ok(Hit {
-                chunk_id,
-                source_id: row.get(1)?,
-                library: row.get(2)?,
-                version: row.get(3)?,
-                section_path: section_path(row, 4, chunk_id)?,
-                symbol: row.get(5)?,
+                chunk_id: base.chunk_id,
+                source_id: base.source_id,
+                library: base.library,
+                version: base.version,
+                section_path: base.section_path,
+                symbol: base.symbol,
                 symbol_kind: None,
                 snippet: Some(row.get(8)?),
-                text: row.get(6)?,
-                token_count: row.get(7)?,
+                text: base.text,
+                token_count: base.token_count,
                 rank: Some(row.get(9)?),
             })
         })?;
@@ -104,7 +133,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let mut stmt = conn.prepare_cached(
             "SELECT c.chunk_id, c.source_id, s.library, s.version, c.section_path, c.symbol, \
-             sym.kind, c.text, c.token_count \
+             c.text, c.token_count, sym.kind \
              FROM symbols sym \
              JOIN chunks c ON c.chunk_id = sym.chunk_id \
              JOIN sources s ON s.source_id = c.source_id \
@@ -112,18 +141,18 @@ impl Store {
              ORDER BY c.ordinal",
         )?;
         let rows = stmt.query_map(params![symbol, src.0], |row| {
-            let chunk_id: i64 = row.get(0)?;
+            let base = base_columns(row)?;
             Ok(Hit {
-                chunk_id,
-                source_id: row.get(1)?,
-                library: row.get(2)?,
-                version: row.get(3)?,
-                section_path: section_path(row, 4, chunk_id)?,
-                symbol: row.get(5)?,
-                symbol_kind: Some(row.get(6)?),
+                chunk_id: base.chunk_id,
+                source_id: base.source_id,
+                library: base.library,
+                version: base.version,
+                section_path: base.section_path,
+                symbol: base.symbol,
+                symbol_kind: Some(row.get(8)?),
                 snippet: None,
-                text: row.get(7)?,
-                token_count: row.get(8)?,
+                text: base.text,
+                token_count: base.token_count,
                 rank: None,
             })
         })?;

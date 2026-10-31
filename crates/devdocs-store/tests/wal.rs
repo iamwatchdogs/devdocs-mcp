@@ -21,31 +21,19 @@ fn raw_wal_connection(path: &std::path::Path) -> Connection {
     conn
 }
 
-/// Inserts one chunk for `source_id` through the schema triggers.
-fn insert_chunk(conn: &Connection, source_id: i64, ordinal: i64, text: &str) {
-    conn.execute(
-        "INSERT INTO chunks(source_id, content_hash, section_path, text, token_count, ordinal)
-         VALUES (?1, ?2, '[]', ?3, 1, ?4)",
-        rusqlite::params![source_id, &[0u8; 32][..], text, ordinal],
-    )
-    .unwrap();
-}
-
 /// Sets up schema 0001 plus one source and one committed chunk.
 fn seeded(path: &std::path::Path) -> Connection {
-    let conn = raw_wal_connection(path);
-    conn.execute_batch(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations/0001_init.sql"
-    )))
-    .unwrap();
-    conn.execute(
-        "INSERT INTO sources(library, version, kind, origin_url, license_status, fetched_at)
-         VALUES ('w', '1', 'llms_txt', 'https://example.test/w', 'approved_index', '2026-01-01T00:00:00Z')",
-        [],
-    )
-    .unwrap();
-    insert_chunk(&conn, 1, 0, "first generation chunk about routing");
+    let mut conn = raw_wal_connection(path);
+    devdocs_store::migrate(&mut conn).unwrap();
+    let source_id = devdocs_testkit::seed_source(&conn, "w", true);
+    devdocs_testkit::seed_chunk(
+        &conn,
+        source_id,
+        0,
+        "[]",
+        None,
+        "first generation chunk about routing",
+    );
     conn
 }
 

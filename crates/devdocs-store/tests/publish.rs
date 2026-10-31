@@ -51,8 +51,10 @@ fn source(status: LicenseStatus) -> SourceRecord {
 fn chunk(ordinal: u32, symbol: Option<(&str, &str)>, body: &str) -> NewChunk {
     NewChunk {
         section_path: vec!["Routing".to_owned()],
-        symbol: symbol.map(|(name, _)| name.to_owned()),
-        symbol_kind: symbol.map(|(_, kind)| kind.to_owned()),
+        symbol: symbol.map(|(name, kind)| devdocs_store::Symbol {
+            name: name.to_owned(),
+            kind: kind.to_owned(),
+        }),
         text: format!("## Routing\n\n{body}"),
         token_count: 16,
         content_hash: content_hash(body),
@@ -226,22 +228,6 @@ fn license_gate_refuses_publish_below_the_index_stage() {
         .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 0, "a refused publish must write nothing");
-}
-
-/// Chunk validation rejects symbol entries missing their kind.
-#[test]
-fn symbol_without_kind_is_refused() {
-    let rig = rig();
-    let mut broken = chunk(0, None, "body");
-    broken.symbol = Some("use_router".to_owned());
-    let error = rig
-        .store
-        .publish_generation(&source(LicenseStatus::ApprovedIndex), &[broken])
-        .unwrap_err();
-    assert!(
-        matches!(error, devdocs_store::StoreError::InvalidChunk(_)),
-        "expected InvalidChunk, got {error:?}"
-    );
 }
 
 /// The fetched-at format survives a round trip through storage.

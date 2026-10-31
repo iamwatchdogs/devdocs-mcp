@@ -62,9 +62,9 @@ pub enum StoreError {
         status: LicenseStatus,
     },
 
-    /// A chunk in a publish batch carries an inconsistent shape.
-    #[error("invalid chunk: {0}")]
-    InvalidChunk(String),
+    /// A chunk in a publish batch could not be serialized for storage.
+    #[error("chunk serialization failed: {0}")]
+    InvalidChunk(#[from] serde_json::Error),
 
     /// The fetched-at instant could not be formatted as RFC 3339.
     #[error("timestamp formatting failed: {0}")]

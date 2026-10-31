@@ -19,10 +19,9 @@ use crate::store::Store;
 pub struct NewChunk {
     /// Breadcrumb of section titles.
     pub section_path: Vec<String>,
-    /// Exact symbol this chunk documents, when one applies.
-    pub symbol: Option<String>,
-    /// The `symbols.kind` value; required together with `symbol`.
-    pub symbol_kind: Option<String>,
+    /// Exact symbol this chunk documents, with its `symbols.kind`, when one
+    /// applies.
+    pub symbol: Option<Symbol>,
     /// Body with the contextual header prepended.
     pub text: String,
     /// Token count of `text`.
@@ -31,6 +30,16 @@ pub struct NewChunk {
     pub content_hash: [u8; 32],
     /// Position of the chunk inside its source, zero-based.
     pub ordinal: u32,
+}
+
+/// A documented symbol and its kind, stored in `chunks.symbol` and
+/// `symbols.kind` together.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Symbol {
+    /// The exact symbol, e.g. `use_router`.
+    pub name: String,
+    /// The `symbols.kind` value, e.g. `function`.
+    pub kind: String,
 }
 
 impl Store {
@@ -120,10 +129,6 @@ fn insert_chunks(
     source_id: i64,
     chunks: &[NewChunk],
 ) -> Result<(), StoreError> {
-    for chunk in chunks {
-        validate(chunk)?;
-    }
-
     let mut insert = tx
         .prepare(
             "INSERT INTO chunks(source_id, content_hash, section_path, symbol, text, \
@@ -131,37 +136,25 @@ fn insert_chunks(
         )
         .map_err(StoreError::Sql)?;
     for chunk in chunks {
-        let section_path = serde_json::to_string(&chunk.section_path)
-            .map_err(|source| StoreError::InvalidChunk(format!("{source}")))?;
+        let section_path = serde_json::to_string(&chunk.section_path)?;
         insert
             .execute(params![
                 source_id,
                 &chunk.content_hash[..],
                 section_path,
-                chunk.symbol,
+                chunk.symbol.as_ref().map(|sym| sym.name.as_str()),
                 chunk.text,
                 i64::from(chunk.token_count),
                 i64::from(chunk.ordinal),
             ])
             .map_err(StoreError::Sql)?;
-        if let (Some(symbol), Some(kind)) = (&chunk.symbol, &chunk.symbol_kind) {
+        if let Some(sym) = &chunk.symbol {
             tx.execute(
                 "INSERT INTO symbols(symbol, chunk_id, kind) VALUES (?1, ?2, ?3)",
-                params![symbol, tx.last_insert_rowid(), kind],
+                params![sym.name, tx.last_insert_rowid(), sym.kind],
             )
             .map_err(StoreError::Sql)?;
         }
-    }
-    Ok(())
-}
-
-/// Rejects chunk shapes the schema cannot represent.
-fn validate(chunk: &NewChunk) -> Result<(), StoreError> {
-    if chunk.symbol.is_some() != chunk.symbol_kind.is_some() {
-        return Err(StoreError::InvalidChunk(format!(
-            "ordinal {}: symbol and symbol_kind must be set together",
-            chunk.ordinal
-        )));
     }
     Ok(())
 }

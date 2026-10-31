@@ -336,13 +336,13 @@ impl PartialConfig {
         ] {
             apply_num(var, target)?;
         }
-        if let Some(agent) = env_string(FETCH_USER_AGENT) {
+        if let Some(agent) = env_string(FETCH_USER_AGENT)? {
             fetch.user_agent = Some(agent);
         }
-        if let Some(path) = env_string(INDEX_PATH) {
+        if let Some(path) = env_string(INDEX_PATH)? {
             index.path = Some(path);
         }
-        if let Some(embeddings) = env_string(INDEX_EMBEDDINGS) {
+        if let Some(embeddings) = env_string(INDEX_EMBEDDINGS)? {
             index.embeddings = Some(embeddings.parse().map_err(|_| Error::ConfigInvalid {
                 key_path: INDEX_EMBEDDINGS.to_owned(),
                 reason: format!("expected `true` or `false`, got `{embeddings}`"),
@@ -385,7 +385,7 @@ enum EnvTarget<'a> {
 }
 
 fn apply_num(var: &str, target: EnvTarget<'_>) -> Result<(), Error> {
-    let Some(raw) = env_string(var) else {
+    let Some(raw) = env_string(var)? else {
         return Ok(());
     };
     let parsed = match target {
@@ -398,8 +398,33 @@ fn apply_num(var: &str, target: EnvTarget<'_>) -> Result<(), Error> {
     })
 }
 
-fn env_string(var: &str) -> Option<String> {
-    std::env::var(var).ok().filter(|v| !v.is_empty())
+/// Read one environment variable. A set but non-UTF-8 value is a config
+/// error, not silence: a dropped `DEVDOCS_INDEX_PATH` would make the CLI
+/// report the wrong database.
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when the value is not valid UTF-8.
+fn env_string(var: &str) -> Result<Option<String>, Error> {
+    match std::env::var_os(var) {
+        None => Ok(None),
+        Some(raw) => coerce_utf8(var, raw),
+    }
+}
+
+/// Convert a set value to UTF-8; empty values count as unset.
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when the value is not valid UTF-8.
+fn coerce_utf8(var: &str, raw: std::ffi::OsString) -> Result<Option<String>, Error> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.into_string()
+        .map(Some)
+        .map_err(|_| Error::ConfigInvalid {
+            key_path: var.to_owned(),
+            reason: "expected a valid UTF-8 value".to_owned(),
+        })
 }
 
 /// Read and parse one config layer file.
@@ -417,14 +442,21 @@ fn parse_section<T: DeserializeOwned>(name: &str, value: toml::Value) -> Result<
 }
 
 /// A config error inside a known section. The leaf field comes from serde's
-/// `unknown field` message when present; without it the path stays at the
+/// "unknown field" message, else from the "in `x`" tail that wrong-type and
+/// missing-field messages carry; without either the path stays at the
 /// section and the message carries the rest.
 fn leaf_error(section: &str, message: String) -> Error {
-    let field = message
+    let unknown = message
         .split("unknown field `")
         .nth(1)
         .and_then(|rest| rest.split('`').next());
-    let key_path = field.map_or_else(|| section.to_owned(), |f| format!("{section}.{f}"));
+    let typed = message
+        .split("in `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next());
+    let key_path = unknown
+        .or(typed)
+        .map_or_else(|| section.to_owned(), |f| format!("{section}.{f}"));
     Error::ConfigInvalid {
         key_path,
         reason: message,
@@ -460,7 +492,7 @@ fn expand_home(path: &str) -> PathBuf {
 /// # Errors
 /// [`Error::ConfigInvalid`] when no home directory can be resolved.
 pub fn user_config_path() -> Result<PathBuf, Error> {
-    if let Some(dir) = env_string("XDG_CONFIG_HOME") {
+    if let Some(dir) = env_string("XDG_CONFIG_HOME")? {
         return Ok(Path::new(&dir).join("devdocs").join("config.toml"));
     }
     dirs::config_dir()
@@ -477,10 +509,10 @@ pub fn user_config_path() -> Result<PathBuf, Error> {
 /// # Errors
 /// [`Error::ConfigInvalid`] when no home directory can be resolved.
 pub fn data_root() -> Result<PathBuf, Error> {
-    if let Some(home) = env_string(env_vars::HOME) {
+    if let Some(home) = env_string(env_vars::HOME)? {
         return Ok(PathBuf::from(home));
     }
-    if let Some(dir) = env_string("XDG_DATA_HOME") {
+    if let Some(dir) = env_string("XDG_DATA_HOME")? {
         return Ok(Path::new(&dir).join("devdocs"));
     }
     dirs::data_dir()
@@ -553,7 +585,7 @@ impl Config {
         // path; the `--db` flag overrides everything.
         let index_db = if let Some(db) = &over.db_path {
             db.clone()
-        } else if env_string(env_vars::HOME).is_some() {
+        } else if env_string(env_vars::HOME)?.is_some() {
             data_root.join("docs.db")
         } else {
             partial
@@ -719,11 +751,38 @@ refresh_days = 2
         }
     }
 
-    /// A wrong value type fails validation.
+    /// A wrong value type fails validation and names the full key path.
     #[test]
     fn wrong_type_fails_validation() {
         let error = PartialConfig::parse("[fetch]\nconcurrency = \"four\"\n").unwrap_err();
-        assert!(matches!(error, Error::ConfigInvalid { .. }));
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "fetch.concurrency");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    /// A set but non-UTF-8 environment value is a config error, not
+    /// silence. Unix-only: Windows environment values are always UTF-16.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_env_value_is_a_config_error() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let raw = std::ffi::OsString::from_vec(vec![0xff, 0xfe]);
+        let error = super::coerce_utf8("DEVDOCS_INDEX_PATH", raw).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "DEVDOCS_INDEX_PATH");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+        assert!(
+            super::coerce_utf8("DEVDOCS_INDEX_PATH", std::ffi::OsString::new())
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// A malformed source URL fails validation and names the entry.

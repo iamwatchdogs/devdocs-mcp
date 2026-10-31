@@ -363,9 +363,11 @@ fn config_path_agrees_with_config_show_on_the_index_db() {
     let mut env = Env::new();
     env.without_home();
     let db = env.root.join("project.db");
+    // A TOML literal string (single quotes) never processes escapes, so the
+    // Windows backslash separators survive the round trip.
     std::fs::write(
         env.root.join("devdocs.toml"),
-        format!("[index]\npath = \"{}\"\n", db.display()),
+        format!("[index]\npath = '{}'\n", db.display()),
     )
     .expect("write project config");
 

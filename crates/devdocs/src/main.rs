@@ -51,22 +51,11 @@ fn init_tracing(cli: &Cli) {
 /// so clap's default exit 2 is never observable (docs/05 §Error model).
 fn report_parse_error(parse_error: &clap::Error) -> i32 {
     if !parse_error.use_stderr() {
-        let mut stdout = std::io::stdout().lock();
         let rendered = parse_error.render().to_string();
-        let result = stdout
-            .write_all(rendered.as_bytes())
-            .and_then(|()| stdout.flush());
-        match result {
-            Ok(()) => return 0,
-            // A closed pipe is a normal end for a CLI (for example `| head`).
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return 0,
-            Err(e) => {
-                return report_error(&Error::Upstream {
-                    code: UpstreamCode::UpstreamError,
-                    detail: format!("cannot write to stdout: {e}"),
-                });
-            }
-        }
+        return match devdocs::cli::write_stdout_text(&rendered) {
+            Ok(()) => 0,
+            Err(e) => report_error(&e),
+        };
     }
     let error = Error::Usage(parse_error.render().to_string());
     report_error(&error)

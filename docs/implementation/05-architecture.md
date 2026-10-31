@@ -180,7 +180,7 @@ Precedence, highest first:
 4. User file `$XDG_CONFIG_HOME/devdocs/config.toml` (macOS: `~/Library/Application Support/devdocs/config.toml`).
 5. Built-in defaults.
 
-`devdocs config init` writes the user file with comments. `devdocs config show` prints the merged effective configuration as JSON. `devdocs config validate` checks a file against the schema.
+`devdocs config init` writes the user file with comments. `devdocs config show` prints the merged effective configuration as JSON. `devdocs config validate` checks a file against the schema, including every `[sources.*]` URL.
 
 Example `devdocs.toml`:
 

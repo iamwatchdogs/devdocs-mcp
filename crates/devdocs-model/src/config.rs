@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -268,11 +269,44 @@ impl PartialConfig {
 
     /// Parse a config file into the partial view.
     ///
+    /// The parse walks the top-level table by name, so an unknown section
+    /// or key fails with a structural key path (`fetch.conkurrency`,
+    /// `sources.nextjs.urll`).
+    ///
     /// # Errors
     /// [`Error::ConfigInvalid`] when the file is not valid TOML or carries
     /// an unknown key; the error names the failing key path.
     pub fn parse(text: &str) -> Result<Self, Error> {
-        toml::from_str(text).map_err(|e| config_error(e.to_string()))
+        let table: toml::Table = toml::from_str(text).map_err(|e| syntax_error(e.to_string()))?;
+        let mut partial = Self::default();
+        for (key, value) in table {
+            match key.as_str() {
+                "fetch" => partial.fetch = parse_section("fetch", value)?,
+                "index" => partial.index = parse_section("index", value)?,
+                "search" => partial.search = parse_section("search", value)?,
+                "sources" => {
+                    let toml::Value::Table(entries) = value else {
+                        return Err(leaf_error(
+                            "sources",
+                            "expected a table of named sources".to_owned(),
+                        ));
+                    };
+                    for (name, entry) in entries {
+                        let source = parse_section(&format!("sources.{name}"), entry)?;
+                        partial.sources.insert(name, source);
+                    }
+                }
+                other => {
+                    return Err(Error::ConfigInvalid {
+                        key_path: other.to_owned(),
+                        reason: format!(
+                            "unknown section `{other}`; expected fetch, index, search, or sources"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(partial)
     }
 
     /// Build the environment layer by reading `DEVDOCS_*` variables.
@@ -368,24 +402,30 @@ fn env_string(var: &str) -> Option<String> {
     std::env::var(var).ok().filter(|v| !v.is_empty())
 }
 
-/// Turn a TOML error message into a `CONFIG_INVALID` error with the failing
-/// key path when the message names one.
-fn config_error(message: String) -> Error {
-    let unknown = message
+/// Parse one known section from its raw TOML value.
+fn parse_section<T: DeserializeOwned>(name: &str, value: toml::Value) -> Result<T, Error> {
+    T::deserialize(value).map_err(|e| leaf_error(name, e.to_string()))
+}
+
+/// A config error inside a known section. The leaf field comes from serde's
+/// `unknown field` message when present; without it the path stays at the
+/// section and the message carries the rest.
+fn leaf_error(section: &str, message: String) -> Error {
+    let field = message
         .split("unknown field `")
         .nth(1)
         .and_then(|rest| rest.split('`').next());
-    let owner = message
-        .rsplit_once("for key `")
-        .and_then(|(_, rest)| rest.split('`').next());
-    let key_path = match (owner, unknown) {
-        (Some(owner), Some(field)) => format!("{owner}.{field}"),
-        (Some(owner), None) => owner.to_owned(),
-        (None, Some(field)) => field.to_owned(),
-        (None, None) => "config".to_owned(),
-    };
+    let key_path = field.map_or_else(|| section.to_owned(), |f| format!("{section}.{f}"));
     Error::ConfigInvalid {
         key_path,
+        reason: message,
+    }
+}
+
+/// A config error for malformed TOML syntax; no key path applies.
+fn syntax_error(message: String) -> Error {
+    Error::ConfigInvalid {
+        key_path: "config".to_owned(),
         reason: message,
     }
 }
@@ -640,23 +680,40 @@ refresh_days = 2
         assert_eq!(merged.search.rrf_k, Some(30));
     }
 
-    /// An unknown key fails validation and names the key path.
+    /// An unknown key fails validation and names the full structural path.
     #[test]
     fn unknown_key_fails_with_a_key_path() {
         let error = PartialConfig::parse("[fetch]\nconkurrency = 4\n").unwrap_err();
         match error {
             Error::ConfigInvalid { key_path, .. } => {
-                assert!(key_path.contains("conkurrency"), "key path: {key_path}");
+                assert_eq!(key_path, "fetch.conkurrency");
             }
             other => panic!("expected ConfigInvalid, got {other:?}"),
         }
     }
 
-    /// An unknown top-level section fails validation.
+    /// An unknown key inside a source entry names the entry and the key.
+    #[test]
+    fn unknown_source_key_names_the_entry_path() {
+        let error = PartialConfig::parse("[sources.nextjs]\nurll = \"https://x\"\n").unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "sources.nextjs.urll");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    /// An unknown top-level section fails validation and names the section.
     #[test]
     fn unknown_section_fails_validation() {
         let error = PartialConfig::parse("[nope]\nkey = 1\n").unwrap_err();
-        assert!(matches!(error, Error::ConfigInvalid { .. }));
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "nope");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     /// A wrong value type fails validation.

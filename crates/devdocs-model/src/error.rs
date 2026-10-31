@@ -165,6 +165,10 @@ impl Error {
                 Self::NoResult { reason } => Some(*reason),
                 _ => None,
             },
+            key_path: match self {
+                Self::ConfigInvalid { key_path, .. } => Some(key_path.clone()),
+                _ => None,
+            },
         }
     }
 }
@@ -182,6 +186,10 @@ pub struct ErrorEnvelope {
     /// Why a valid query served nothing. Present only on `NO_RESULT`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub miss_reason: Option<MissReason>,
+    /// The dotted config key that failed validation. Present only on
+    /// `CONFIG_INVALID`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_path: Option<String>,
 }
 
 impl ErrorEnvelope {
@@ -304,5 +312,25 @@ mod tests {
             json,
             r#"{"error":"NO_RESULT","hint":"run: devdocs add <source> --version <V>","detail":null,"miss_reason":"not_indexed"}"#
         );
+    }
+
+    /// The `CONFIG_INVALID` envelope carries the failing key path; the
+    /// other envelopes omit it.
+    #[test]
+    fn envelope_carries_key_path_only_for_config_invalid() {
+        let envelope = Error::ConfigInvalid {
+            key_path: "fetch.concurrency".to_owned(),
+            reason: "expected a number".to_owned(),
+        }
+        .to_envelope();
+        assert_eq!(envelope.key_path.as_deref(), Some("fetch.concurrency"));
+        let json = envelope.to_json_string().unwrap();
+        assert!(
+            json.contains(r#""key_path":"fetch.concurrency""#),
+            "json: {json}"
+        );
+
+        let usage = Error::Usage("bad flag".to_owned()).to_envelope();
+        assert_eq!(usage.key_path, None);
     }
 }

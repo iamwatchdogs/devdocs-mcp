@@ -60,6 +60,25 @@ fn allow_network_fs_option_opens_local_paths() {
     assert!(store.migrate().is_ok());
 }
 
+/// Concurrent first opens of the same fresh path all succeed: the loser of
+/// the `create_new` race falls through to a normal open instead of failing.
+#[test]
+fn concurrent_first_opens_all_succeed() {
+    use std::sync::Arc;
+
+    let dir = tempdir().unwrap();
+    let path = Arc::new(dir.path().join("docs.db"));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let path = Arc::clone(&path);
+            std::thread::spawn(move || Store::open(&path).is_ok())
+        })
+        .collect();
+    for handle in handles {
+        assert!(handle.join().unwrap(), "every concurrent open must succeed");
+    }
+}
+
 /// Opening into a missing directory fails with the path attached.
 #[test]
 fn missing_directory_fails_with_path_context() {

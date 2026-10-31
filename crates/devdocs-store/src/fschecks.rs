@@ -12,6 +12,8 @@ use crate::error::StoreError;
 
 /// Ownership is checked against the effective user.
 #[cfg(unix)]
+// FFI is required for geteuid(2); std exposes no effective-uid read
+// (issue #5, docs/implementation/09 §Local storage controls).
 #[allow(unsafe_code)]
 fn effective_uid() -> u32 {
     // SAFETY: geteuid(2) is thread-safe, infallible, and reads only the
@@ -124,6 +126,8 @@ pub(crate) fn check_network_mount(path: &Path) -> Result<(), StoreError> {
 /// exists, its parent directory when it does not (a fresh database has no
 /// file yet).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+// FFI is required for statfs(2); std exposes no filesystem-identity read
+// (issue #5, docs/implementation/09 §Local storage controls).
 #[allow(unsafe_code)]
 fn statfs_of(path: &Path) -> Result<libc::statfs, StoreError> {
     use std::ffi::CString;
@@ -172,24 +176,26 @@ fn statfs_of(path: &Path) -> Result<libc::statfs, StoreError> {
 /// Creates the database file with mode 0600 when this call creates it.
 ///
 /// rusqlite would create it with `0666 & !umask`; the security contract
-/// wants 0600 (docs/implementation/09 §Local storage controls). Opening an
-/// existing file leaves its mode untouched.
+/// wants 0600 (docs/implementation/09 §Local storage controls). An existing
+/// file keeps its mode, and a concurrent first opener that won the
+/// `create_new` race is treated as success — it created the file 0600 too.
 #[cfg(unix)]
 pub(crate) fn ensure_private_file(path: &Path) -> Result<(), StoreError> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    if !path.exists() {
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|source| StoreError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(source) => Err(StoreError::Io {
+            path: path.to_owned(),
+            source,
+        }),
     }
-    Ok(())
 }
 
 /// Non-Unix platforms have no file mode to enforce at creation.

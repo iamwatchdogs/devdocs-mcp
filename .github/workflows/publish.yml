@@ -56,6 +56,7 @@ jobs:
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
       - name: Check release App credentials
+        shell: bash
         env:
           CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
           PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -66,6 +67,21 @@ jobs:
           fi
           if [ -z "${PRIVATE_KEY}" ]; then
             echo "::error::RELEASE_APP_PRIVATE_KEY is not set. Add the GitHub App private key as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+            exit 1
+          fi
+          # Fail here, with a pointed message, instead of at the token step
+          # whose only symptom is the opaque 401 "A JSON web token could not
+          # be decoded". The allowed shapes and the storage commands live in
+          # docs/implementation/11-ci-cd-release.md "Publish to crates.io".
+          if [[ ! "${CLIENT_ID}" =~ ^Iv1\.[0-9a-f]{16}$ ]] \
+            && [[ ! "${CLIENT_ID}" =~ ^Iv23[0-9A-Za-z]{14,20}$ ]] \
+            && [[ ! "${CLIENT_ID}" =~ ^[0-9a-f]{20}$ ]]; then
+            echo "::error::RELEASE_APP_CLIENT_ID does not look like a GitHub App Client ID. Client IDs look like 'Iv1.xxxxxxxxxxxxxxxx' or start with 'Iv23'; a 40-character hex value is usually the app's OAuth client secret. Copy the Client ID from the app's About section — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+            exit 1
+          fi
+          if ! printf '%s' "${PRIVATE_KEY}" | grep -q -- '-----BEGIN' \
+            || ! printf '%s' "${PRIVATE_KEY}" | grep -q -- 'PRIVATE KEY-----'; then
+            echo "::error::RELEASE_APP_PRIVATE_KEY does not look like a PEM private key (the '-----BEGIN ... PRIVATE KEY-----' markers are missing). Store the whole .pem file downloaded from the app settings: gh secret set RELEASE_APP_PRIVATE_KEY < path/to/app.private-key.pem"
             exit 1
           fi
       - name: Create release App token
@@ -137,6 +153,7 @@ jobs:
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
       - name: Check release App credentials
+        shell: bash
         env:
           CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
           PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -147,6 +164,21 @@ jobs:
           fi
           if [ -z "${PRIVATE_KEY}" ]; then
             echo "::error::RELEASE_APP_PRIVATE_KEY is not set. Add the GitHub App private key as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+            exit 1
+          fi
+          # Fail here, with a pointed message, instead of at the token step
+          # whose only symptom is the opaque 401 "A JSON web token could not
+          # be decoded". The allowed shapes and the storage commands live in
+          # docs/implementation/11-ci-cd-release.md "Publish to crates.io".
+          if [[ ! "${CLIENT_ID}" =~ ^Iv1\.[0-9a-f]{16}$ ]] \
+            && [[ ! "${CLIENT_ID}" =~ ^Iv23[0-9A-Za-z]{14,20}$ ]] \
+            && [[ ! "${CLIENT_ID}" =~ ^[0-9a-f]{20}$ ]]; then
+            echo "::error::RELEASE_APP_CLIENT_ID does not look like a GitHub App Client ID. Client IDs look like 'Iv1.xxxxxxxxxxxxxxxx' or start with 'Iv23'; a 40-character hex value is usually the app's OAuth client secret. Copy the Client ID from the app's About section — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
+            exit 1
+          fi
+          if ! printf '%s' "${PRIVATE_KEY}" | grep -q -- '-----BEGIN' \
+            || ! printf '%s' "${PRIVATE_KEY}" | grep -q -- 'PRIVATE KEY-----'; then
+            echo "::error::RELEASE_APP_PRIVATE_KEY does not look like a PEM private key (the '-----BEGIN ... PRIVATE KEY-----' markers are missing). Store the whole .pem file downloaded from the app settings: gh secret set RELEASE_APP_PRIVATE_KEY < path/to/app.private-key.pem"
             exit 1
           fi
       - name: Create release App token

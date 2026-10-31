@@ -338,11 +338,7 @@ fn config_init(path: &std::path::Path, force: bool) -> Result<(), Error> {
 /// Validate one file, or the resolved layer chain when no path is given.
 fn config_validate(path: Option<&std::path::Path>) -> Result<(), Error> {
     if let Some(path) = path {
-        let text = std::fs::read_to_string(path).map_err(|e| Error::ConfigInvalid {
-            key_path: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
-        Config::validate_str(&text)?;
+        Config::validate_file(path)?;
         println!(
             "{}",
             serde_json::json!({"valid": true, "path": path.display().to_string()})

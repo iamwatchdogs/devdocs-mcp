@@ -546,14 +546,25 @@ impl Config {
             merged.merge(read_layer(&user)?);
         }
 
-        let project = over
-            .config_path
-            .clone()
-            .or_else(|| find_project_config(&std::env::current_dir().unwrap_or_default()));
-        if let Some(path) = project
-            && path.is_file()
-        {
-            merged.merge(read_layer(&path)?);
+        match &over.config_path {
+            // An explicit --config file is required to exist; silently
+            // skipping it would run on defaults without telling the user.
+            Some(path) if !path.is_file() => {
+                return Err(Error::ConfigInvalid {
+                    key_path: path.display().to_string(),
+                    reason: "the --config file does not exist".to_owned(),
+                });
+            }
+            Some(path) => merged.merge(read_layer(path)?),
+            // A discovered devdocs.toml stays optional.
+            None => {
+                if let Some(path) =
+                    find_project_config(&std::env::current_dir().unwrap_or_default())
+                    && path.is_file()
+                {
+                    merged.merge(read_layer(&path)?);
+                }
+            }
         }
 
         merged.merge(PartialConfig::from_env()?);
@@ -562,13 +573,18 @@ impl Config {
         Self::resolve(&merged, over)
     }
 
-    /// Validate one config file against the schema.
+    /// Validate one config file against the schema, including every
+    /// `[sources.*]` URL, so `config validate` agrees with the load path.
     ///
     /// # Errors
     /// [`Error::ConfigInvalid`] when the file is unreadable or fails
     /// validation.
     pub fn validate_file(path: &Path) -> Result<(), Error> {
-        read_layer(path).map(|_| ())
+        let partial = read_layer(path)?;
+        for (name, source) in &partial.sources {
+            source.parsed_url(&format!("sources.{name}"))?;
+        }
+        Ok(())
     }
 
     /// Fill the remaining holes from built-in defaults.
@@ -828,6 +844,39 @@ refresh_days = 2
         };
         let config = Config::load(&over).unwrap();
         assert_eq!(config.index.path, PathBuf::from("/tmp/other.db"));
+    }
+
+    /// A missing explicit `--config` file fails instead of silently
+    /// running on defaults.
+    #[test]
+    fn missing_explicit_config_fails() {
+        let over = Overrides {
+            config_path: Some(PathBuf::from("/nonexistent/devdocs.toml")),
+            ..Overrides::default()
+        };
+        let error = Config::load(&over).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "/nonexistent/devdocs.toml");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    /// `validate_file` rejects a malformed source URL, so it agrees with
+    /// the load path.
+    #[test]
+    fn validate_file_rejects_a_bad_source_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sources.toml");
+        std::fs::write(&file, "[sources.nextjs]\nurl = \"not a url\"\n").unwrap();
+        let error = Config::validate_file(&file).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "sources.nextjs.url");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     /// The user config path sits under the platform config dir.

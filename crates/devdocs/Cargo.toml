@@ -32,11 +32,6 @@ serde_json.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-# Explicit path, not workspace inheritance: cargo rewrites workspace deps as
-# registry deps at publish time, and devdocs-testkit is publish = false, so
-# the inherited form makes `cargo publish -p devdocs` unsatisfiable forever.
-# Path dev-dependencies stay local and are invisible to crate consumers.
-devdocs-testkit = { path = "../devdocs-testkit" }
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

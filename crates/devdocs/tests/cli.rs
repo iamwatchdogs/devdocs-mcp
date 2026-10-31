@@ -34,6 +34,8 @@ struct Env {
     inject: Option<String>,
     /// Extra environment entries applied on top of the isolation.
     extra: Vec<(String, String)>,
+    /// Drop `DEVDOCS_HOME` so the `XDG_DATA_HOME` root applies.
+    homeless: bool,
 }
 
 impl Env {
@@ -42,6 +44,7 @@ impl Env {
             root: tempfile::tempdir().expect("temp dir").keep(),
             inject: None,
             extra: Vec::new(),
+            homeless: false,
         }
     }
 
@@ -55,11 +58,21 @@ impl Env {
         self.extra.push((var.to_owned(), value.to_owned()));
     }
 
+    /// Drop `DEVDOCS_HOME` so the `XDG_DATA_HOME` data root applies.
+    fn without_home(&mut self) {
+        self.homeless = true;
+    }
+
     /// The command with the isolated environment applied.
     fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("devdocs").expect("devdocs binary");
-        cmd.env("DEVDOCS_HOME", self.root.join("data"))
-            .env("XDG_CONFIG_HOME", self.root.join("config"));
+        cmd.env("XDG_CONFIG_HOME", self.root.join("config"));
+        if self.homeless {
+            cmd.env_remove("DEVDOCS_HOME")
+                .env("XDG_DATA_HOME", self.root.join("data"));
+        } else {
+            cmd.env("DEVDOCS_HOME", self.root.join("data"));
+        }
         for var in LAYER_VARS {
             cmd.env_remove(var);
         }
@@ -340,6 +353,50 @@ fn devdocs_home_overrides_the_data_root() {
     assert_eq!(
         paths["data_root"].as_str().expect("data_root is a string"),
         env.root.join("data").display().to_string()
+    );
+}
+
+/// `config path` and `config show` agree on the index database when the
+/// config files set `[index] path`.
+#[test]
+fn config_path_agrees_with_config_show_on_the_index_db() {
+    let mut env = Env::new();
+    env.without_home();
+    let db = env.root.join("project.db");
+    std::fs::write(
+        env.root.join("devdocs.toml"),
+        format!("[index]\npath = \"{}\"\n", db.display()),
+    )
+    .expect("write project config");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["config", "path"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let paths: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(
+        paths["index_db"].as_str().expect("index_db is a string"),
+        db.display().to_string()
+    );
+
+    let (code, stdout, stderr) = output(env.cmd(), &["config", "show"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let shown: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(
+        shown["index"]["path"].as_str().expect("path is a string"),
+        db.display().to_string()
+    );
+}
+
+/// `XDG_DATA_HOME` sets the data root when `DEVDOCS_HOME` is unset.
+#[test]
+fn xdg_data_home_sets_the_data_root() {
+    let mut env = Env::new();
+    env.without_home();
+    let (code, stdout, stderr) = output(env.cmd(), &["config", "path"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let paths: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(
+        paths["data_root"].as_str().expect("data_root is a string"),
+        env.root.join("data").join("devdocs").display().to_string()
     );
 }
 

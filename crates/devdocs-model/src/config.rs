@@ -7,7 +7,7 @@
 //!
 //! Each layer parses into a partial view whose fields are `Option`. The
 //! partial view uses `deny_unknown_fields`, so an unknown key fails
-//! validation with `CONFIG_INVALID` code `CONFIG_INVALID` and exit 1.
+//! validation with code `CONFIG_INVALID` and exit 1.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -402,6 +402,15 @@ fn env_string(var: &str) -> Option<String> {
     std::env::var(var).ok().filter(|v| !v.is_empty())
 }
 
+/// Read and parse one config layer file.
+fn read_layer(path: &Path) -> Result<PartialConfig, Error> {
+    let text = std::fs::read_to_string(path).map_err(|e| Error::ConfigInvalid {
+        key_path: path.display().to_string(),
+        reason: e.to_string(),
+    })?;
+    PartialConfig::parse(&text)
+}
+
 /// Parse one known section from its raw TOML value.
 fn parse_section<T: DeserializeOwned>(name: &str, value: toml::Value) -> Result<T, Error> {
     T::deserialize(value).map_err(|e| leaf_error(name, e.to_string()))
@@ -462,14 +471,17 @@ pub fn user_config_path() -> Result<PathBuf, Error> {
         })
 }
 
-/// The data root: `$DEVDOCS_HOME` when set, else the platform data dir.
+/// The data root: `$DEVDOCS_HOME` when set, else `$XDG_DATA_HOME/devdocs`
+/// when that is set, else the platform data dir.
 ///
 /// # Errors
-/// [`Error::ConfigInvalid`] when `DEVDOCS_HOME` is unset and no home
-/// directory can be resolved.
+/// [`Error::ConfigInvalid`] when no home directory can be resolved.
 pub fn data_root() -> Result<PathBuf, Error> {
     if let Some(home) = env_string(env_vars::HOME) {
         return Ok(PathBuf::from(home));
+    }
+    if let Some(dir) = env_string("XDG_DATA_HOME") {
+        return Ok(Path::new(&dir).join("devdocs"));
     }
     dirs::data_dir()
         .map(|dir| dir.join("devdocs"))
@@ -499,11 +511,7 @@ impl Config {
         if let Ok(user) = user_config_path()
             && user.is_file()
         {
-            let text = std::fs::read_to_string(&user).map_err(|e| Error::ConfigInvalid {
-                key_path: user.display().to_string(),
-                reason: e.to_string(),
-            })?;
-            merged.merge(PartialConfig::parse(&text)?);
+            merged.merge(read_layer(&user)?);
         }
 
         let project = over
@@ -513,11 +521,7 @@ impl Config {
         if let Some(path) = project
             && path.is_file()
         {
-            let text = std::fs::read_to_string(&path).map_err(|e| Error::ConfigInvalid {
-                key_path: path.display().to_string(),
-                reason: e.to_string(),
-            })?;
-            merged.merge(PartialConfig::parse(&text)?);
+            merged.merge(read_layer(&path)?);
         }
 
         merged.merge(PartialConfig::from_env()?);
@@ -529,9 +533,10 @@ impl Config {
     /// Validate one config file against the schema.
     ///
     /// # Errors
-    /// [`Error::ConfigInvalid`] when the file fails validation.
-    pub fn validate_str(text: &str) -> Result<(), Error> {
-        PartialConfig::parse(text).map(|_| ())
+    /// [`Error::ConfigInvalid`] when the file is unreadable or fails
+    /// validation.
+    pub fn validate_file(path: &Path) -> Result<(), Error> {
+        read_layer(path).map(|_| ())
     }
 
     /// Fill the remaining holes from built-in defaults.
@@ -589,26 +594,24 @@ impl Config {
         })
     }
 
-    /// The resolved paths for `config path`.
+    /// The resolved paths for `config path`. The index database path comes
+    /// from the loaded configuration, so `config path` and `config show`
+    /// can never disagree.
     ///
     /// # Errors
-    /// [`Error::ConfigInvalid`] when a path cannot be resolved.
+    /// [`Error::ConfigInvalid`] when the config fails validation or a path
+    /// cannot be resolved.
     pub fn paths(over: &Overrides) -> Result<Paths, Error> {
-        let data_root = data_root()?;
+        let config = Config::load(over)?;
         let project = over
             .config_path
             .clone()
             .or_else(|| find_project_config(&std::env::current_dir().unwrap_or_default()));
-        let user = user_config_path()?;
-        let index_db = over
-            .db_path
-            .clone()
-            .unwrap_or_else(|| data_root.join("docs.db"));
         Ok(Paths {
-            user_config: user,
+            user_config: user_config_path()?,
             project_config: project,
-            data_root,
-            index_db,
+            data_root: data_root()?,
+            index_db: config.index.path,
         })
     }
 }

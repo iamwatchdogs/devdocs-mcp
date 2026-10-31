@@ -9,9 +9,13 @@ mod error;
 mod fschecks;
 mod hash;
 mod migrate;
+mod query;
+mod search;
 mod store;
 
 pub use error::StoreError;
 pub use hash::{canonical_body, content_hash, fast_hash};
 pub use migrate::{AppliedMigration, migrate};
+pub use query::build_match_query;
+pub use search::Hit;
 pub use store::{Store, StoreOptions};

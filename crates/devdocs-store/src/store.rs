@@ -26,7 +26,7 @@ pub struct StoreOptions {
 
 /// One SQLite connection behind a mutex.
 pub struct Store {
-    conn: Mutex<rusqlite::Connection>,
+    pub(crate) conn: Mutex<rusqlite::Connection>,
 }
 
 impl std::fmt::Debug for Store {

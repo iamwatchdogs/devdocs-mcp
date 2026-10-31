@@ -5,6 +5,7 @@
 //! `config` is real. The CLI edge in the binary entry point maps errors to
 //! exit codes and JSON error envelopes on stderr.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -140,7 +141,11 @@ pub enum Command {
     /// Start the MCP server on stdio.
     Mcp {
         /// The transport, only `stdio` today.
-        #[arg(long, default_value = "stdio")]
+        #[arg(
+            long,
+            default_value = "stdio",
+            value_parser = clap::builder::PossibleValuesParser::new(["stdio"])
+        )]
         transport: String,
     },
     /// Database operations.
@@ -284,8 +289,23 @@ fn print_line<T: Serialize>(value: &T) -> Result<(), Error> {
         code: devdocs_model::UpstreamCode::UpstreamError,
         detail: format!("cannot serialize the output: {e}"),
     })?;
-    println!("{line}");
-    Ok(())
+    write_stdout_line(&line)
+}
+
+/// Write one line to stdout without panicking. A closed pipe (the reader
+/// went away, for example `| head`) is a normal end for a CLI; other
+/// failures map to the upstream code under the same decision as above.
+fn write_stdout_line(line: &str) -> Result<(), Error> {
+    let mut stdout = std::io::stdout().lock();
+    let result = writeln!(stdout, "{line}").and_then(|()| stdout.flush());
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(Error::Upstream {
+            code: devdocs_model::UpstreamCode::UpstreamError,
+            detail: format!("cannot write to stdout: {e}"),
+        }),
+    }
 }
 
 /// Build the flag layer from the parsed global flags.
@@ -315,30 +335,49 @@ fn run_config(cli: &Cli, op: &ConfigOp) -> Result<(), Error> {
 }
 
 /// Write the commented user config file; refuse to overwrite without force.
+/// The create is exclusive when force is off, so a concurrent run cannot
+/// lose its file to a truncate (docs/08 defines no code for "file exists";
+/// USAGE with exit 1 is the least-wrong documented code, and the detail
+/// names --force).
 fn config_init(path: &std::path::Path, force: bool) -> Result<(), Error> {
-    if path.exists() && !force {
-        // docs/08 defines no code for "file exists". USAGE (exit 1) is the
-        // least-wrong documented code, and the detail names --force.
-        return Err(Error::Usage(format!(
-            "user config already exists at {}; pass --force to overwrite",
-            path.display()
-        )));
-    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::ConfigInvalid {
             key_path: path.display().to_string(),
             reason: e.to_string(),
         })?;
     }
-    std::fs::write(path, user_config_template()).map_err(|e| Error::ConfigInvalid {
-        key_path: path.display().to_string(),
-        reason: e.to_string(),
+    let open = if force {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+    } else {
+        // Exclusive create: no check-then-write race window.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    };
+    let mut file = open.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::Usage(format!(
+                "user config already exists at {}; pass --force to overwrite",
+                path.display()
+            ))
+        } else {
+            Error::ConfigInvalid {
+                key_path: path.display().to_string(),
+                reason: e.to_string(),
+            }
+        }
     })?;
-    println!(
-        "{}",
-        serde_json::json!({"wrote": path.display().to_string()})
-    );
-    Ok(())
+    file.write_all(user_config_template().as_bytes())
+        .map_err(|e| Error::ConfigInvalid {
+            key_path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+    write_stdout_line(&serde_json::json!({"wrote": path.display().to_string()}).to_string())
 }
 
 /// Validate one file, or the resolved layer chain when no path is given.

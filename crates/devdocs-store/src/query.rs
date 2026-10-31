@@ -17,7 +17,8 @@ const NO_MATCH_EXPR: &str = "\"\"";
 /// words become literal phrase queries and hyphenated code tokens like
 /// `use-route` stay whole. NUL bytes are dropped — FTS5 parses the
 /// expression through a NUL-terminated C string, so they would truncate it
-/// mid-phrase. Input with no usable tokens becomes [`NO_MATCH_EXPR`].
+/// mid-phrase. Input with no usable tokens becomes the empty quoted phrase
+/// `""`, a valid expression that matches nothing.
 #[must_use]
 pub fn build_match_query(input: &str) -> std::borrow::Cow<'_, str> {
     let mut quoted: Vec<String> = Vec::new();

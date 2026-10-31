@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-10-31T05:55:00Z
+timestamp: 2026-10-31T09:51:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -170,7 +170,7 @@ One-time setup:
 
 If the first token mint fails with 401 `A JSON web token could not be decoded`, the two values do not belong to the same app or one of them is misshapen: re-copy the Client ID from the app's About section and re-set the secret from the app's current `.pem` — rotating a key in the app settings does not update the repository secret. A 404 on the same step means the JWT was fine but the app is not installed on this repository.
 
-Flow: push to `main` → release-plz opens a release PR (changelog + version bumps, CI runs on the PR automatically) → a human merges it → the merge push runs `release-plz release`, which publishes crates in dependency order and creates the version tag → the tag push triggers `release.yml` for the binaries and the GitHub release. The human merge is the release gate.
+Flow: push to `main` → release-plz opens a release PR (changelog + version bumps, CI runs on the PR automatically) → the PR job enables auto-merge on it, so the merge happens by itself once the repo ruleset's requirements pass → the merge push runs `release-plz release`, which publishes crates in dependency order and creates the version tag → the tag push triggers `release.yml` for the binaries and the GitHub release. The release gate is the ruleset's checks, not a human merge (reversal recorded in [01](01-tech-stack-decision.md)); the repository setting `Allow auto-merge` must stay enabled for the flow to work.
 
 ## Scheduled audits
 

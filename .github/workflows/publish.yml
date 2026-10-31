@@ -98,11 +98,24 @@ jobs:
           permission-pull-requests: write
       # Without `command: release-pr` the action runs BOTH release-pr and
       # release; this job must only open/update the release PR.
-      - uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
+      - id: release-plz
+        uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
+      # The release gate is the ruleset's checks, not a human merge (docs 11;
+      # reversal recorded in docs 01): queue the release PR to merge itself
+      # once those checks pass. The action's `pr` output is empty when there
+      # was nothing to release, so this skips on no-op runs.
+      - name: Enable auto-merge on the release PR
+        if: steps.release-plz.outputs.pr != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ steps.release-plz.outputs.pr }}
+        run: gh pr merge --auto --squash --delete-branch "${PR_URL}"
 
   release-plz-release:
     # Publishes crates and creates the version tag once the release PR is

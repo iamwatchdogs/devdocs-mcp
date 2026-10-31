@@ -5,5 +5,5 @@ pub mod envelope;
 pub mod error;
 
 pub use config::{Config, Overrides, Paths, SourceConfig};
-pub use envelope::{Example, ResultEnvelope, ResultItem, empty_envelope};
+pub use envelope::{Example, ResultEnvelope, ResultItem, VersionStatus, empty_envelope};
 pub use error::{Error, ErrorEnvelope, MissReason, UpstreamCode};

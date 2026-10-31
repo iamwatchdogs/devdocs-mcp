@@ -21,6 +21,7 @@ fn created_database_file_gets_mode_0600() {
 
 /// A symlink to a file the current user owns opens fine: the ownership check
 /// only refuses foreign territory.
+#[cfg(unix)]
 #[test]
 fn symlink_to_an_owned_file_opens() {
     let dir = tempdir().unwrap();
@@ -35,6 +36,7 @@ fn symlink_to_an_owned_file_opens() {
 
 /// A dangling symlink fails with a clear filesystem error instead of
 /// creating a database at the target.
+#[cfg(unix)]
 #[test]
 fn dangling_symlink_is_refused() {
     let dir = tempdir().unwrap();

@@ -88,20 +88,21 @@ pub(crate) fn check_network_mount(path: &Path) -> Result<(), StoreError> {
 /// Refuses `path` when the filesystem holding it is a known network mount.
 #[cfg(target_os = "linux")]
 pub(crate) fn check_network_mount(path: &Path) -> Result<(), StoreError> {
-    use std::os::unix::ffi::OsStrExt;
+    // Magic numbers from linux/magic.h via statfs(2), widened to i64:
+    // `f_type` is `__fsword_t` (i64 on 64-bit, i32 on 32-bit), so the
+    // widening is loss-free and the 32-bit magic values arrive
+    // zero-extended.
+    const NFS: i64 = 0x6969;
+    const CIFS: i64 = 0xFF53_4D42;
+    const SMB2: i64 = 0xFE53_4D42;
+    const AFS: i64 = 0x5346_414F;
+    const NCP: i64 = 0x564C;
+    const CODA: i64 = 0x7375_7245;
+    const V9FS: i64 = 0x0102_1997;
+    const OCFS2: i64 = 0x7461_636F;
 
     let mount = statfs_of(path)?;
-    let fs_type = mount.f_type as u32;
-    // Magic numbers from linux/magic.h via statfs(2). Cast to u32 because the
-    // magic values are 32-bit constants; sign extension cannot hide them.
-    const NFS: u32 = 0x6969;
-    const CIFS: u32 = 0xFF53_4D42;
-    const SMB2: u32 = 0xFE53_4D42;
-    const AFS: u32 = 0x5346_414F;
-    const NCP: u32 = 0x564C;
-    const CODA: u32 = 0x7375_7245;
-    const V9FS: u32 = 0x0102_1997;
-    const OCFS2: u32 = 0x7461_636F;
+    let fs_type = mount.f_type as i64;
     if matches!(fs_type, NFS | CIFS | SMB2 | AFS | NCP | CODA | V9FS | OCFS2) {
         return Err(StoreError::NetworkFsPath {
             path: path.to_owned(),

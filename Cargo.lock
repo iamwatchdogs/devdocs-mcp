@@ -878,13 +878,14 @@ dependencies = [
  "blake3",
  "devdocs-model",
  "fastembed",
+ "libc",
  "rusqlite",
- "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
  "time",
+ "tracing",
  "url",
 ]
 

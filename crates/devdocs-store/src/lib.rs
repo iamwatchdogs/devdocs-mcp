@@ -6,7 +6,10 @@
 //! `tokio::task::spawn_blocking` and release the guard before every await.
 
 mod error;
+mod fschecks;
 mod migrate;
+mod store;
 
 pub use error::StoreError;
 pub use migrate::{AppliedMigration, migrate};
+pub use store::{Store, StoreOptions};

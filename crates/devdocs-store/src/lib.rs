@@ -7,9 +7,11 @@
 
 mod error;
 mod fschecks;
+mod hash;
 mod migrate;
 mod store;
 
 pub use error::StoreError;
+pub use hash::{canonical_body, content_hash, fast_hash};
 pub use migrate::{AppliedMigration, migrate};
 pub use store::{Store, StoreOptions};

@@ -1,7 +1,8 @@
-//! Evaluation harness for devdocs retrieval quality.
+//! Evaluation harness for devdocs retrieval quality (docs/implementation/14).
+//!
+//! The harness loads a golden suite (`eval/golden/*.jsonl`), runs the
+//! retrieval pipeline (a stub until M4, docs/implementation/13), scores the
+//! metrics, writes the run artifacts, and prints the gate table.
 
-/// Stub placeholder for the eval harness library.
-#[must_use]
-pub fn placeholder() -> &'static str {
-    "devdocs-eval placeholder"
-}
+pub mod error;
+pub mod suite;

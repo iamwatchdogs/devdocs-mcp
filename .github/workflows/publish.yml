@@ -140,7 +140,7 @@ jobs:
     # it (e.g. by a compromised release.yml build leg, which also holds
     # id-token: write) are rejected by crates.io. Branch restriction and
     # reviewers are configured in the repo's environment settings.
-    environment: release
+    environment: crates
     permissions:
       contents: write
       pull-requests: read

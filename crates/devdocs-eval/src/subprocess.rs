@@ -11,8 +11,9 @@
 //! exists; a question text with `; rm -rf /` is passed as one argument.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -104,17 +105,28 @@ fn from_path(exe: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// The wall-time deadline one `devdocs search` call gets before the run
+/// treats it as stalled.
+const CALL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The `try_wait` poll interval while a call runs.
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 /// Times one `devdocs search` invocation end-to-end: process start, flag
 /// parse, and dispatch (docs/implementation/08 §Latency).
 ///
 /// The program and every argument travel as an argument vector — no shell,
-/// no interpolation (see the module security note).
+/// no interpolation (see the module security note). The call gets a fixed
+/// deadline: a stalled child is killed and reported as an error instead of
+/// blocking the run forever. The output is not captured — the harness
+/// reads only the timing and the exit code.
 ///
 /// # Errors
-/// [`EvalError::Subprocess`] when the process cannot be spawned.
+/// [`EvalError::Subprocess`] when the process cannot be spawned, cannot be
+/// waited on, or overshoots the deadline.
 pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<SubprocessSample, EvalError> {
     let start = Instant::now();
-    let output = Command::new(bin)
+    let mut child = Command::new(bin)
         .arg("--db")
         .arg(db)
         .arg("--json")
@@ -124,11 +136,34 @@ pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<Subprocess
         .arg(&question.library)
         .arg("--version")
         .arg(&question.version)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|e| EvalError::Subprocess(format!("cannot spawn {}: {e}", bin.display())))?;
-    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
-    Ok(SubprocessSample {
-        wall_ms,
-        exit_code: output.status.code().unwrap_or(-1),
-    })
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+                return Ok(SubprocessSample {
+                    wall_ms,
+                    exit_code: status.code().unwrap_or(-1),
+                });
+            }
+            Ok(None) if start.elapsed() >= CALL_DEADLINE => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(EvalError::Subprocess(format!(
+                    "devdocs search exceeded the {}s deadline; the process was killed",
+                    CALL_DEADLINE.as_secs()
+                )));
+            }
+            Ok(None) => thread::sleep(POLL_INTERVAL),
+            Err(source) => {
+                return Err(EvalError::Subprocess(format!(
+                    "cannot wait for {}: {source}",
+                    bin.display()
+                )));
+            }
+        }
+    }
 }

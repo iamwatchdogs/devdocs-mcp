@@ -143,6 +143,19 @@ fn refuse_manual_graders(suite: &Suite) -> Result<(), EvalError> {
     Ok(())
 }
 
+/// Refuses a subprocess call that exited nonzero — its wall time says
+/// nothing about real latency, so the run fails (exit 3) instead of
+/// letting a dead binary pass the p95 gate.
+fn check_exit(sample: SubprocessSample, label: &str) -> Result<(), EvalError> {
+    if sample.exit_code == 0 {
+        return Ok(());
+    }
+    Err(EvalError::Subprocess(format!(
+        "devdocs search exited {} for {label}",
+        sample.exit_code
+    )))
+}
+
 /// The in-process pass: one timed pipeline call per question, then the
 /// per-question score (docs/implementation/14 §Harness flow step 2–3).
 struct InProcess {
@@ -202,10 +215,12 @@ fn subprocess_pass(
 ) -> Result<f64, EvalError> {
     let bin = subprocess::locate_devdocs(options.devdocs_bin.as_deref())?;
     // One warmup call; the cold start is excluded (docs/implementation/14).
-    let _warmup = subprocess::run_once(&bin, db_path, &suite.questions[0])?;
+    let warmup = subprocess::run_once(&bin, db_path, &suite.questions[0])?;
+    check_exit(warmup, "warmup")?;
     let mut samples = Vec::with_capacity(rows.len());
     for (row, question) in rows.iter_mut().zip(&suite.questions) {
         let sample = subprocess::run_once(&bin, db_path, question)?;
+        check_exit(sample, &question.id)?;
         samples.push(sample.wall_ms);
         row.subprocess = sample;
     }

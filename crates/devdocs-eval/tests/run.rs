@@ -135,3 +135,31 @@ fn a_manual_grader_suite_is_refused() {
     assert_eq!(err.exit_code(), 1);
     assert!(err.to_string().contains("manual grader"), "{err}");
 }
+
+/// A stub `devdocs` that exits 1 immediately, standing in for a failing
+/// CLI build.
+#[cfg(unix)]
+fn failing_bin(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("devdocs-stub.sh");
+    std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failing_subprocess_call_fails_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, suite, runs) = common::fixture(dir.path());
+    let outcome = run(&RunOptions {
+        suite: suite.display().to_string(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(runs),
+        devdocs_bin: Some(failing_bin(dir.path())),
+    });
+    let err = outcome.unwrap_err();
+    assert_eq!(err.exit_code(), 3, "{err}");
+    assert!(err.to_string().contains("exited 1"), "{err}");
+}

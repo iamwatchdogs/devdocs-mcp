@@ -7,21 +7,14 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 /// The `devdocs` binary the subprocess pass needs.
+///
+/// `assert_cmd` resolves the binary the same way the repo's other CLI tests
+/// do (crates/devdocs/tests/cli.rs): from the test binary's own target
+/// directory, so it works under nextest, under cargo-llvm-cov's dedicated
+/// target dir, and on Windows (`devdocs.exe`). It fails with a clear
+/// message when the binary is not built.
 pub fn devdocs_bin() -> PathBuf {
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    loop {
-        for profile in ["debug", "release"] {
-            let candidate = dir.join("target").join(profile).join("devdocs");
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
-        assert!(
-            dir.pop(),
-            "the devdocs binary is not built; run `cargo build -p devdocs` \
-             (or `just test`, which builds the whole workspace)"
-        );
-    }
+    assert_cmd::cargo::cargo_bin("devdocs")
 }
 
 /// Builds a fixture database and a three-question suite: one answered, one

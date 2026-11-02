@@ -29,8 +29,9 @@ pub struct SubprocessSample {
 }
 
 /// Locates the `devdocs` binary: the explicit argument, then
-/// `DEVDOCS_EVAL_DEVDOCS_BIN`, then a `target/{debug,release}/devdocs` walk
-/// up from the working directory, then `PATH`.
+/// `DEVDOCS_EVAL_DEVDOCS_BIN`, then a `target/{debug,release}/devdocs`
+/// walk up from the working directory (honoring `CARGO_TARGET_DIR` and the
+/// platform exe suffix), then `PATH`.
 ///
 /// # Errors
 /// [`EvalError::Subprocess`] when nothing resolves to an executable file.
@@ -52,17 +53,35 @@ pub fn locate_devdocs(explicit: Option<&Path>) -> Result<PathBuf, EvalError> {
             return Ok(candidate);
         }
     }
+    let exe = format!("devdocs{}", std::env::consts::EXE_SUFFIX);
+    let profiles = ["debug", "release"];
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR")
+        && !target_dir.is_empty()
+    {
+        for profile in profiles {
+            let candidate = Path::new(&target_dir).join(profile).join(&exe);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
     let mut dir = std::env::current_dir()
         .map_err(|e| EvalError::Subprocess(format!("no working directory: {e}")))?;
     loop {
-        for profile in ["debug", "release"] {
-            let candidate = dir.join("target").join(profile).join("devdocs");
+        for profile in profiles {
+            let candidate = dir.join("target").join(profile).join(&exe);
             if candidate.is_file() {
                 return Ok(candidate);
             }
         }
         if !dir.pop() {
             break;
+        }
+    }
+    for path_dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        let candidate = path_dir.join(&exe);
+        if candidate.is_file() {
+            return Ok(candidate);
         }
     }
     Err(EvalError::Subprocess(

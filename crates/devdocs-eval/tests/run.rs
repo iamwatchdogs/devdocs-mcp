@@ -9,24 +9,30 @@ mod common;
 use devdocs_eval::gates::GateStatus;
 use devdocs_eval::run::{RunOptions, run};
 
-/// Runs the fixture suite once and returns the outcome with its temp dir.
-fn run_fixture() -> (tempfile::TempDir, devdocs_eval::run::RunOutcome) {
+/// Runs the fixture suite once and returns the outcome with its temp dir
+/// and the fixture database path.
+fn run_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    devdocs_eval::run::RunOutcome,
+) {
     let dir = tempfile::tempdir().unwrap();
     let (db, suite, runs) = common::fixture(dir.path());
     let outcome = run(&RunOptions {
         suite: suite.display().to_string(),
-        db: Some(db),
+        db: Some(db.clone()),
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
     })
     .unwrap();
-    (dir, outcome)
+    (dir, db, outcome)
 }
 
 #[test]
 fn a_run_scores_and_writes_parseable_artifacts() {
-    let (_dir, outcome) = run_fixture();
+    use sha2::Digest as _;
+    let (_dir, db, outcome) = run_fixture();
 
     for artifact in ["results.json", "report.md", "manifest.json"] {
         assert!(outcome.run_dir.join(artifact).is_file(), "{artifact}");
@@ -58,11 +64,18 @@ fn a_run_scores_and_writes_parseable_artifacts() {
     assert_eq!(manifest["questions"], serde_json::json!(3));
     assert_eq!(manifest["suite"], serde_json::json!("fixture"));
     assert_eq!(manifest["db_hash"].as_str().unwrap().len(), 64);
+    // db_hash is the SHA-256 of the database file itself, hashed once.
+    let expected = {
+        let bytes = std::fs::read(&db).unwrap();
+        let digest = sha2::Sha256::digest(&bytes);
+        devdocs_eval::suite::hex_digest(&digest)
+    };
+    assert_eq!(manifest["db_hash"], serde_json::json!(expected));
 }
 
 #[test]
 fn a_run_renders_the_report_and_judges_the_gates() {
-    let (_dir, outcome) = run_fixture();
+    let (_dir, _db, outcome) = run_fixture();
 
     // The report carries the gate table, the breakdown, and the stub note.
     let md = std::fs::read_to_string(outcome.run_dir.join("report.md")).unwrap();

@@ -439,5 +439,5 @@ fn hash_file(db_path: &Path) -> Result<String, EvalError> {
         }
         hasher.update(&chunk[..read]);
     }
-    Ok(crate::suite::hex_hash(&hasher.finalize()))
+    Ok(crate::suite::hex_digest(&hasher.finalize()))
 }

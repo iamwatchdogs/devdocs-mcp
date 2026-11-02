@@ -22,6 +22,7 @@ devdocs-testkit.workspace = true
 insta.workspace = true
 proptest.workspace = true
 rusqlite.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 
 [lints]

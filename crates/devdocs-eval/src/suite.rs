@@ -283,17 +283,22 @@ fn load_meta(path: &Path, name: &str) -> Result<Option<SuiteMeta>, EvalError> {
     }
 }
 
-/// SHA-256 of `bytes` as lowercase hex.
+/// Lowercase hex of a raw digest.
 #[must_use]
-pub fn hex_hash(bytes: &[u8]) -> String {
+pub fn hex_digest(digest: &[u8]) -> String {
     use std::fmt::Write as _;
-    let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         // write! on a String cannot fail.
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+/// SHA-256 of `bytes` as lowercase hex.
+#[must_use]
+pub fn hex_hash(bytes: &[u8]) -> String {
+    hex_digest(&Sha256::digest(bytes))
 }
 
 #[cfg(test)]

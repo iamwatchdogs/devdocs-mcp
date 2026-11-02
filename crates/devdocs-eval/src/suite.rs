@@ -179,7 +179,7 @@ pub struct SuiteMeta {
     /// Curation effort in minutes; the research protocol records it as a
     /// measurement (docs/implementation/14 §Pilot).
     pub curation_minutes: u64,
-    /// Curation date, RFC 3339.
+    /// Curation date, date-only `YYYY-MM-DD`.
     pub curated_at: String,
     /// One-line description of the suite.
     pub description: String,
@@ -268,12 +268,24 @@ fn load_meta(path: &Path, name: &str) -> Result<Option<SuiteMeta>, EvalError> {
         .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
     let meta_path = path.with_file_name(format!("{stem}.meta.json"));
     match std::fs::read(&meta_path) {
-        Ok(meta_bytes) => Ok(Some(serde_json::from_slice(&meta_bytes).map_err(|e| {
-            EvalError::InvalidSuite {
-                suite: name.to_owned(),
-                reason: format!("{} is invalid: {e}", meta_path.display()),
+        Ok(meta_bytes) => {
+            let meta: SuiteMeta =
+                serde_json::from_slice(&meta_bytes).map_err(|e| EvalError::InvalidSuite {
+                    suite: name.to_owned(),
+                    reason: format!("{} is invalid: {e}", meta_path.display()),
+                })?;
+            if !is_calendar_date(&meta.curated_at) {
+                return Err(EvalError::InvalidSuite {
+                    suite: name.to_owned(),
+                    reason: format!(
+                        "{}: curated_at {:?} is not a YYYY-MM-DD date",
+                        meta_path.display(),
+                        meta.curated_at
+                    ),
+                });
             }
-        })?)),
+            Ok(Some(meta))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(EvalError::Io {
             action: "read",
@@ -281,6 +293,25 @@ fn load_meta(path: &Path, name: &str) -> Result<Option<SuiteMeta>, EvalError> {
             source,
         }),
     }
+}
+
+/// Whether the value is a real date-only `YYYY-MM-DD` day.
+fn is_calendar_date(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let (Ok(y), Ok(m), Ok(d)) = (
+        parts[0].parse::<i32>(),
+        parts[1].parse::<u8>(),
+        parts[2].parse::<u8>(),
+    ) else {
+        return false;
+    };
+    let Ok(month) = time::Month::try_from(m) else {
+        return false;
+    };
+    time::Date::from_calendar_date(y, month, d).is_ok()
 }
 
 /// Lowercase hex of a raw digest.
@@ -451,6 +482,34 @@ mod tests {
         assert_eq!(suite.questions.len(), 1);
         assert_eq!(suite.meta.as_ref().unwrap().curation_minutes, 30);
         assert_eq!(suite.hash.len(), 64);
+    }
+
+    #[test]
+    fn a_bad_curated_at_date_fails_the_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.jsonl");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&valid_question()).unwrap() + "\n",
+        )
+        .unwrap();
+        for bad in [
+            "not-a-date",
+            "2026-13-01",
+            "2026-02-30",
+            "2026-11-02T00:00:00Z",
+        ] {
+            std::fs::write(
+                dir.path().join("meta.meta.json"),
+                format!(r#"{{"curation_minutes":30,"curated_at":"{bad}","description":"d"}}"#),
+            )
+            .unwrap();
+            let err = Suite::load(&path, "meta").unwrap_err();
+            assert!(
+                err.to_string().contains("not a YYYY-MM-DD date"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

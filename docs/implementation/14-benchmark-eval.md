@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-02T00:00:00Z
+timestamp: 2026-11-02T12:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -52,7 +52,7 @@ Build a 20-question suite across 3 libraries before writing retrieval code. This
 ## Harness flow
 
 ```text
-devdocs-eval run <suite> [--db PATH] [--json]
+devdocs-eval [--json] run <suite> [--db PATH]
   1. load suite, validate every question (version pinned, refs well-formed)
   2. for each question: run the retrieve pipeline, record hits, ranks, timings
   3. score per question, aggregate per task_type and overall
@@ -60,9 +60,9 @@ devdocs-eval run <suite> [--db PATH] [--json]
   5. print the gate table; exit 0 when all gates PASS, 2 on any FAIL
 ```
 
-The harness binary is `devdocs-eval`. When the CLI subcommand wiring lands at M10 ([12](12-roadmap-milestones.md)), `devdocs eval run` proxies to it with the same flags. Exit codes: 0 every gate PASS; 1 invalid input (a broken suite, an unknown flag); 2 any gate FAIL or INCONCLUSIVE; 3 operational failure (a missing `devdocs` binary, I/O).
+`--json` is a top-level flag and precedes the subcommand. The harness binary is `devdocs-eval`. When the CLI subcommand wiring lands at M10 ([12](12-roadmap-milestones.md)), `devdocs eval run` proxies to it with the same flags. Exit codes: 0 every gate PASS; 1 invalid input (a broken suite, an unknown flag); 2 any gate FAIL or INCONCLUSIVE; 3 operational failure (a missing `devdocs` binary, I/O, a `devdocs search` call that exits nonzero or overshoots its 30-second deadline).
 
-Timing note: the harness measures the in-process pipeline plus, in a second pass, the CLI subprocess end-to-end. The p95 gate is judged on the subprocess pass, cold-start excluded after one warmup call.
+Timing note: the harness measures the in-process pipeline plus, in a second pass, the CLI subprocess end-to-end. The p95 gate is judged on the subprocess pass, cold-start excluded after one warmup call. Every timed call must exit 0; a failed or stalled call fails the run with exit 3 instead of contributing its wall time to the gate.
 
 ## Metrics
 

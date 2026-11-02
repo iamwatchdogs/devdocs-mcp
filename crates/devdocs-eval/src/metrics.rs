@@ -188,6 +188,13 @@ impl Fraction {
     pub fn value(self) -> f64 {
         ratio(self.hits, self.total)
     }
+
+    /// The value with its raw counts, as the gate table and the report
+    /// print it: `0.750 (3/4)`.
+    #[must_use]
+    pub fn display(self) -> String {
+        format!("{:.3} ({}/{})", self.value(), self.hits, self.total)
+    }
 }
 
 /// The suite-level aggregates (docs/implementation/14 §Metrics).

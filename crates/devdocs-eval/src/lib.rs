@@ -5,5 +5,10 @@
 //! metrics, writes the run artifacts, and prints the gate table.
 
 pub mod error;
+pub mod gates;
 pub mod metrics;
+pub mod pipeline;
+pub mod report;
+pub mod run;
+pub mod subprocess;
 pub mod suite;

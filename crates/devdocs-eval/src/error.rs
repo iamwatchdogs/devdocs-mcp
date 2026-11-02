@@ -6,10 +6,13 @@
 
 use std::path::PathBuf;
 
+use devdocs_store::StoreError;
+
 /// Everything that can abort a run before the gate table prints.
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
-    /// A suite file broke a cross-question rule, or a sidecar file is bad.
+    /// A suite file broke a cross-question rule, or a sidecar or baseline
+    /// file is bad.
     #[error("invalid suite {suite}: {reason}")]
     InvalidSuite {
         /// The suite name.
@@ -27,6 +30,20 @@ pub enum EvalError {
         /// What is wrong, in one line.
         reason: String,
     },
+    /// The database could not be opened, migrated, or read.
+    #[error("store failure: {0}")]
+    Store(
+        #[from]
+        #[source]
+        StoreError,
+    ),
+    /// The `devdocs` binary for the subprocess pass is missing, or a spawn
+    /// failed.
+    #[error("subprocess failure: {0}")]
+    Subprocess(
+        /// What failed, in one line.
+        String,
+    ),
     /// A file could not be read or written.
     #[error("cannot {action} {path}: {source}")]
     Io {
@@ -36,6 +53,14 @@ pub enum EvalError {
         path: PathBuf,
         /// The underlying I/O failure.
         source: std::io::Error,
+    },
+    /// An artifact could not be serialized.
+    #[error("cannot serialize {what}: {source}")]
+    Serialize {
+        /// Which artifact failed, for example `results.json`.
+        what: &'static str,
+        /// The underlying serialization failure.
+        source: serde_json::Error,
     },
 }
 
@@ -48,7 +73,7 @@ impl EvalError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::InvalidSuite { .. } | Self::SuiteParse { .. } => 1,
-            Self::Io { .. } => 3,
+            Self::Store(_) | Self::Subprocess(_) | Self::Io { .. } | Self::Serialize { .. } => 3,
         }
     }
 }

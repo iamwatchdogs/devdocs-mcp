@@ -147,6 +147,9 @@ impl QuestionScore {
 /// `unanswerable` questions pass only with an empty result set — a hit is a
 /// failure (docs/implementation/14 §Golden-set format). `ref_match` scans
 /// the full result list; `symbol_match` passes only at full symbol recall.
+/// A symbol counts only from a hit on the question's own library and
+/// version pin — a `multi_library` question grades its symbols against
+/// that primary pin, even though its refs may target other libraries.
 #[must_use]
 pub fn grade_question(question: &Question, hits: &[RetrievedRef]) -> QuestionScore {
     let refs = question.expect_refs.as_deref().unwrap_or_default();

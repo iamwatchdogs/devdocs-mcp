@@ -73,7 +73,7 @@ struct BaseColumns {
 fn base_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaseColumns> {
     let chunk_id: i64 = row.get(0)?;
     Ok(BaseColumns {
-        chunk_id: row.get(0)?,
+        chunk_id,
         source_id: row.get(1)?,
         library: row.get(2)?,
         version: row.get(3)?,

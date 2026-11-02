@@ -202,7 +202,6 @@ pub struct Suite {
 
 impl Suite {
     /// Loads and validates a suite file, plus its `<stem>.meta.json`
-    /// Loads and validates a suite file, plus its `<stem>.meta.json`
     /// sidecar when one sits next to it.
     ///
     /// # Errors

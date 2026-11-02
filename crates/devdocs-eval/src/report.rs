@@ -293,8 +293,17 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
          (docs/implementation/14 §Gate table).\n\n",
     );
 
-    out.push_str("## Metrics\n\n");
-    out.push_str("| Metric | Value |\n|---|---|\n");
+    out.push_str(&render_metrics(input));
+    out.push_str(&render_breakdown(input));
+    out.push_str(&render_curation(input));
+    out.push_str(&render_baseline(input));
+    out.push_str(&render_corpus(input));
+    out
+}
+
+/// The metrics table section.
+fn render_metrics(input: &ReportInput<'_>) -> String {
+    let mut out = String::from("## Metrics\n\n| Metric | Value |\n|---|---|\n");
     push_line(
         &mut out,
         format!("| hit@5 | {} |", input.metrics.hit_at_5.display()),
@@ -330,9 +339,14 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
     out.push_str(
         "| cost per query | $0.00 (local BM25; ingest embedding cost counted in Phase 3) |\n\n",
     );
+    out
+}
 
-    out.push_str("## Per-task-type breakdown\n\n");
-    out.push_str("| task_type | n | pass | fail |\n|---|---|---|---|\n");
+/// The per-task-type breakdown section.
+fn render_breakdown(input: &ReportInput<'_>) -> String {
+    let mut out = String::from(
+        "## Per-task-type breakdown\n\n| task_type | n | pass | fail |\n|---|---|---|---|\n",
+    );
     for row in task_breakdown(input.scored) {
         push_line(
             &mut out,
@@ -343,8 +357,12 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
         );
     }
     out.push('\n');
+    out
+}
 
-    out.push_str("## Curation\n\n");
+/// The curation section.
+fn render_curation(input: &ReportInput<'_>) -> String {
+    let mut out = String::from("## Curation\n\n");
     push_line(
         &mut out,
         match input.curation_minutes {
@@ -352,8 +370,13 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
             None => "- curation minutes: not recorded".to_owned(),
         },
     );
+    out.push('\n');
+    out
+}
 
-    out.push_str("\n## Phase 0 baseline (pre-devdocs docs workflow)\n\n");
+/// The Phase 0 baseline section.
+fn render_baseline(input: &ReportInput<'_>) -> String {
+    let mut out = String::from("## Phase 0 baseline (pre-devdocs docs workflow)\n\n");
     out.push_str(&match input.baseline {
         Some(baseline) => {
             let mut section = format!(
@@ -377,8 +400,12 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
         }
         None => "- baseline record: not found (eval/baseline/phase0.json)\n".to_owned(),
     });
+    out
+}
 
-    out.push_str("\n## Corpus\n\n");
+/// The corpus-identity section.
+fn render_corpus(input: &ReportInput<'_>) -> String {
+    let mut out = String::from("\n## Corpus\n\n");
     push_line(
         &mut out,
         format!(

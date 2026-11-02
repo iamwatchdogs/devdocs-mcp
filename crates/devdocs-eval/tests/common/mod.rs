@@ -12,7 +12,10 @@ use rusqlite::Connection;
 /// do (crates/devdocs/tests/cli.rs): from the test binary's own target
 /// directory, so it works under nextest, under cargo-llvm-cov's dedicated
 /// target dir, and on Windows (`devdocs.exe`). It fails with a clear
-/// message when the binary is not built.
+/// message when the binary is not built. `cargo test -p devdocs-eval`
+/// builds the `devdocs` binary as a workspace dependency of the test
+/// target; a bare `cargo build -p devdocs-eval` does not, so build it
+/// first (`cargo build -p devdocs`) before a run that skips the build.
 pub fn devdocs_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin("devdocs")
 }

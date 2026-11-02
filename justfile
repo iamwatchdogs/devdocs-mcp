@@ -127,6 +127,7 @@ features:
 # A gate that is not PASS exits 2 — the honest state until the retrieval
 # core lands at M4.
 eval:
+    cargo build --locked -p devdocs
     cargo run -p devdocs-eval -- run pilot
 
 # Public API break detection between releases.

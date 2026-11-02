@@ -75,6 +75,14 @@ impl Grader {
     }
 }
 
+impl Default for Grader {
+    /// `ref_match` — the documented default (docs/implementation/14
+    /// §Golden-set format: "`grader` is `ref_match` (default), …").
+    fn default() -> Self {
+        Self::RefMatch
+    }
+}
+
 /// One golden question: one line of `eval/golden/<suite>.jsonl`
 /// (docs/implementation/14 §Golden-set format).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +105,9 @@ pub struct Question {
     /// Symbols the results must contain for symbol-recall scoring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_symbols: Option<Vec<String>>,
-    /// The grader for the question.
+    /// The grader for the question; defaults to `ref_match`
+    /// (docs/implementation/14 §Golden-set format).
+    #[serde(default)]
     pub grader: Grader,
     /// Curation note: what counts as correct, and why.
     pub notes: String,
@@ -355,10 +365,10 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_grader_fails_at_parse() {
+    fn an_omitted_grader_defaults_to_ref_match() {
         let line = r#"{"id":"x","library":"next.js","version":"16.2.9","task_type":"exact_api","question":"q","expect_refs":["docs://next.js/v16.2.9/proxy"],"notes":"n"}"#;
-        let err = serde_json::from_str::<Question>(line).unwrap_err();
-        assert!(err.to_string().contains("missing field `grader`"), "{err}");
+        let q = serde_json::from_str::<Question>(line).unwrap();
+        assert_eq!(q.grader, Grader::RefMatch);
     }
 
     #[test]

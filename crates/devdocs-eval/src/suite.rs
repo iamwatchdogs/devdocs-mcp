@@ -195,62 +195,86 @@ fn ensure_pinned_version(version: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A parsed `docs://` ref: `docs://<library>/v<version>/<path>[#<fragment>]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedRef {
+    /// The library authority.
+    pub library: String,
+    /// The pinned version, without the leading `v`.
+    pub version: String,
+    /// The non-empty path segments.
+    pub segments: Vec<String>,
+    /// The fragment after `#`, when present.
+    pub fragment: Option<String>,
+}
+
+impl ParsedRef {
+    /// Parses the ref grammar; `None` for any broken shape.
+    ///
+    /// The path is one or more `/`-separated segments without `..`, `?`, or
+    /// whitespace; a fragment must be non-empty without whitespace.
+    #[must_use]
+    pub fn parse(r: &str) -> Option<ParsedRef> {
+        let rest = r.strip_prefix("docs://")?;
+        let (library, tail) = rest.split_once('/')?;
+        if library.is_empty() {
+            return None;
+        }
+        let (path, fragment) = match tail.split_once('#') {
+            Some((p, f)) => (p, Some(f)),
+            None => (tail, None),
+        };
+        let (version_segment, segment_text) = path.split_once('/')?;
+        let version = version_segment.strip_prefix('v')?;
+        if version.is_empty() {
+            return None;
+        }
+        let segments: Vec<String> = segment_text.split('/').map(str::to_owned).collect();
+        if segments.is_empty()
+            || segments.iter().any(|s| {
+                s.is_empty() || s == ".." || s.contains('?') || s.contains(char::is_whitespace)
+            })
+        {
+            return None;
+        }
+        if fragment.is_some_and(|f| f.is_empty() || f.contains(char::is_whitespace)) {
+            return None;
+        }
+        Some(ParsedRef {
+            library: library.to_owned(),
+            version: version.to_owned(),
+            segments,
+            fragment: fragment.map(str::to_owned),
+        })
+    }
+}
+
 /// Validates one `docs://` ref against the question's pin.
 ///
-/// Grammar: `docs://<library>/v<version>/<path>[#<fragment>]`. The path is
-/// one or more `/`-separated segments without `..`, `?`, or whitespace.
-/// `multi_library` questions may pin refs for other libraries.
+/// `multi_library` questions may pin refs for other libraries; those refs
+/// pin their own version.
 fn validate_ref(r: &str, library: &str, version: &str, task_type: TaskType) -> Result<(), String> {
     let bad = |why: String| format!("malformed ref {r:?}: {why}");
-    let rest = r
-        .strip_prefix("docs://")
-        .ok_or_else(|| bad("must start with docs://".to_owned()))?;
-    let (authority, tail) = rest
-        .split_once('/')
-        .ok_or_else(|| bad("needs <library>/v<version>/<path>".to_owned()))?;
-    if authority.is_empty() {
-        return Err(bad("empty library".to_owned()));
-    }
-    if task_type != TaskType::MultiLibrary && authority != library {
-        return Err(bad(format!(
-            "library {authority:?} does not match the question library {library:?}"
-        )));
-    }
-    let (path, fragment) = match tail.split_once('#') {
-        Some((p, f)) => (p, Some(f)),
-        None => (tail, None),
-    };
-    let (version_segment, segments) = path
-        .split_once('/')
-        .ok_or_else(|| bad("needs v<version>/<path>".to_owned()))?;
-    let pinned = version_segment
-        .strip_prefix('v')
-        .ok_or_else(|| bad("version segment must start with v".to_owned()))?;
-    if task_type != TaskType::MultiLibrary && pinned != version {
-        return Err(bad(format!(
-            "pins version {pinned:?}, question pins {version:?}"
-        )));
+    let parsed = ParsedRef::parse(r).ok_or_else(|| {
+        bad("the shape is not docs://<library>/v<version>/<path>[#<fragment>]".to_owned())
+    })?;
+    if task_type != TaskType::MultiLibrary {
+        if parsed.library != library {
+            return Err(bad(format!(
+                "library {:?} does not match the question library {library:?}",
+                parsed.library
+            )));
+        }
+        if parsed.version != version {
+            return Err(bad(format!(
+                "pins version {:?}, question pins {version:?}",
+                parsed.version
+            )));
+        }
     }
     // A `multi_library` ref pins another library's version; every ref
     // version is still an exact pin.
-    ensure_pinned_version(pinned).map_err(bad)?;
-    if segments.is_empty()
-        || segments.split('/').any(str::is_empty)
-        || segments.split('/').any(|s| s == "..")
-        || segments.contains('?')
-        || segments.contains(char::is_whitespace)
-    {
-        return Err(bad(
-            "path must be non-empty segments without .., ?, or whitespace".to_owned(),
-        ));
-    }
-    if let Some(f) = fragment
-        && (f.is_empty() || f.contains(char::is_whitespace))
-    {
-        return Err(bad(
-            "fragment must be non-empty without whitespace".to_owned()
-        ));
-    }
+    ensure_pinned_version(&parsed.version).map_err(bad)?;
     Ok(())
 }
 

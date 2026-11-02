@@ -5,4 +5,5 @@
 //! metrics, writes the run artifacts, and prints the gate table.
 
 pub mod error;
+pub mod metrics;
 pub mod suite;

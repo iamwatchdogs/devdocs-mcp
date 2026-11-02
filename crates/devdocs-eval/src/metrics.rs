@@ -181,7 +181,11 @@ pub fn grade_question(question: &Question, hits: &[RetrievedRef]) -> QuestionSco
         hit_at_5: hit_at_5(refs, hits),
         symbols_found,
         symbols_pinned: symbols.len(),
-        version_correct: hits.first().is_some_and(|h| h.version == question.version),
+        // The top result serves the exact pinned version of the question's
+        // own library — the same library/version rule the graders apply.
+        version_correct: hits.first().is_some_and(|h| {
+            h.version == question.version && h.library.eq_ignore_ascii_case(&question.library)
+        }),
     }
 }
 
@@ -481,6 +485,12 @@ mod tests {
 
         let fallback = vec![hit(1, "next.js", "16.1.0", "proxy", None)];
         assert!(!grade_question(&q, &fallback).version_correct);
+
+        let foreign = vec![hit(1, "zod", "16.2.9", "proxy", None)];
+        assert!(
+            !grade_question(&q, &foreign).version_correct,
+            "another library with the same version string does not count"
+        );
     }
 
     #[test]

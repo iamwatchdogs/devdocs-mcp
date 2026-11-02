@@ -341,7 +341,7 @@ fn write_report(
 /// With an explicit `--golden-dir`, its parent is the eval directory and
 /// the default runs and baseline paths derive from it. Otherwise the eval
 /// directory is discovered by walking up from the working directory until
-/// `eval/golden` appears.
+/// an `eval/golden` pair appears.
 fn resolve_dirs(options: &RunOptions) -> Result<(PathBuf, PathBuf, PathBuf), EvalError> {
     let eval_root = match options
         .golden_dir
@@ -376,8 +376,8 @@ fn resolve_dirs(options: &RunOptions) -> Result<(PathBuf, PathBuf, PathBuf), Eva
 fn discover_eval_root() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
-        if dir.join("golden").is_dir() {
-            return Some(dir);
+        if dir.join("eval").join("golden").is_dir() {
+            return Some(dir.join("eval"));
         }
         if !dir.pop() {
             return None;

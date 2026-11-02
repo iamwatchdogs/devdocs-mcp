@@ -81,6 +81,14 @@ pub(crate) fn ensure_pinned_version(version: &str) -> Result<(), String> {
     if version.chars().any(char::is_whitespace) {
         return Err(bad("whitespace"));
     }
+    // Only the characters a SemVer 2.0.0 version can carry; anything else
+    // (a range selector, a comparison) is not an exact pin.
+    if !version
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return Err(bad("only letters, digits, '.', '-', and '+' are allowed"));
+    }
     for component in version.split('.') {
         if component.is_empty() {
             return Err(bad("empty component"));
@@ -106,8 +114,11 @@ pub(crate) fn validate_ref(
     let parsed = ParsedRef::parse(r).ok_or_else(|| {
         bad("the shape is not docs://<library>/v<version>/<path>[#<fragment>]".to_owned())
     })?;
-    if task_type != TaskType::MultiLibrary {
-        if parsed.library != library {
+    // A `multi_library` ref may pin another library's version. A ref for
+    // the question's own library — in any task type — still pins the
+    // question version.
+    if task_type != TaskType::MultiLibrary || parsed.library.eq_ignore_ascii_case(library) {
+        if !parsed.library.eq_ignore_ascii_case(library) {
             return Err(bad(format!(
                 "library {:?} does not match the question library {library:?}",
                 parsed.library
@@ -120,8 +131,7 @@ pub(crate) fn validate_ref(
             )));
         }
     }
-    // A `multi_library` ref pins another library's version; every ref
-    // version is still an exact pin.
+    // Every ref version is still an exact pin.
     ensure_pinned_version(&parsed.version).map_err(bad)?;
     Ok(())
 }
@@ -135,12 +145,32 @@ mod tests {
     #[test]
     fn versions_must_be_exact_pins() {
         for bad in [
-            "^1.2.3", "~1.2", ">=1.0", "1.x", "1.2.*", "latest", "v16.2.9", "", "16.2.9 ", "16..9",
+            "^1.2.3",
+            "~1.2",
+            ">=1.0",
+            "1.x",
+            "1.2.*",
+            "latest",
+            "v16.2.9",
+            "",
+            "16.2.9 ",
+            "16..9",
+            "1.2.3||2.0.0",
+            "1.2.3<2.0.0",
+            "1.2.3!=2.0.0",
+            "16.2.9~1",
         ] {
             let err = ensure_pinned_version(bad).unwrap_err();
             assert!(err.contains("not an exact pin"), "{bad}: {err}");
         }
-        for good in ["16.2.9", "4.6.7", "1.0.229", "4.0.0-beta.1", "16"] {
+        for good in [
+            "16.2.9",
+            "4.6.7",
+            "1.0.229",
+            "4.0.0-beta.1",
+            "16",
+            "4.0.0+build.7",
+        ] {
             ensure_pinned_version(good).unwrap();
         }
     }
@@ -203,6 +233,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("does not match the question library"));
+    }
+
+    #[test]
+    fn multi_library_refs_on_the_own_library_pin_the_question_version() {
+        validate_ref(
+            "docs://next.js/v16.2.9/proxy",
+            "next.js",
+            "16.2.9",
+            TaskType::MultiLibrary,
+        )
+        .unwrap();
+        let err = validate_ref(
+            "docs://next.js/v15.0.0/proxy",
+            "next.js",
+            "16.2.9",
+            TaskType::MultiLibrary,
+        )
+        .unwrap_err();
+        assert!(err.contains("pins version"), "{err}");
     }
 
     #[test]

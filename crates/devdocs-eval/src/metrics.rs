@@ -151,9 +151,18 @@ impl QuestionScore {
 pub fn grade_question(question: &Question, hits: &[RetrievedRef]) -> QuestionScore {
     let refs = question.expect_refs.as_deref().unwrap_or_default();
     let symbols = question.expect_symbols.as_deref().unwrap_or_default();
+    // A symbol counts only when a hit from the question's own library and
+    // pinned version documents it — the same library/version rule the ref
+    // grader applies (docs/implementation/14 §Version correctness).
     let symbols_found = symbols
         .iter()
-        .filter(|s| hits.iter().any(|h| h.symbol.as_deref() == Some(s.as_str())))
+        .filter(|s| {
+            hits.iter().any(|h| {
+                h.symbol.as_deref() == Some(s.as_str())
+                    && h.version == question.version
+                    && h.library.eq_ignore_ascii_case(&question.library)
+            })
+        })
         .count();
     let passed = if question.task_type == TaskType::Unanswerable {
         hits.is_empty()
@@ -437,6 +446,24 @@ mod tests {
             hit(2, "next.js", "16.2.9", "proxy", Some("rewrite")),
         ];
         assert!(grade_question(&q, &full).passed);
+    }
+
+    #[test]
+    fn symbols_count_only_from_the_pinned_library_and_version() {
+        let mut q = question(Grader::SymbolMatch, TaskType::ExactApi, Vec::new());
+        q.expect_symbols = Some(refs(&["middleware"]));
+
+        let foreign_version = vec![hit(1, "next.js", "16.1.0", "proxy", Some("middleware"))];
+        let score = grade_question(&q, &foreign_version);
+        assert_eq!(score.symbols_found, 0, "another version does not count");
+
+        let foreign_library = vec![hit(1, "zod", "16.2.9", "proxy", Some("middleware"))];
+        let score = grade_question(&q, &foreign_library);
+        assert_eq!(score.symbols_found, 0, "another library does not count");
+
+        let case_insensitive = vec![hit(1, "Next.js", "16.2.9", "proxy", Some("middleware"))];
+        let score = grade_question(&q, &case_insensitive);
+        assert_eq!(score.symbols_found, 1, "library case does not matter");
     }
 
     #[test]

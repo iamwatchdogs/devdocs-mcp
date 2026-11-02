@@ -2,10 +2,12 @@
 //! the suite, run the retrieval pipeline, run the CLI-subprocess pass,
 //! score, write the artifacts, and evaluate the gates.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use devdocs_store::Store;
+use sha2::{Digest, Sha256};
 
 use crate::error::EvalError;
 use crate::gates::{self, Gate};
@@ -80,7 +82,7 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     let metrics = SuiteMetrics::new(&passes.graded);
     let gate_rows = gates::evaluate(&metrics, Some(p95_ms));
 
-    let db_hash = crate::suite::hex_hash(&read_db_bytes(&db_path)?);
+    let db_hash = hash_file(&db_path)?;
     let bundle = RunData {
         suite: &suite,
         date: &date,
@@ -415,11 +417,27 @@ fn fresh_run_dir(runs_root: &Path, date: &str, suite: &str) -> Result<PathBuf, E
     }
 }
 
-/// Reads the database file bytes for the manifest hash.
-fn read_db_bytes(db_path: &Path) -> Result<Vec<u8>, EvalError> {
-    std::fs::read(db_path).map_err(|source| EvalError::Io {
-        action: "read",
+/// SHA-256 of the file at `path` as lowercase hex, read in buffered
+/// chunks so the database never sits in memory whole (the manifest hash).
+fn hash_file(db_path: &Path) -> Result<String, EvalError> {
+    let file = std::fs::File::open(db_path).map_err(|source| EvalError::Io {
+        action: "open",
         path: db_path.to_path_buf(),
         source,
-    })
+    })?;
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut hasher = Sha256::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).map_err(|source| EvalError::Io {
+            action: "read",
+            path: db_path.to_path_buf(),
+            source,
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&chunk[..read]);
+    }
+    Ok(crate::suite::hex_hash(&hasher.finalize()))
 }

@@ -336,15 +336,17 @@ fn write_report(
 
 /// Resolves the golden dir, the runs dir, and the baseline path.
 ///
-/// Explicit options win; otherwise the eval root is discovered by walking
-/// up from the working directory until `eval/golden` appears.
+/// With an explicit `--golden-dir`, its parent is the eval directory and
+/// the default runs and baseline paths derive from it. Otherwise the eval
+/// directory is discovered by walking up from the working directory until
+/// `eval/golden` appears.
 fn resolve_dirs(options: &RunOptions) -> Result<(PathBuf, PathBuf, PathBuf), EvalError> {
-    let root = options
+    let eval_root = match options
         .golden_dir
         .as_ref()
-        .and_then(|g| g.parent().map(Path::to_path_buf));
-    let root = match root {
-        Some(root) => root,
+        .and_then(|g| g.parent().map(Path::to_path_buf))
+    {
+        Some(eval_dir) => eval_dir.clone(),
         None => discover_eval_root().ok_or_else(|| EvalError::InvalidSuite {
             suite: options.suite.clone(),
             reason: "cannot locate the eval/ directory from the working \
@@ -355,24 +357,24 @@ fn resolve_dirs(options: &RunOptions) -> Result<(PathBuf, PathBuf, PathBuf), Eva
     let golden_dir = options
         .golden_dir
         .clone()
-        .unwrap_or_else(|| root.join("eval").join("golden"));
+        .unwrap_or_else(|| eval_root.join("golden"));
     let runs_root = options
         .runs_dir
         .clone()
-        .unwrap_or_else(|| root.join("eval").join("runs"));
+        .unwrap_or_else(|| eval_root.join("runs"));
     Ok((
         golden_dir,
         runs_root,
-        root.join("eval").join("baseline").join("phase0.json"),
+        eval_root.join("baseline").join("phase0.json"),
     ))
 }
 
-/// Walks up from the working directory to the repo root that holds
-/// `eval/golden`.
+/// Walks up from the working directory to the `eval` directory that holds
+/// `golden`.
 fn discover_eval_root() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
-        if dir.join("eval").join("golden").is_dir() {
+        if dir.join("golden").is_dir() {
             return Some(dir);
         }
         if !dir.pop() {
@@ -382,20 +384,35 @@ fn discover_eval_root() -> Option<PathBuf> {
 }
 
 /// Creates `eval/runs/<date>-<suite>`, deduplicated with `-2`, `-3`, ….
+///
+/// Creation is atomic per candidate: `create_dir` fails with
+/// `AlreadyExists` when another process took the directory first, so two
+/// concurrent runs of one suite never share a run directory.
 fn fresh_run_dir(runs_root: &Path, date: &str, suite: &str) -> Result<PathBuf, EvalError> {
+    std::fs::create_dir_all(runs_root).map_err(|source| EvalError::Io {
+        action: "create",
+        path: runs_root.to_path_buf(),
+        source,
+    })?;
     let day = date.get(..10).unwrap_or("run");
     let mut run_dir = runs_root.join(format!("{day}-{suite}"));
     let mut suffix = 2;
-    while run_dir.exists() {
-        run_dir = runs_root.join(format!("{day}-{suite}-{suffix}"));
-        suffix += 1;
+    loop {
+        match std::fs::create_dir(&run_dir) {
+            Ok(()) => return Ok(run_dir),
+            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                run_dir = runs_root.join(format!("{day}-{suite}-{suffix}"));
+                suffix += 1;
+            }
+            Err(source) => {
+                return Err(EvalError::Io {
+                    action: "create",
+                    path: run_dir,
+                    source,
+                });
+            }
+        }
     }
-    std::fs::create_dir_all(&run_dir).map_err(|source| EvalError::Io {
-        action: "create",
-        path: run_dir.clone(),
-        source,
-    })?;
-    Ok(run_dir)
 }
 
 /// Reads the database file bytes for the manifest hash.

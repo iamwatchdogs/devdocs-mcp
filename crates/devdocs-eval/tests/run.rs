@@ -163,3 +163,24 @@ fn a_failing_subprocess_call_fails_the_run() {
     assert_eq!(err.exit_code(), 3, "{err}");
     assert!(err.to_string().contains("exited 1"), "{err}");
 }
+
+#[test]
+fn a_second_run_of_one_suite_gets_its_own_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, suite, _runs) = common::fixture(dir.path());
+    let options = |db: std::path::PathBuf| RunOptions {
+        suite: suite.display().to_string(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(dir.path().join("runs")),
+        devdocs_bin: Some(common::devdocs_bin()),
+    };
+    let first = run(&options(db.clone())).unwrap();
+    let second = run(&options(db)).unwrap();
+    assert_ne!(first.run_dir, second.run_dir, "runs never share a dir");
+    assert!(
+        second.run_dir.to_string_lossy().ends_with("-2"),
+        "the dedup suffix advances: {}",
+        second.run_dir.display()
+    );
+}

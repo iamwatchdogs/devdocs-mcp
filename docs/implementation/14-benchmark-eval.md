@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-10-31T00:00:00Z
+timestamp: 2026-11-02T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -15,9 +15,10 @@ The research bundle states that no controlled docs-domain benchmark exists, and 
 ## Components
 
 - `crates/devdocs-eval` — the harness binary. Reads a suite, runs the retrieve crate, scores results, writes artifacts.
-- `eval/golden/*.jsonl` — golden question files, one suite per file.
+- `eval/golden/*.jsonl` — golden question files, one suite per file. A `<suite>.meta.json` sidecar next to a suite records the curation minutes.
 - `eval/runs/<date>-<suite>/` — run artifacts. Gitignored.
-- `just eval` — runs the default suite and prints the gate table. Until the harness binary lands at M10 ([12](12-roadmap-milestones.md)), the recipe is a smoke check: it runs `devdocs-eval -- --help` and stops.
+- `eval/baseline/*.json` — the standing Phase 0 baseline records (schema rent, per-query cost of the current docs workflow) that each run report carries.
+- `just eval` — runs the default pilot suite through the harness binary and prints the gate table. A gate that is not PASS exits 2, so the recipe reports the honest state until the retrieval core lands at M4 ([13](13-implementation-plan.md)).
 
 ## Golden-set format
 
@@ -51,13 +52,15 @@ Build a 20-question suite across 3 libraries before writing retrieval code. This
 ## Harness flow
 
 ```text
-devdocs eval run <suite> [--db PATH] [--json]
+devdocs-eval run <suite> [--db PATH] [--json]
   1. load suite, validate every question (version pinned, refs well-formed)
   2. for each question: run the retrieve pipeline, record hits, ranks, timings
   3. score per question, aggregate per task_type and overall
   4. write eval/runs/<date>-<suite>/results.json + report.md
   5. print the gate table; exit 0 when all gates PASS, 2 on any FAIL
 ```
+
+The harness binary is `devdocs-eval`. When the CLI subcommand wiring lands at M10 ([12](12-roadmap-milestones.md)), `devdocs eval run` proxies to it with the same flags. Exit codes: 0 every gate PASS; 1 invalid input (a broken suite, an unknown flag); 2 any gate FAIL or INCONCLUSIVE; 3 operational failure (a missing `devdocs` binary, I/O).
 
 Timing note: the harness measures the in-process pipeline plus, in a second pass, the CLI subprocess end-to-end. The p95 gate is judged on the subprocess pass, cold-start excluded after one warmup call.
 
@@ -73,6 +76,8 @@ Timing note: the harness measures the in-process pipeline plus, in a second pass
 | version correctness | Fraction of results with `version_status = verified` where an exact version was requested | ≥ 0.99 |
 
 The binary grader: partial counts as wrong. The research protocol is explicit (research: benchmark-protocol.md Step 6).
+
+Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate and version correctness count every question — an abstention with no results is not version-correct. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands.
 
 ## Gate table
 

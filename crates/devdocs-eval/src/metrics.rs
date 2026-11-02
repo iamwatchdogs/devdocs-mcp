@@ -7,7 +7,8 @@
 
 use serde::Serialize;
 
-use crate::suite::{Grader, ParsedRef, Question, TaskType};
+use crate::refs::ParsedRef;
+use crate::suite::{Grader, Question, TaskType};
 
 /// One retrieval result, shaped for grading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

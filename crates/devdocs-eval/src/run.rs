@@ -73,31 +73,29 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     let store = Store::open(&db_path)?;
     store.migrate()?;
 
-    let InProcess { mut rows, graded } = in_process_pass(&store, &suite)?;
-    let p95_ms = subprocess_pass(options, &db_path, &suite, &mut rows)?;
+    let mut passes = in_process_pass(&store, &suite)?;
+    let p95_ms = subprocess_pass(options, &db_path, &suite, &mut passes.rows)?;
     drop(store);
 
-    let suite_metrics = SuiteMetrics::new(&graded);
-    let gate_rows = gates::evaluate(&suite_metrics, Some(p95_ms));
+    let metrics = SuiteMetrics::new(&passes.graded);
+    let gate_rows = gates::evaluate(&metrics, Some(p95_ms));
 
     let db_hash = crate::suite::hex_hash(&read_db_bytes(&db_path)?);
-    write_artifacts(
-        &run_dir,
-        &suite,
-        &date,
-        &rows,
-        &graded,
-        &suite_metrics,
+    let bundle = RunData {
+        suite: &suite,
+        date: &date,
+        metrics,
         p95_ms,
-        &gate_rows,
-        &db_hash,
-        &baseline_path,
-    )?;
+        gates: &gate_rows,
+        db_hash: &db_hash,
+        baseline_path: &baseline_path,
+    };
+    write_artifacts(&run_dir, &bundle, &passes)?;
 
     let all_gates_pass = gates::all_pass(&gate_rows);
     Ok(RunOutcome {
         run_dir,
-        metrics: suite_metrics,
+        metrics,
         gates: gate_rows,
         p95_ms,
         all_gates_pass,
@@ -214,64 +212,109 @@ fn subprocess_pass(
     Ok(metrics::p95(&samples))
 }
 
+/// Everything the artifacts need, assembled once by the run.
+struct RunData<'a> {
+    /// The validated suite.
+    suite: &'a Suite,
+    /// The run date, RFC 3339 UTC.
+    date: &'a str,
+    /// The suite-level metrics.
+    metrics: SuiteMetrics,
+    /// The subprocess p95 in milliseconds.
+    p95_ms: f64,
+    /// The evaluated gate rows.
+    gates: &'a [Gate],
+    /// SHA-256 hex of the database file bytes.
+    db_hash: &'a str,
+    /// The baseline record the report and manifest carry.
+    baseline_path: &'a Path,
+}
+
 /// Writes `results.json`, `manifest.json`, and `report.md` into the run
 /// directory (docs/implementation/14 §Run artifacts).
-#[allow(clippy::too_many_arguments)]
 fn write_artifacts(
     run_dir: &Path,
-    suite: &Suite,
-    date: &str,
+    data: &RunData<'_>,
+    passes: &InProcess,
+) -> Result<(), EvalError> {
+    let baseline = report::load_baseline(data.baseline_path)?;
+    write_results(run_dir, data, &passes.rows)?;
+    write_manifest(
+        run_dir,
+        data,
+        baseline.as_ref().map(|(_, hash)| hash.clone()),
+    )?;
+    write_report(
+        run_dir,
+        data,
+        &passes.graded,
+        baseline.as_ref().map(|(b, _)| b),
+    )
+}
+
+/// Writes the per-question `results.json` rows.
+fn write_results(
+    run_dir: &Path,
+    data: &RunData<'_>,
     rows: &[QuestionResult],
-    graded: &[(Question, QuestionScore)],
-    suite_metrics: &SuiteMetrics,
-    p95_ms: f64,
-    gate_rows: &[Gate],
-    db_hash: &str,
-    baseline_path: &Path,
 ) -> Result<(), EvalError> {
     let results = ResultsDocument {
-        suite: &suite.name,
-        date,
+        suite: &data.suite.name,
+        date: data.date,
         tool_version: env!("CARGO_PKG_VERSION"),
-        db_hash,
-        suite_hash: &suite.hash,
+        db_hash: data.db_hash,
+        suite_hash: &data.suite.hash,
         questions: rows,
     };
     report::write_artifact(
         &run_dir.join("results.json"),
         &report::json_artifact("results.json", &results)?,
-    )?;
+    )
+}
 
-    let baseline = report::load_baseline(baseline_path)?;
+/// Writes the `manifest.json` that reconstructs the denominator.
+fn write_manifest(
+    run_dir: &Path,
+    data: &RunData<'_>,
+    baseline_hash: Option<String>,
+) -> Result<(), EvalError> {
     let manifest = Manifest {
         tool: format!("devdocs-eval {}", env!("CARGO_PKG_VERSION")),
-        suite: &suite.name,
-        suite_hash: &suite.hash,
-        db_hash,
+        suite: &data.suite.name,
+        suite_hash: &data.suite.hash,
+        db_hash: data.db_hash,
         host: Host {
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         },
-        date,
-        questions: suite.questions.len(),
-        baseline_hash: baseline.as_ref().map(|(_, hash)| hash.clone()),
+        date: data.date,
+        questions: data.suite.questions.len(),
+        baseline_hash,
     };
     report::write_artifact(
         &run_dir.join("manifest.json"),
         &report::json_artifact("manifest.json", &manifest)?,
-    )?;
+    )
+}
 
+/// Writes the rendered `report.md`.
+fn write_report(
+    run_dir: &Path,
+    data: &RunData<'_>,
+    graded: &[(Question, QuestionScore)],
+    baseline: Option<&report::Baseline>,
+) -> Result<(), EvalError> {
     let input = ReportInput {
-        suite: &suite.name,
-        date,
-        metrics: *suite_metrics,
-        p95_ms,
-        gates: gate_rows,
+        suite: &data.suite.name,
+        date: data.date,
+        metrics: data.metrics,
+        p95_ms: data.p95_ms,
+        gates: data.gates,
         scored: graded,
-        curation_minutes: suite.meta.as_ref().map(|meta| meta.curation_minutes),
-        baseline: baseline.as_ref().map(|(record, _)| record),
-        suite_hash: &suite.hash,
-        db_hash,
+        curation_minutes: data.suite.meta.as_ref().map(|meta| meta.curation_minutes),
+        baseline,
+        suite_hash: &data.suite.hash,
+        db_hash: data.db_hash,
     };
     report::write_artifact(&run_dir.join("report.md"), &report::render_report(&input))
 }

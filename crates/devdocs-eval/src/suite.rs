@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::EvalError;
+use crate::refs::{ensure_pinned_version, validate_ref};
 
 /// The eight-category task-type union (docs/implementation/14
 /// §Golden-set format; research: benchmark-protocol.md Step 3).
@@ -161,123 +162,6 @@ fn ensure_non_empty(field: &str, value: &str) -> Result<(), String> {
     }
 }
 
-/// Rejects versions that are not an exact pin (docs/implementation/14:
-/// "Version is exact. A question without a pinned version is invalid input
-/// for the harness.").
-fn ensure_pinned_version(version: &str) -> Result<(), String> {
-    let bad = |why: &str| format!("version {version:?} is not an exact pin: {why}");
-    match version.chars().next() {
-        None => return Err(bad("empty")),
-        Some('v' | 'V') => {
-            return Err(bad(
-                "drop the leading v; the pin is bare and refs carry the v",
-            ));
-        }
-        Some('^' | '~' | '>' | '<' | '=' | '*') => {
-            return Err(bad("a range selector pins nothing"));
-        }
-        _ => {}
-    }
-    if version.eq_ignore_ascii_case("latest") {
-        return Err(bad("'latest' pins nothing"));
-    }
-    if version.chars().any(char::is_whitespace) {
-        return Err(bad("whitespace"));
-    }
-    for component in version.split('.') {
-        if component.is_empty() {
-            return Err(bad("empty component"));
-        }
-        if component == "*" || component.eq_ignore_ascii_case("x") {
-            return Err(bad("a wildcard component pins nothing"));
-        }
-    }
-    Ok(())
-}
-
-/// A parsed `docs://` ref: `docs://<library>/v<version>/<path>[#<fragment>]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedRef {
-    /// The library authority.
-    pub library: String,
-    /// The pinned version, without the leading `v`.
-    pub version: String,
-    /// The non-empty path segments.
-    pub segments: Vec<String>,
-    /// The fragment after `#`, when present.
-    pub fragment: Option<String>,
-}
-
-impl ParsedRef {
-    /// Parses the ref grammar; `None` for any broken shape.
-    ///
-    /// The path is one or more `/`-separated segments without `..`, `?`, or
-    /// whitespace; a fragment must be non-empty without whitespace.
-    #[must_use]
-    pub fn parse(r: &str) -> Option<ParsedRef> {
-        let rest = r.strip_prefix("docs://")?;
-        let (library, tail) = rest.split_once('/')?;
-        if library.is_empty() {
-            return None;
-        }
-        let (path, fragment) = match tail.split_once('#') {
-            Some((p, f)) => (p, Some(f)),
-            None => (tail, None),
-        };
-        let (version_segment, segment_text) = path.split_once('/')?;
-        let version = version_segment.strip_prefix('v')?;
-        if version.is_empty() {
-            return None;
-        }
-        let segments: Vec<String> = segment_text.split('/').map(str::to_owned).collect();
-        if segments.is_empty()
-            || segments.iter().any(|s| {
-                s.is_empty() || s == ".." || s.contains('?') || s.contains(char::is_whitespace)
-            })
-        {
-            return None;
-        }
-        if fragment.is_some_and(|f| f.is_empty() || f.contains(char::is_whitespace)) {
-            return None;
-        }
-        Some(ParsedRef {
-            library: library.to_owned(),
-            version: version.to_owned(),
-            segments,
-            fragment: fragment.map(str::to_owned),
-        })
-    }
-}
-
-/// Validates one `docs://` ref against the question's pin.
-///
-/// `multi_library` questions may pin refs for other libraries; those refs
-/// pin their own version.
-fn validate_ref(r: &str, library: &str, version: &str, task_type: TaskType) -> Result<(), String> {
-    let bad = |why: String| format!("malformed ref {r:?}: {why}");
-    let parsed = ParsedRef::parse(r).ok_or_else(|| {
-        bad("the shape is not docs://<library>/v<version>/<path>[#<fragment>]".to_owned())
-    })?;
-    if task_type != TaskType::MultiLibrary {
-        if parsed.library != library {
-            return Err(bad(format!(
-                "library {:?} does not match the question library {library:?}",
-                parsed.library
-            )));
-        }
-        if parsed.version != version {
-            return Err(bad(format!(
-                "pins version {:?}, question pins {version:?}",
-                parsed.version
-            )));
-        }
-    }
-    // A `multi_library` ref pins another library's version; every ref
-    // version is still an exact pin.
-    ensure_pinned_version(&parsed.version).map_err(bad)?;
-    Ok(())
-}
-
 /// Curation metadata: one `<suite>.meta.json` sidecar next to the JSONL.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -308,6 +192,7 @@ pub struct Suite {
 
 impl Suite {
     /// Loads and validates a suite file, plus its `<stem>.meta.json`
+    /// Loads and validates a suite file, plus its `<stem>.meta.json`
     /// sidecar when one sits next to it.
     ///
     /// # Errors
@@ -324,55 +209,14 @@ impl Suite {
             suite: name.to_owned(),
             reason: format!("not UTF-8: {e}"),
         })?;
-
-        let mut questions = Vec::new();
-        let mut seen = HashSet::new();
-        for (idx, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let line_no = idx + 1;
-            let fail = |reason: String| EvalError::SuiteParse {
-                suite: name.to_owned(),
-                line: line_no,
-                reason,
-            };
-            let question: Question = serde_json::from_str(line).map_err(|e| fail(e.to_string()))?;
-            question.validate().map_err(fail)?;
-            if !seen.insert(question.id.clone()) {
-                return Err(fail(format!("duplicate id {:?}", question.id)));
-            }
-            questions.push(question);
-        }
+        let questions = parse_questions(text, name)?;
         if questions.is_empty() {
             return Err(EvalError::InvalidSuite {
                 suite: name.to_owned(),
                 reason: "the suite has no questions".to_owned(),
             });
         }
-
-        let stem = path
-            .file_stem()
-            .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
-        let meta_path = path.with_file_name(format!("{stem}.meta.json"));
-        let meta =
-            match std::fs::read(&meta_path) {
-                Ok(meta_bytes) => Some(serde_json::from_slice(&meta_bytes).map_err(|e| {
-                    EvalError::InvalidSuite {
-                        suite: name.to_owned(),
-                        reason: format!("{} is invalid: {e}", meta_path.display()),
-                    }
-                })?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(source) => {
-                    return Err(EvalError::Io {
-                        action: "read",
-                        path: meta_path,
-                        source,
-                    });
-                }
-            };
-
+        let meta = load_meta(path, name)?;
         Ok(Suite {
             name: name.to_owned(),
             path: path.to_path_buf(),
@@ -380,6 +224,53 @@ impl Suite {
             questions,
             meta,
         })
+    }
+}
+
+/// Parses one question per non-blank line, validating each and requiring
+/// unique ids (docs/implementation/14 §Golden-set format).
+fn parse_questions(text: &str, name: &str) -> Result<Vec<Question>, EvalError> {
+    let mut questions = Vec::new();
+    let mut seen = HashSet::new();
+    for (idx, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let line_no = idx + 1;
+        let fail = |reason: String| EvalError::SuiteParse {
+            suite: name.to_owned(),
+            line: line_no,
+            reason,
+        };
+        let question: Question = serde_json::from_str(line).map_err(|e| fail(e.to_string()))?;
+        question.validate().map_err(fail)?;
+        if !seen.insert(question.id.clone()) {
+            return Err(fail(format!("duplicate id {:?}", question.id)));
+        }
+        questions.push(question);
+    }
+    Ok(questions)
+}
+
+/// Loads the `<stem>.meta.json` sidecar when it sits next to the suite.
+fn load_meta(path: &Path, name: &str) -> Result<Option<SuiteMeta>, EvalError> {
+    let stem = path
+        .file_stem()
+        .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
+    let meta_path = path.with_file_name(format!("{stem}.meta.json"));
+    match std::fs::read(&meta_path) {
+        Ok(meta_bytes) => Ok(Some(serde_json::from_slice(&meta_bytes).map_err(|e| {
+            EvalError::InvalidSuite {
+                suite: name.to_owned(),
+                reason: format!("{} is invalid: {e}", meta_path.display()),
+            }
+        })?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(EvalError::Io {
+            action: "read",
+            path: meta_path,
+            source,
+        }),
     }
 }
 
@@ -400,7 +291,7 @@ pub fn hex_hash(bytes: &[u8]) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{Grader, Question, Suite, TaskType, ensure_pinned_version, hex_hash, validate_ref};
+    use super::{Grader, Question, Suite, TaskType, hex_hash};
 
     /// A valid question in the shape of the docs/implementation/14 example.
     fn valid_question() -> Question {
@@ -457,19 +348,6 @@ mod tests {
     }
 
     #[test]
-    fn versions_must_be_exact_pins() {
-        for bad in [
-            "^1.2.3", "~1.2", ">=1.0", "1.x", "1.2.*", "latest", "v16.2.9", "", "16.2.9 ", "16..9",
-        ] {
-            let err = ensure_pinned_version(bad).unwrap_err();
-            assert!(err.contains("not an exact pin"), "{bad}: {err}");
-        }
-        for good in ["16.2.9", "4.6.7", "1.0.229", "4.0.0-beta.1", "16"] {
-            ensure_pinned_version(good).unwrap();
-        }
-    }
-
-    #[test]
     fn unknown_task_types_fail_at_parse() {
         let line = r#"{"id":"x","library":"next.js","version":"16.2.9","task_type":"fuzzy_lookup","question":"q","expect_refs":["docs://next.js/v16.2.9/proxy"],"grader":"ref_match","notes":"n"}"#;
         let err = serde_json::from_str::<Question>(line).unwrap_err();
@@ -488,66 +366,6 @@ mod tests {
         let line = r#"{"id":"x","library":"next.js","version":"16.2.9","task_type":"exact_api","question":"q","expect_refs":["docs://next.js/v16.2.9/proxy"],"grader":"ref_match","notes":"n","grader_hint":"x"}"#;
         let err = serde_json::from_str::<Question>(line).unwrap_err();
         assert!(err.to_string().contains("unknown field"), "{err}");
-    }
-
-    #[test]
-    fn malformed_refs_are_rejected() {
-        let cases = [
-            "https://next.js/v16.2.9/proxy",
-            "next.js/v16.2.9/proxy",
-            "docs://next.js/proxy",
-            "docs://next.js/v16.2.9",
-            "docs://next.js/v16.2.9/",
-            "docs://next.js/v16.3.0/proxy",
-            "docs://next.js/16.2.9/proxy",
-            "docs://zod/v4.6.7/parse",
-            "docs://next.js/v16.2.9/../etc",
-            "docs://next.js/v16.2.9/a//b",
-            "docs://next.js/v16.2.9/a b",
-            "docs://next.js/v16.2.9/a?b",
-            "docs://next.js/v16.2.9/proxy#",
-            "docs://next.js/v16.2.9/proxy#a b",
-        ];
-        for r in cases {
-            let err = validate_ref(r, "next.js", "16.2.9", TaskType::ExactApi).unwrap_err();
-            assert!(err.contains("malformed ref"), "{r}: {err}");
-        }
-    }
-
-    #[test]
-    fn well_formed_refs_validate() {
-        for (r, library, version) in [
-            ("docs://next.js/v16.2.9/proxy", "next.js", "16.2.9"),
-            ("docs://next.js/v16.2.9/proxy#rewrite", "next.js", "16.2.9"),
-            (
-                "docs://next.js/v16.2.9/app/api-reference#use-cache",
-                "next.js",
-                "16.2.9",
-            ),
-            ("docs://zod/v4.6.7/parse", "zod", "4.6.7"),
-        ] {
-            validate_ref(r, library, version, TaskType::ExactApi)
-                .unwrap_or_else(|e| panic!("{r}: {e}"));
-        }
-    }
-
-    #[test]
-    fn multi_library_questions_accept_other_libraries() {
-        validate_ref(
-            "docs://serde/v1.0.229/derive",
-            "next.js",
-            "16.2.9",
-            TaskType::MultiLibrary,
-        )
-        .unwrap();
-        let err = validate_ref(
-            "docs://serde/v1.0.229/derive",
-            "next.js",
-            "16.2.9",
-            TaskType::ExactApi,
-        )
-        .unwrap_err();
-        assert!(err.contains("does not match the question library"));
     }
 
     #[test]
@@ -627,21 +445,5 @@ mod tests {
             hex_hash(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-    }
-
-    proptest::proptest! {
-        #[test]
-        fn well_formed_refs_always_validate(
-            library in "[a-z][a-z0-9.]{2,15}",
-            version in r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}",
-            segment in "[a-z][a-z0-9-]{0,15}",
-            fragment in "[a-z][a-z0-9-]{0,15}",
-            depth in 1usize..4,
-        ) {
-            let path = std::iter::repeat_n(segment.as_str(), depth).collect::<Vec<_>>().join("/");
-            let r = format!("docs://{library}/v{version}/{path}#{fragment}");
-            super::validate_ref(&r, &library, &version, super::TaskType::ExactApi)
-                .unwrap_or_else(|e| panic!("{r}: {e}"));
-        }
     }
 }

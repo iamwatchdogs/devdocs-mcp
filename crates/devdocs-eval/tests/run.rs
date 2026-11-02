@@ -9,8 +9,8 @@ mod common;
 use devdocs_eval::gates::GateStatus;
 use devdocs_eval::run::{RunOptions, run};
 
-#[test]
-fn a_run_scores_writes_artifacts_and_judges_gates() {
+/// Runs the fixture suite once and returns the outcome with its temp dir.
+fn run_fixture() -> (tempfile::TempDir, devdocs_eval::run::RunOutcome) {
     let dir = tempfile::tempdir().unwrap();
     let (db, suite, runs) = common::fixture(dir.path());
     let outcome = run(&RunOptions {
@@ -21,6 +21,12 @@ fn a_run_scores_writes_artifacts_and_judges_gates() {
         devdocs_bin: Some(common::devdocs_bin()),
     })
     .unwrap();
+    (dir, outcome)
+}
+
+#[test]
+fn a_run_scores_and_writes_parseable_artifacts() {
+    let (_dir, outcome) = run_fixture();
 
     for artifact in ["results.json", "report.md", "manifest.json"] {
         assert!(outcome.run_dir.join(artifact).is_file(), "{artifact}");
@@ -52,6 +58,11 @@ fn a_run_scores_writes_artifacts_and_judges_gates() {
     assert_eq!(manifest["questions"], serde_json::json!(3));
     assert_eq!(manifest["suite"], serde_json::json!("fixture"));
     assert_eq!(manifest["db_hash"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn a_run_renders_the_report_and_judges_the_gates() {
+    let (_dir, outcome) = run_fixture();
 
     // The report carries the gate table, the breakdown, and the stub note.
     let md = std::fs::read_to_string(outcome.run_dir.join("report.md")).unwrap();

@@ -8,6 +8,7 @@ pub mod error;
 pub mod gates;
 pub mod metrics;
 pub mod pipeline;
+pub mod refs;
 pub mod report;
 pub mod run;
 pub mod subprocess;

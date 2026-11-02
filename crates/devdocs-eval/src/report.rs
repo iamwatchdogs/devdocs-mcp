@@ -461,8 +461,8 @@ mod tests {
     use crate::metrics::{Fraction, QuestionScore, SuiteMetrics};
     use crate::suite::{Grader, Question, TaskType};
 
-    #[test]
-    fn report_snapshot() {
+    /// One graded question fixture for the report rendering.
+    fn fixture_question() -> (Question, QuestionScore) {
         let question = Question {
             id: "nextjs-proxy-rewrite-001".to_owned(),
             library: "next.js".to_owned(),
@@ -481,10 +481,12 @@ mod tests {
             symbols_pinned: 1,
             version_correct: false,
         };
-        let metrics = SuiteMetrics::new(&[(question.clone(), score.clone())]);
-        let gates = gates::evaluate(&metrics, Some(12.5));
-        let scored = vec![(question, score)];
-        let baseline = Baseline {
+        (question, score)
+    }
+
+    /// A Phase 0 baseline fixture for the report rendering.
+    fn fixture_baseline() -> Baseline {
+        Baseline {
             recorded: "2026-11-02".to_owned(),
             workflow: "hosted docs MCP + web search".to_owned(),
             schema_rent: SchemaRent {
@@ -498,7 +500,16 @@ mod tests {
                 assumptions: "frontier list pricing".to_owned(),
                 source: "research: interfaces.md §1 (GLMP Ch.9)".to_owned(),
             },
-        };
+        }
+    }
+
+    #[test]
+    fn report_snapshot() {
+        let (question, score) = fixture_question();
+        let metrics = SuiteMetrics::new(&[(question.clone(), score.clone())]);
+        let gates = gates::evaluate(&metrics, Some(12.5));
+        let scored = vec![(question, score)];
+        let baseline = fixture_baseline();
         let suite_hash = "0".repeat(64);
         let db_hash = "1".repeat(64);
         let input = ReportInput {

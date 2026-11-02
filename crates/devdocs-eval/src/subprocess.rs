@@ -45,50 +45,63 @@ pub fn locate_devdocs(explicit: Option<&Path>) -> Result<PathBuf, EvalError> {
         }
         return Ok(path.to_path_buf());
     }
-    if let Ok(from_env) = std::env::var("DEVDOCS_EVAL_DEVDOCS_BIN")
-        && !from_env.is_empty()
-    {
-        let candidate = PathBuf::from(from_env);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
     let exe = format!("devdocs{}", std::env::consts::EXE_SUFFIX);
+    from_env()
+        .or_else(|| from_target_dir(&exe))
+        .or_else(|| from_path(&exe))
+        .ok_or_else(|| {
+            EvalError::Subprocess(
+                "cannot find the devdocs binary; pass --devdocs-bin, set \
+                 DEVDOCS_EVAL_DEVDOCS_BIN, or run `cargo build -p devdocs` first"
+                    .to_owned(),
+            )
+        })
+}
+
+/// The `DEVDOCS_EVAL_DEVDOCS_BIN` override.
+fn from_env() -> Option<PathBuf> {
+    let from_env = std::env::var("DEVDOCS_EVAL_DEVDOCS_BIN").ok()?;
+    if from_env.is_empty() {
+        return None;
+    }
+    let candidate = PathBuf::from(from_env);
+    candidate.is_file().then_some(candidate)
+}
+
+/// The workspace target directory: `CARGO_TARGET_DIR` when set, else a
+/// `target/{debug,release}` walk up from the working directory.
+fn from_target_dir(exe: &str) -> Option<PathBuf> {
     let profiles = ["debug", "release"];
     if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR")
         && !target_dir.is_empty()
     {
         for profile in profiles {
-            let candidate = Path::new(&target_dir).join(profile).join(&exe);
+            let candidate = Path::new(&target_dir).join(profile).join(exe);
             if candidate.is_file() {
-                return Ok(candidate);
+                return Some(candidate);
             }
         }
     }
-    let mut dir = std::env::current_dir()
-        .map_err(|e| EvalError::Subprocess(format!("no working directory: {e}")))?;
+    let mut dir = std::env::current_dir().ok()?;
     loop {
         for profile in profiles {
-            let candidate = dir.join("target").join(profile).join(&exe);
+            let candidate = dir.join("target").join(profile).join(exe);
             if candidate.is_file() {
-                return Ok(candidate);
+                return Some(candidate);
             }
         }
         if !dir.pop() {
-            break;
+            return None;
         }
     }
-    for path_dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
-        let candidate = path_dir.join(&exe);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err(EvalError::Subprocess(
-        "cannot find the devdocs binary; pass --devdocs-bin, set \
-         DEVDOCS_EVAL_DEVDOCS_BIN, or run `cargo build -p devdocs` first"
-            .to_owned(),
-    ))
+}
+
+/// A `devdocs` on `PATH`.
+fn from_path(exe: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(exe))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Times one `devdocs search` invocation end-to-end: process start, flag

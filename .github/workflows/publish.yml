@@ -50,7 +50,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: "${{ github.event.release.tag_name || inputs.tag }}"
+          # Qualified ref: actions/checkout prefers a same-named branch
+          # (refs/remotes/origin/<ref>) over the tag for an unqualified ref,
+          # which would publish the branch tip instead of the tagged commit.
+          ref: "refs/tags/${{ github.event.release.tag_name || inputs.tag }}"
           fetch-depth: 0
           persist-credentials: false
       - name: Verify the ref is a published release on main

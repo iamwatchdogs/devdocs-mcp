@@ -10,7 +10,7 @@ expression: render_report(&input)
 |---|---|---|---|---|
 | Symbol recall | 0.000 (0/1) | ≥ 0.95 | 1 | FAIL |
 | hit@5 | 0.000 (0/1) | ≥ 0.8 | 1 | FAIL |
-| p95 latency | 12.5 ms (subprocess, after one warmup) | < 400 ms | 1 | PASS |
+| p95 latency | 12.5 ms (subprocess, after one warmup; placeholder CLI before M4) | < 400 ms | 1 | PASS |
 | Cost per 1,000 queries | $0.00 | ≤ $0.20 frontier-class | 3 | PASS |
 | Retrieval failures | 1.000 (M4 baseline pending) | −49% vs the M4 baseline | 2 | INCONCLUSIVE |
 | Version correctness | 0.000 (0/1) | ≥ 0.99 | 1 | FAIL |
@@ -23,7 +23,7 @@ A gate that is not PASS blocks the phase transition (docs/implementation/14 §Ga
 |---|---|
 | hit@5 | 0.000 (0/1) |
 | symbol recall | 0.000 (0/1) |
-| p95 latency | 12.5 ms (subprocess, after one warmup) |
+| p95 latency | 12.5 ms (subprocess, after one warmup; placeholder CLI before M4) |
 | failure rate | 1.000 (1/1) |
 | version correctness | 0.000 (0/1) |
 | cost per query | $0.00 (local BM25; ingest embedding cost counted in Phase 3) |
@@ -54,3 +54,4 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 - suite: fixture — sha256 0000000000000000000000000000000000000000000000000000000000000000
 - database: sha256 1111111111111111111111111111111111111111111111111111111111111111
 - pipeline: Phase 0 stub — one FTS5 rung through devdocs-store; the hybrid pipeline replaces it at M4 (docs/implementation/13)
+- CLI search path: placeholder until M4. The p95 row times process start and dispatch only.

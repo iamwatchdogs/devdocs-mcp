@@ -126,7 +126,7 @@ fn p95_gate(p95_ms: Option<f64>) -> Gate {
         gate: "p95 latency",
         measured: p95_ms.map_or_else(
             || "not measured".to_owned(),
-            |ms| format!("{ms:.1} ms (subprocess, after one warmup)"),
+            |ms| format!("{ms:.1} ms (subprocess, after one warmup; placeholder CLI before M4)"),
         ),
         threshold: "< 400 ms",
         phase: 1,

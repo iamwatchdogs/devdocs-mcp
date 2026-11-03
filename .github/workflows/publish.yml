@@ -18,8 +18,9 @@ on:
 # Workspace crates are versioned together (release-plz single-version mode,
 # realized via Cargo workspace version inheritance; see release-plz.toml).
 # devdocs-testkit stays `publish = false` and is skipped by release-plz.
-# Setup (one-time): crates.io Trusted Publisher + the release GitHub App —
-# see docs/implementation/11-ci-cd-release.md "Publish to crates.io".
+# Setup (one-time): crates.io Trusted Publisher, a `v*` tag policy on the
+# `crates` environment, and the release GitHub App used by release.yml — see
+# docs/implementation/11-ci-cd-release.md "Publish to crates.io".
 permissions:
   contents: read
 
@@ -43,7 +44,7 @@ jobs:
     # reviewers are configured in the repo's environment settings.
     environment: crates
     permissions:
-      contents: write
+      contents: read
       pull-requests: read
       id-token: write
     steps:
@@ -104,54 +105,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-      - name: Check release App credentials
-        shell: bash
-        env:
-          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "${CLIENT_ID}" ]; then
-            echo "::error::RELEASE_APP_CLIENT_ID is not set. Add the GitHub App Client ID as a repository variable — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
-            exit 1
-          fi
-          if [ -z "${PRIVATE_KEY}" ]; then
-            echo "::error::RELEASE_APP_PRIVATE_KEY is not set. Add the GitHub App private key as a repository secret — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
-            exit 1
-          fi
-          # Fail here, with a pointed message, instead of at the token step
-          # whose only symptom is the opaque 401 "A JSON web token could not
-          # be decoded". The allowed shapes and the storage commands live in
-          # docs/implementation/11-ci-cd-release.md "Publish to crates.io".
-          if [[ ! "${CLIENT_ID}" =~ ^Iv1\.[0-9a-f]{16}$ ]] \
-            && [[ ! "${CLIENT_ID}" =~ ^Iv23[0-9A-Za-z]{14,20}$ ]] \
-            && [[ ! "${CLIENT_ID}" =~ ^[0-9a-f]{20}$ ]]; then
-            echo "::error::RELEASE_APP_CLIENT_ID does not look like a GitHub App Client ID. Client IDs look like 'Iv1.xxxxxxxxxxxxxxxx' or start with 'Iv23'; a 40-character hex value is usually the app's OAuth client secret. Copy the Client ID from the app's About section — see docs/implementation/11-ci-cd-release.md 'Publish to crates.io'."
-            exit 1
-          fi
-          if ! printf '%s' "${PRIVATE_KEY}" | grep -q -- '-----BEGIN' \
-            || ! printf '%s' "${PRIVATE_KEY}" | grep -q -- 'PRIVATE KEY-----'; then
-            echo "::error::RELEASE_APP_PRIVATE_KEY does not look like a PEM private key (the '-----BEGIN ... PRIVATE KEY-----' markers are missing). Store the whole .pem file downloaded from the app settings: gh secret set RELEASE_APP_PRIVATE_KEY < path/to/app.private-key.pem"
-            exit 1
-          fi
-      - name: Create release App token
-        id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          # Follow the repo instead of a literal: a rename or fork keeps
-          # publishing working (and the token stays scoped to this repo).
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-          permission-pull-requests: read
       # Trusted publishing: release-plz exchanges the job's OIDC token with
       # crates.io itself (id-token: write above); no CARGO_REGISTRY_TOKEN and
       # no crates-io-auth-action step. The `release` command only publishes
       # versions that Cargo.toml already carries; it never bumps, tags, or
-      # opens a PR.
+      # opens a PR, so the read-only `github.token` is enough.
       - uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}

@@ -180,8 +180,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The release object is created with the App token below, not with the
+    # job's GITHUB_TOKEN, so the job token stays read-only.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check release App credentials
         shell: bash

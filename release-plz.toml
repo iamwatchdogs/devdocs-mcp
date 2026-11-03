@@ -13,7 +13,7 @@
 
 [workspace]
 # release.yml owns the GitHub release object and its notes (it has the
-# artifacts); release-plz only publishes crates and pushes the version tag.
+# artifacts); release-plz only publishes crates.
 git_release_enable = false
 # The tag comes from the human release step and already exists when this runs.
 # A tag created here would start release.yml a second time.

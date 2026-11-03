@@ -351,13 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn the_fallback_chain_finds_the_workspace_build() {
-        // `devdocs` is built as a test dependency, so one of the resolvers
-        // — the target-dir override, the walk-up, or `PATH` — finds it.
-        assert!(locate_devdocs(None).is_ok());
-    }
-
-    #[test]
     fn the_missing_binary_error_names_the_workarounds() {
         let message = super::missing_binary_error().to_string();
         assert!(

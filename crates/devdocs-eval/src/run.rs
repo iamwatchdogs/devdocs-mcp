@@ -106,10 +106,12 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
 
 /// Loads and validates the suite by name or direct path.
 fn load_suite(golden_dir: &Path, requested: &str) -> Result<Suite, EvalError> {
-    let (suite_path, suite_name) = if Path::new(requested)
+    let requested_path = Path::new(requested);
+    let (suite_path, suite_name) = if requested_path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("jsonl"))
-        || requested.contains('/')
+        || requested_path.is_absolute()
+        || requested.contains(['/', '\\'])
     {
         let path = PathBuf::from(requested);
         let name = path
@@ -511,9 +513,12 @@ mod tests {
         std::env::set_current_dir(dir.path().join("a").join("b")).unwrap();
         let found = discover_eval_root();
         std::env::set_current_dir(previous).unwrap();
-        // The walk reports the real path, so compare canonicalized.
-        let expected = std::fs::canonicalize(dir.path()).unwrap().join("eval");
-        assert_eq!(found.unwrap(), expected);
+        // The walk reports the real path (symlinks resolved, no verbatim
+        // prefix), so compare both sides canonicalized.
+        assert_eq!(
+            std::fs::canonicalize(found.unwrap()).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap().join("eval")
+        );
     }
 
     #[test]

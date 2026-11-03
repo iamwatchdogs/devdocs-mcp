@@ -197,3 +197,85 @@ fn a_second_run_of_one_suite_gets_its_own_directory() {
         second.run_dir.display()
     );
 }
+
+#[test]
+fn a_suite_resolves_by_name_from_the_golden_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _suite, runs) = common::fixture(dir.path());
+    std::fs::create_dir_all(dir.path().join("golden")).unwrap();
+    std::fs::copy(
+        dir.path().join("fixture.jsonl"),
+        dir.path().join("golden").join("fixture.jsonl"),
+    )
+    .unwrap();
+    let outcome = run(&RunOptions {
+        suite: "fixture".to_owned(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(runs),
+        devdocs_bin: Some(common::devdocs_bin()),
+    })
+    .unwrap();
+    assert_eq!(outcome.metrics.failure_rate.total, 3);
+}
+
+#[test]
+fn a_direct_suite_path_without_the_jsonl_suffix_keeps_its_stem() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, suite, runs) = common::fixture(dir.path());
+    let renamed = dir.path().join("fixture.suite");
+    std::fs::rename(&suite, &renamed).unwrap();
+    let outcome = run(&RunOptions {
+        suite: renamed.display().to_string(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(runs),
+        devdocs_bin: Some(common::devdocs_bin()),
+    })
+    .unwrap();
+    // The manifest names the suite after the file stem.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["suite"], serde_json::json!("fixture"));
+}
+
+#[test]
+fn a_baseline_record_reaches_the_manifest_and_the_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _suite, runs) = common::fixture(dir.path());
+    std::fs::create_dir_all(dir.path().join("golden")).unwrap();
+    std::fs::copy(
+        dir.path().join("fixture.jsonl"),
+        dir.path().join("golden").join("fixture.jsonl"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("baseline")).unwrap();
+    std::fs::write(
+        dir.path().join("baseline").join("phase0.json"),
+        r#"{"recorded":"2026-11-01","workflow":"hosted docs MCP","schema_rent":{"band_tokens_per_tool":[550,1400],"source":"s","notes":"n"},"per_query_cost":{"hosted_api_usd_per_1000_queries":1.66,"raw_mcp_usd_per_1000_queries":3.66,"assumptions":"a","source":"s"}}"#,
+    )
+    .unwrap();
+    let outcome = run(&RunOptions {
+        suite: "fixture".to_owned(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(runs),
+        devdocs_bin: Some(common::devdocs_bin()),
+    })
+    .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["baseline_hash"].as_str().unwrap().len(),
+        64,
+        "the manifest carries the baseline digest"
+    );
+    let md = std::fs::read_to_string(outcome.run_dir.join("report.md")).unwrap();
+    assert!(md.contains("## Phase 0 baseline"), "{md}");
+    assert!(md.contains("hosted docs MCP"), "{md}");
+    assert!(md.contains("Re-run the probe quarterly"), "{md}");
+}

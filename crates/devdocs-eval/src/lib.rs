@@ -13,3 +13,13 @@ pub mod report;
 pub mod run;
 pub mod subprocess;
 pub mod suite;
+
+/// Serializes the process-global state — working directory, environment —
+/// that tests exercising the resolver fallbacks touch; parallel in-process
+/// test threads would otherwise race on it.
+#[cfg(test)]
+pub(crate) fn process_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

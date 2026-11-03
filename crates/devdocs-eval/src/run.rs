@@ -441,3 +441,101 @@ fn hash_file(db_path: &Path) -> Result<String, EvalError> {
     }
     Ok(crate::suite::hex_digest(&hasher.finalize()))
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::{EvalError, RunOptions, discover_eval_root, fresh_run_dir, hash_file, run};
+    use crate::process_lock;
+
+    #[test]
+    fn hashing_a_missing_database_is_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = hash_file(&dir.path().join("absent.db")).unwrap_err();
+        assert!(matches!(err, EvalError::Io { action: "open", .. }), "{err}");
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn an_uncreatable_runs_root_is_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let err =
+            fresh_run_dir(&blocker.join("runs"), "2026-11-02T00:00:00Z", "suite").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                EvalError::Io {
+                    action: "create",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_runs_root_is_an_io_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::set_permissions(&runs, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(runs.join(".probe"), "x").is_ok() {
+            return; // the process ignores the mode bits; nothing to test
+        }
+        let err = fresh_run_dir(&runs, "2026-11-02T00:00:00Z", "suite").unwrap_err();
+        std::fs::set_permissions(&runs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(
+                err,
+                EvalError::Io {
+                    action: "create",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn discovery_walks_up_to_the_nearest_eval_directory() {
+        let _guard = process_lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("eval").join("golden")).unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path().join("a").join("b")).unwrap();
+        let found = discover_eval_root();
+        std::env::set_current_dir(previous).unwrap();
+        // The walk reports the real path, so compare canonicalized.
+        let expected = std::fs::canonicalize(dir.path()).unwrap().join("eval");
+        assert_eq!(found.unwrap(), expected);
+    }
+
+    #[test]
+    fn a_run_without_an_eval_ancestor_or_golden_dir_is_input_error() {
+        let _guard = process_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let outcome = run(&RunOptions {
+            suite: "anything".to_owned(),
+            db: None,
+            golden_dir: None,
+            runs_dir: None,
+            devdocs_bin: None,
+        });
+        std::env::set_current_dir(previous).unwrap();
+        let err = outcome.unwrap_err();
+        assert_eq!(err.exit_code(), 1, "{err}");
+        assert!(
+            err.to_string()
+                .contains("cannot locate the eval/ directory"),
+            "{err}"
+        );
+    }
+}

@@ -1,9 +1,9 @@
 ---
 type: guide
 title: CI/CD and Release
-description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing, and the versioning policy. Action versions digest-pinned 2026-10-30.
+description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing and its `crates` environment policy, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-11-04T00:00:00Z
+timestamp: 2026-11-04T12:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -130,7 +130,7 @@ jobs:
     needs: build
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read   # gh release uses the App token, not the job token
     steps:
       - download-artifact (merge-multiple) into dist/   # no checkout: the job
         only consumes artifacts; the release step takes GH_REPO explicitly
@@ -160,7 +160,7 @@ release-plz (CLI 0.4.2, action v0.5.147, verified 2026-10-29) publishes the work
 - The tag equals `v` plus the `[workspace.package] version` in `Cargo.toml`.
 - The tag commit is reachable from `origin/main`.
 
-The job runs in the `crates` environment with `contents: write`, `pull-requests: read`, and `id-token: write`. The `devdocs-testkit` crate stays `publish = false`, so release-plz skips it. The CLI crate carries no `devdocs-testkit` dev-dependency. testkit is `publish = false`, so any dev-dependency naming it must be path-only. Cargo publish keeps version-carrying dev-dependencies in the published manifest, where testkit can never resolve. The `allow-wildcard-paths` setting in deny.toml permits the path-only form without disabling the wildcard lint for version specs. A crate that needs testkit declares it path-only in its own `[dev-dependencies]`, not through the workspace table.
+The job runs in the `crates` environment with `contents: read`, `pull-requests: read`, and `id-token: write`. The `devdocs-testkit` crate stays `publish = false`, so release-plz skips it. The CLI crate carries no `devdocs-testkit` dev-dependency. testkit is `publish = false`, so any dev-dependency naming it must be path-only. Cargo publish keeps version-carrying dev-dependencies in the published manifest, where testkit can never resolve. The `allow-wildcard-paths` setting in deny.toml permits the path-only form without disabling the wildcard lint for version specs. A crate that needs testkit declares it path-only in its own `[dev-dependencies]`, not through the workspace table.
 
 The release flow:
 
@@ -169,16 +169,16 @@ The release flow:
 3. The `release: published` event starts `publish.yml`.
 4. `publish-crates` verifies the release and publishes the crates in dependency order with trusted publishing.
 
-The App token is necessary on both sides. A release created with a job's `GITHUB_TOKEN` does not start another workflow, so `publish.yml` would never run. `release.yml` mints the same App token that `publish.yml` uses. `release-plz.toml` disables git tags and git releases for every package, so release-plz has no path to create a tag, a release, or a PR.
+The App token is necessary in `release.yml`. A release created with a job's `GITHUB_TOKEN` does not start another workflow, so `publish.yml` would never run. `publish.yml` uses the read-only `github.token` and needs no write access. `release-plz.toml` disables git tags and git releases for every package, so release-plz has no path to create a tag, a release, or a PR.
 
 A concurrency group (`publish-crates`, no cancellation) serializes publishes. Trusted publishing is release-plz's built-in OIDC exchange, so `id-token: write` is all it needs. No `rust-lang/crates-io-auth-action` step and no `CARGO_REGISTRY_TOKEN` are used.
 
 One-time setup:
 
 1. On crates.io, open each crate's Settings and add a Trusted Publisher: this repository, the workflow filename `publish.yml`, and the environment `crates`. A brand-new crate needs one manual first publish before it can use trusted publishing.
-2. Create a GitHub App for this repository. Leave its webhook inactive. Grant repository permissions `Contents: read/write` and `Pull requests: read/write`. Install it on this repository only. Create a private key.
-3. Add the App **Client ID** as the repository variable `RELEASE_APP_CLIENT_ID`. Copy it from the app's About section. Client IDs look like `Iv1.xxxxxxxxxxxxxxxx` or start with `Iv23`, and the 40-character hex client secret is not the Client ID. Add the private key as the repository secret `RELEASE_APP_PRIVATE_KEY` from the whole downloaded `.pem` file. The command `gh secret set RELEASE_APP_PRIVATE_KEY < path/to/app.private-key.pem` keeps the newlines where a web-UI paste can lose them. `publish.yml` checks the shapes of both values before it mints a token. `release.yml` checks that both values exist. Both then create a short-lived installation token scoped to this repository.
-4. Create the `crates` GitHub environment (repo Settings → Environments) restricted to the `main` branch. The `publish-crates` job declares it. The environment claim in the Trusted Publisher entry means crates.io rejects OIDC tokens that any other job in the repo mints. That includes the `release.yml` build legs, which hold `id-token: write` for attestations and execute dependency build scripts.
+2. Create a GitHub App for this repository. Leave its webhook inactive. Grant repository permission `Contents: read/write`. Install it on this repository only. Create a private key.
+3. Add the App **Client ID** as the repository variable `RELEASE_APP_CLIENT_ID`. Copy it from the app's About section. Client IDs look like `Iv1.xxxxxxxxxxxxxxxx` or start with `Iv23`, and the 40-character hex client secret is not the Client ID. Add the private key as the repository secret `RELEASE_APP_PRIVATE_KEY` from the whole downloaded `.pem` file. The command `gh secret set RELEASE_APP_PRIVATE_KEY < path/to/app.private-key.pem` keeps the newlines where a web-UI paste can lose them. `release.yml` checks that both values exist, then creates a short-lived installation token scoped to this repository. `publish.yml` does not use the App.
+4. Create the `crates` GitHub environment (repo Settings → Environments) with a `main` branch policy and a `v*` tag policy. The release event runs on a tag ref, so a main-only policy rejects `publish-crates`. The job declares the environment. The environment claim in the Trusted Publisher entry means crates.io rejects OIDC tokens that any other job in the repo mints. That includes the `release.yml` build legs, which hold `id-token: write` for attestations and execute dependency build scripts.
 
 If the first token mint fails with 401 `A JSON web token could not be decoded`, the two values do not belong to the same app or one of them is misshapen. Re-copy the Client ID from the app's About section. Re-set the secret from the app's current `.pem` file. Rotating a key in the app settings does not update the repository secret. A 404 on the same step means the JWT was valid but the app is not installed on this repository.
 

@@ -77,7 +77,8 @@ jobs:
           # Branch protection gates main pushes, not tag pushes. A release
           # from an unmerged commit must not reach crates.io.
           git merge-base --is-ancestor HEAD origin/main
-      - name: Verify the tag matches the workspace version
+      - id: version
+        name: Verify the tag matches the workspace version
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -92,6 +93,7 @@ jobs:
             echo "::error::Release tag ${TAG} does not match workspace version v${version} in Cargo.toml. Bump Cargo.toml, commit, tag that commit, and publish the release."
             exit 1
           fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
       - id: toolchain
         name: Resolve pinned toolchain from rust-toolchain.toml
         shell: bash
@@ -108,6 +110,47 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
+      # The registry never reuses a version number (docs/implementation/
+      # 11-ci-cd-release.md, "Versioning policy"). A tag whose version is
+      # already published passes every check above and only fails at the
+      # crates.io upload, after the full release build. Advisory against
+      # races: a concurrent publish between this check and release-plz
+      # still fails at crates.io.
+      - name: Verify no crate version already exists on crates.io
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VERSION}" ]; then
+            echo "::error::The version-match step did not produce a version output"
+            exit 1
+          fi
+          # crates.io rejects requests without a User-Agent header.
+          ua="devdocs-mcp-release-guard (https://github.com/${GITHUB_REPOSITORY})"
+          # Capture the crate list before the loop: with pipefail a failed
+          # cargo metadata run aborts the step instead of skipping the check.
+          # cargo metadata serializes `publish = false` as an empty list, so
+          # publishable crates are selected by null or a non-empty list.
+          crates="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name')"
+          while IFS= read -r crate; do
+            [ -n "${crate}" ] || continue
+            status="$(curl -sS -o /tmp/crate-versions.json -w '%{http_code}' \
+              -A "${ua}" "https://crates.io/api/v1/crates/${crate}")"
+            if [ "${status}" = "404" ]; then
+              echo "${crate}@${VERSION} is not on crates.io yet: first publish, allowed"
+              continue
+            fi
+            if [ "${status}" != "200" ]; then
+              echo "::error::crates.io returned HTTP ${status} for ${crate}; cannot verify version availability. Retry later."
+              exit 1
+            fi
+            if jq -e --arg v "${VERSION}" '.versions[] | select(.num == $v) | .num' \
+              /tmp/crate-versions.json >/dev/null; then
+              echo "::error::${crate}@${VERSION} already exists on crates.io. The registry never reuses a version number. Bump [workspace.package] version above the newest published version (docs/implementation/11-ci-cd-release.md, 'Versioning policy'), commit, and tag that commit."
+              exit 1
+            fi
+          done <<< "${crates}"
       # Trusted publishing: release-plz exchanges the job's OIDC token with
       # crates.io itself (id-token: write above); no CARGO_REGISTRY_TOKEN and
       # no crates-io-auth-action step. The `release` command only publishes

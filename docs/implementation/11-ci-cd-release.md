@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing and its `crates` environment policy, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-11-04T12:00:00Z
+timestamp: 2026-11-04T14:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -159,6 +159,7 @@ release-plz (CLI 0.4.2, action v0.5.147, verified 2026-10-29) publishes the work
 - A non-draft GitHub release exists for the tag. A dispatch cannot publish a bare tag.
 - The tag equals `v` plus the `[workspace.package] version` in `Cargo.toml`.
 - The tag commit is reachable from `origin/main`.
+- No crate at the manifest version already exists on crates.io (the registry never reuses a version number; the check is advisory against races — a concurrent publish between the check and release-plz still fails at crates.io).
 
 The job runs in the `crates` environment with `contents: read`, `pull-requests: read`, and `id-token: write`. The `devdocs-testkit` crate stays `publish = false`, so release-plz skips it. The CLI crate carries no `devdocs-testkit` dev-dependency. testkit is `publish = false`, so any dev-dependency naming it must be path-only. Cargo publish keeps version-carrying dev-dependencies in the published manifest, where testkit can never resolve. The `allow-wildcard-paths` setting in deny.toml permits the path-only form without disabling the wildcard lint for version specs. A crate that needs testkit declares it path-only in its own `[dev-dependencies]`, not through the workspace table.
 

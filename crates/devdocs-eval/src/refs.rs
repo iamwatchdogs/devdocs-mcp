@@ -263,6 +263,18 @@ mod tests {
         assert_eq!(parsed.fragment.as_deref(), Some("rewrite"));
     }
 
+    #[test]
+    fn an_empty_authority_or_version_does_not_parse() {
+        assert!(
+            ParsedRef::parse("docs:///v1.0.0/path").is_none(),
+            "an empty library authority parses to nothing"
+        );
+        assert!(
+            ParsedRef::parse("docs://next.js/v/path").is_none(),
+            "an empty version parses to nothing"
+        );
+    }
+
     proptest::proptest! {
         #[test]
         fn well_formed_refs_always_validate(

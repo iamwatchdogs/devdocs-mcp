@@ -330,6 +330,24 @@ mod tests {
     }
 
     #[test]
+    fn references_render_with_and_without_a_symbol() {
+        let with = hit(1, "next.js", "16.2.9", "app/proxy", Some("rewrite"));
+        assert_eq!(with.reference(), "docs://next.js/v16.2.9/app/proxy#rewrite");
+        let without = hit(1, "next.js", "16.2.9", "app/proxy", None);
+        assert_eq!(without.reference(), "docs://next.js/v16.2.9/app/proxy");
+    }
+
+    #[test]
+    fn broken_refs_and_longer_expectations_never_match() {
+        let h = hit(1, "next.js", "16.2.9", "proxy", None);
+        // A ref that does not parse matches nothing.
+        assert!(!ref_matches("not-a-ref", &h));
+        // The expected path is longer than the hit path: no trailing run
+        // of the hit segments can equal it.
+        assert!(!ref_matches("docs://next.js/v16.2.9/app/proxy/deep", &h));
+    }
+
+    #[test]
     fn hit_at_5_counts_only_the_top_five() {
         let hits: Vec<RetrievedRef> = (1..=8)
             .map(|i| hit(i, "next.js", "16.2.9", &format!("page{i}"), None))
@@ -453,6 +471,20 @@ mod tests {
             hit(2, "next.js", "16.2.9", "proxy", Some("rewrite")),
         ];
         assert!(grade_question(&q, &full).passed);
+    }
+
+    #[test]
+    fn a_manual_grader_never_passes() {
+        let q = question(
+            Grader::Manual,
+            TaskType::ExactApi,
+            refs(&["docs://next.js/v16.2.9/proxy"]),
+        );
+        let hits = vec![hit(1, "next.js", "16.2.9", "proxy", None)];
+        assert!(
+            !grade_question(&q, &hits).passed,
+            "runs refuse manual-grader suites; the grader still never passes"
+        );
     }
 
     #[test]

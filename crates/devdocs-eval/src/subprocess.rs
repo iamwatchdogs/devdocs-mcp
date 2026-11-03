@@ -50,18 +50,27 @@ pub fn locate_devdocs(explicit: Option<&Path>) -> Result<PathBuf, EvalError> {
     from_env()
         .or_else(|| from_target_dir(&exe))
         .or_else(|| from_path(&exe))
-        .ok_or_else(|| {
-            EvalError::Subprocess(
-                "cannot find the devdocs binary; pass --devdocs-bin, set \
-                 DEVDOCS_EVAL_DEVDOCS_BIN, or run `cargo build -p devdocs` first"
-                    .to_owned(),
-            )
-        })
+        .ok_or_else(missing_binary_error)
+}
+
+/// The resolver-exhausted error: it names every workaround the caller has.
+fn missing_binary_error() -> EvalError {
+    EvalError::Subprocess(
+        "cannot find the devdocs binary; pass --devdocs-bin, set \
+         DEVDOCS_EVAL_DEVDOCS_BIN, or run `cargo build -p devdocs` first"
+            .to_owned(),
+    )
 }
 
 /// The `DEVDOCS_EVAL_DEVDOCS_BIN` override.
 fn from_env() -> Option<PathBuf> {
-    let from_env = std::env::var("DEVDOCS_EVAL_DEVDOCS_BIN").ok()?;
+    env_binary(std::env::var("DEVDOCS_EVAL_DEVDOCS_BIN").ok().as_deref())
+}
+
+/// [`from_env`] on an injected value, so the tests never touch the process
+/// environment.
+fn env_binary(value: Option<&str>) -> Option<PathBuf> {
+    let from_env = value?;
     if from_env.is_empty() {
         return None;
     }
@@ -72,18 +81,26 @@ fn from_env() -> Option<PathBuf> {
 /// The workspace target directory: `CARGO_TARGET_DIR` when set, else a
 /// `target/{debug,release}` walk up from the working directory.
 fn from_target_dir(exe: &str) -> Option<PathBuf> {
+    let target_dir = std::env::var("CARGO_TARGET_DIR").ok();
+    let start = std::env::current_dir().ok()?;
+    from_target_dir_in(target_dir.as_deref(), &start, exe)
+}
+
+/// [`from_target_dir`] on injected values, so the tests never touch the
+/// process environment or working directory.
+fn from_target_dir_in(target_dir: Option<&str>, start: &Path, exe: &str) -> Option<PathBuf> {
     let profiles = ["debug", "release"];
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR")
+    if let Some(target_dir) = target_dir
         && !target_dir.is_empty()
     {
         for profile in profiles {
-            let candidate = Path::new(&target_dir).join(profile).join(exe);
+            let candidate = Path::new(target_dir).join(profile).join(exe);
             if candidate.is_file() {
                 return Some(candidate);
             }
         }
     }
-    let mut dir = std::env::current_dir().ok()?;
+    let mut dir = start.to_path_buf();
     loop {
         for profile in profiles {
             let candidate = dir.join("target").join(profile).join(exe);
@@ -99,8 +116,13 @@ fn from_target_dir(exe: &str) -> Option<PathBuf> {
 
 /// A `devdocs` on `PATH`.
 fn from_path(exe: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var)
+    path_binary(&std::env::var_os("PATH")?, exe)
+}
+
+/// [`from_path`] on an injected `PATH`, so the tests never touch the
+/// process environment.
+fn path_binary(path_var: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
+    std::env::split_paths(path_var)
         .map(|dir| dir.join(exe))
         .find(|candidate| candidate.is_file())
 }
@@ -125,6 +147,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// [`EvalError::Subprocess`] when the process cannot be spawned, cannot be
 /// waited on, or overshoots the deadline.
 pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<SubprocessSample, EvalError> {
+    run_once_deadline(bin, db, question, CALL_DEADLINE)
+}
+
+/// [`run_once`] with an injectable deadline; the tests shrink it so the
+/// kill path runs in milliseconds instead of the full 30 seconds.
+fn run_once_deadline(
+    bin: &Path,
+    db: &Path,
+    question: &Question,
+    deadline: Duration,
+) -> Result<SubprocessSample, EvalError> {
     let start = Instant::now();
     let mut child = Command::new(bin)
         .arg("--db")
@@ -149,12 +182,12 @@ pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<Subprocess
                     exit_code: status.code().unwrap_or(-1),
                 });
             }
-            Ok(None) if start.elapsed() >= CALL_DEADLINE => {
+            Ok(None) if start.elapsed() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(EvalError::Subprocess(format!(
                     "devdocs search exceeded the {}s deadline; the process was killed",
-                    CALL_DEADLINE.as_secs()
+                    deadline.as_secs()
                 )));
             }
             Ok(None) => thread::sleep(POLL_INTERVAL),
@@ -165,5 +198,201 @@ pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<Subprocess
                 )));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{Question, locate_devdocs, run_once_deadline};
+    use crate::suite::{Grader, TaskType};
+
+    /// A one-question stand-in for the suite loader.
+    fn question() -> Question {
+        Question {
+            id: "q-001".to_owned(),
+            library: "test-lib".to_owned(),
+            version: "1.0.0".to_owned(),
+            task_type: TaskType::ExactApi,
+            question: "middleware".to_owned(),
+            expect_refs: Some(vec!["docs://test-lib/v1.0.0/proxy".to_owned()]),
+            expect_symbols: None,
+            grader: Grader::RefMatch,
+            notes: "n".to_owned(),
+        }
+    }
+
+    /// A stand-in binary: a script whose behavior the test controls.
+    #[cfg(unix)]
+    fn stub(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join(name);
+        std::fs::write(&bin, body).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[test]
+    fn an_explicit_binary_is_used_as_given() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let bin = stub(dir.path(), "devdocs", "#!/bin/sh\nexit 0\n");
+        #[cfg(not(unix))]
+        let bin = {
+            let bin = dir.path().join("devdocs.exe");
+            std::fs::write(&bin, b"stub").unwrap();
+            bin
+        };
+        assert_eq!(locate_devdocs(Some(&bin)).unwrap(), bin);
+
+        let missing = dir.path().join("absent");
+        let err = locate_devdocs(Some(&missing)).unwrap_err();
+        assert!(err.to_string().contains("is not a file"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_env_override_resolves_a_real_file_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = stub(dir.path(), "devdocs", "#!/bin/sh\nexit 0\n");
+
+        assert_eq!(super::env_binary(Some(bin.to_str().unwrap())).unwrap(), bin);
+        // An empty or nonexistent override resolves to nothing.
+        assert_eq!(super::env_binary(Some("")), None);
+        assert_eq!(
+            super::env_binary(Some(dir.path().join("absent").to_str().unwrap())),
+            None
+        );
+        assert_eq!(super::env_binary(None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_target_dir_resolver_checks_the_override_then_walks_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = format!("devdocs{}", std::env::consts::EXE_SUFFIX);
+
+        // The explicit target dir wins when it holds a build, debug first.
+        let override_dir = tempfile::tempdir().unwrap();
+        let debug_dir = override_dir.path().join("debug");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+        let debug = stub(&debug_dir, &exe, "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            super::from_target_dir_in(
+                Some(override_dir.path().to_str().unwrap()),
+                dir.path(),
+                &exe
+            )
+            .unwrap(),
+            debug
+        );
+
+        // A release-only override is found on the second profile.
+        let release_dir_dir = tempfile::tempdir().unwrap();
+        let release_dir = release_dir_dir.path().join("release");
+        std::fs::create_dir_all(&release_dir).unwrap();
+        let release = stub(&release_dir, &exe, "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            super::from_target_dir_in(
+                Some(release_dir_dir.path().to_str().unwrap()),
+                dir.path(),
+                &exe
+            )
+            .unwrap(),
+            release
+        );
+
+        // Without a build in the override it falls back to the walk-up
+        // from the start directory, which finds the workspace build.
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_debug = workspace.path().join("target").join("debug");
+        std::fs::create_dir_all(&workspace_debug).unwrap();
+        let found = stub(&workspace_debug, &exe, "#!/bin/sh\nexit 0\n");
+        let nested = workspace.path().join("crates").join("eval");
+        assert_eq!(
+            super::from_target_dir_in(None, &nested, &exe).unwrap(),
+            found
+        );
+
+        // Without a build anywhere on the walk-up, nothing resolves.
+        let bare = tempfile::tempdir().unwrap();
+        let empty_override = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::from_target_dir_in(
+                Some(empty_override.path().to_str().unwrap()),
+                bare.path(),
+                &exe
+            ),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_path_resolver_finds_a_binary_on_path_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = format!("devdocs{}", std::env::consts::EXE_SUFFIX);
+        let bin = stub(dir.path(), &exe, "#!/bin/sh\nexit 0\n");
+
+        assert_eq!(
+            super::path_binary(std::ffi::OsStr::new(dir.path().to_str().unwrap()), &exe).unwrap(),
+            bin
+        );
+        // A PATH entry without the binary resolves to nothing.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::path_binary(std::ffi::OsStr::new(empty.path().to_str().unwrap()), &exe),
+            None
+        );
+    }
+
+    #[test]
+    fn the_fallback_chain_finds_the_workspace_build() {
+        // `devdocs` is built as a test dependency, so one of the resolvers
+        // — the target-dir override, the walk-up, or `PATH` — finds it.
+        assert!(locate_devdocs(None).is_ok());
+    }
+
+    #[test]
+    fn the_missing_binary_error_names_the_workarounds() {
+        let message = super::missing_binary_error().to_string();
+        assert!(
+            message.contains("cannot find the devdocs binary"),
+            "{message}"
+        );
+        assert!(message.contains("--devdocs-bin"), "{message}");
+        assert!(message.contains("DEVDOCS_EVAL_DEVDOCS_BIN"), "{message}");
+    }
+
+    #[test]
+    fn a_spawn_failure_is_a_subprocess_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("devdocs");
+        std::fs::write(&bin, "not executable").unwrap();
+        let err = run_once_deadline(
+            &bin,
+            &dir.path().join("fixture.db"),
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot spawn"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_call_is_killed_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = stub(dir.path(), "devdocs", "#!/bin/sh\nexec sleep 30\n");
+        let db = dir.path().join("fixture.db");
+        let err =
+            run_once_deadline(&bin, &db, &question(), Duration::from_millis(100)).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("deadline"), "{message}");
+        assert!(message.contains("killed"), "{message}");
     }
 }

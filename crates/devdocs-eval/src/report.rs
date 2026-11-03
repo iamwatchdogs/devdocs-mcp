@@ -528,6 +528,63 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_baseline_record_is_invalid_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phase0.json");
+        std::fs::write(&path, "{nope").unwrap();
+        let err = super::load_baseline(&path).unwrap_err();
+        assert!(err.to_string().contains("is invalid"), "{err}");
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_baseline_is_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phase0.json");
+        std::fs::create_dir(&path).unwrap();
+        let err = super::load_baseline(&path).unwrap_err();
+        assert!(
+            matches!(err, crate::error::EvalError::Io { action: "read", .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn artifact_writes_surface_io_failures() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // A parent that is a file fails the directory creation.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let err = super::write_artifact(&blocker.join("sub").join("report.md"), "x").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::error::EvalError::Io {
+                    action: "create",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+
+        // A target that is a directory fails the write itself.
+        let target = dir.path().join("report.md");
+        std::fs::create_dir(&target).unwrap();
+        let err = super::write_artifact(&target, "x").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::error::EvalError::Io {
+                    action: "write",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn gate_table_renders_every_row() {
         let table = render_gate_table(&gates::evaluate(
             &SuiteMetrics {

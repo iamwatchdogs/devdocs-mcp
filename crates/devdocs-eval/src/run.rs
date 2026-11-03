@@ -527,6 +527,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let previous = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
+        // The tempdir can sit under an ancestor that has eval/golden, for
+        // example a nested worktree. The walk then resolves it, so the
+        // missing-ancestor precondition does not hold and the test skips.
+        if discover_eval_root().is_some() {
+            std::env::set_current_dir(previous).unwrap();
+            return;
+        }
         let outcome = run(&RunOptions {
             suite: "anything".to_owned(),
             db: None,

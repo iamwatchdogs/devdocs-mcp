@@ -297,14 +297,18 @@ fn load_meta(path: &Path, name: &str) -> Result<Option<SuiteMeta>, EvalError> {
 
 /// Whether the value is a real date-only `YYYY-MM-DD` day.
 fn is_calendar_date(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('-').collect();
-    if parts.len() != 3 {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let digits = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_digit);
+    if !digits(0..4) || !digits(5..7) || !digits(8..10) {
         return false;
     }
     let (Ok(y), Ok(m), Ok(d)) = (
-        parts[0].parse::<i32>(),
-        parts[1].parse::<u8>(),
-        parts[2].parse::<u8>(),
+        value[0..4].parse::<i32>(),
+        value[5..7].parse::<u8>(),
+        value[8..10].parse::<u8>(),
     ) else {
         return false;
     };
@@ -578,6 +582,10 @@ mod tests {
         for bad in [
             "not-a-date",
             "2026-11",
+            "2026-1-2",
+            "2026-11-2",
+            "+2026-11-02",
+            "2026-+1-02",
             "2026-13-01",
             "2026-02-30",
             "2026-11-02T00:00:00Z",

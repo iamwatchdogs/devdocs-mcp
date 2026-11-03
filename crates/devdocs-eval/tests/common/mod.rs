@@ -3,21 +3,67 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use rusqlite::Connection;
 
 /// The `devdocs` binary the subprocess pass needs.
 ///
-/// `assert_cmd` resolves the binary the same way the repo's other CLI tests
-/// do (crates/devdocs/tests/cli.rs): from the test binary's own target
-/// directory, so it works under nextest, under cargo-llvm-cov's dedicated
-/// target dir, and on Windows (`devdocs.exe`). It fails with a clear
-/// message when the binary is not built. `cargo test -p devdocs-eval`
-/// builds the `devdocs` binary as a workspace dependency of the test
-/// target; a bare `cargo build -p devdocs-eval` does not, so build it
-/// first (`cargo build -p devdocs`) before a run that skips the build.
+/// The helper locates the binary beside the test binary, so it handles the
+/// `deps/` directory, the `--release` profile, and the platform
+/// `EXE_SUFFIX`. `cargo test -p devdocs-eval` does not build `devdocs` as a
+/// side effect, so on a clean target the helper builds it once with
+/// `cargo build --locked -p devdocs` and caches the path.
 pub fn devdocs_bin() -> PathBuf {
-    assert_cmd::cargo::cargo_bin("devdocs")
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let (bin, release) = binary_beside_the_test();
+        if !bin.is_file() {
+            build_devdocs(release);
+        }
+        assert!(
+            bin.is_file(),
+            "`cargo build --locked -p devdocs` did not produce {}",
+            bin.display()
+        );
+        bin
+    })
+    .clone()
+}
+
+/// The `devdocs` path that matches the test binary's target profile.
+fn binary_beside_the_test() -> (PathBuf, bool) {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let mut profile_dir = exe
+        .parent()
+        .expect("the test binary has a parent")
+        .to_path_buf();
+    if profile_dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("deps") {
+        profile_dir = profile_dir
+            .parent()
+            .expect("the deps directory has a parent")
+            .to_path_buf();
+    }
+    let release = profile_dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("release");
+    let bin = profile_dir.join(format!("devdocs{}", std::env::consts::EXE_SUFFIX));
+    (bin, release)
+}
+
+/// Builds `devdocs` into the active target directory.
+fn build_devdocs(release: bool) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = std::process::Command::new(cargo);
+    command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["build", "--locked", "-p", "devdocs"]);
+    if release {
+        command.arg("--release");
+    }
+    let status = command.status().expect("cargo runs the devdocs build");
+    assert!(
+        status.success(),
+        "`cargo build --locked -p devdocs` failed: {status}"
+    );
 }
 
 /// Builds a fixture database and a three-question suite: one answered, one

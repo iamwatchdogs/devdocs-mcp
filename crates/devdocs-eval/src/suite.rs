@@ -393,6 +393,41 @@ mod tests {
     }
 
     #[test]
+    fn task_types_and_graders_print_stable_names() {
+        for (task, name) in [
+            (TaskType::ExactApi, "exact_api"),
+            (TaskType::HowTo, "how_to"),
+            (TaskType::Discovery, "discovery"),
+            (TaskType::Migration, "migration"),
+            (TaskType::MultiLibrary, "multi_library"),
+            (TaskType::AgentTask, "agent_task"),
+            (TaskType::Unanswerable, "unanswerable"),
+            (TaskType::Poisoned, "poisoned"),
+        ] {
+            assert_eq!(task.as_str(), name);
+        }
+        for (grader, name) in [
+            (Grader::RefMatch, "ref_match"),
+            (Grader::SymbolMatch, "symbol_match"),
+            (Grader::Manual, "manual"),
+        ] {
+            assert_eq!(grader.as_str(), name);
+        }
+    }
+
+    #[test]
+    fn a_graded_question_needs_a_nonempty_expectation() {
+        let mut q = valid_question();
+        q.expect_refs = Some(Vec::new());
+        q.expect_symbols = Some(Vec::new());
+        assert!(
+            q.validate()
+                .unwrap_err()
+                .contains("must be non-empty for a graded question")
+        );
+    }
+
+    #[test]
     fn unknown_task_types_fail_at_parse() {
         let line = r#"{"id":"x","library":"next.js","version":"16.2.9","task_type":"fuzzy_lookup","question":"q","expect_refs":["docs://next.js/v16.2.9/proxy"],"grader":"ref_match","notes":"n"}"#;
         let err = serde_json::from_str::<Question>(line).unwrap_err();
@@ -465,6 +500,53 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_and_non_utf8_suites_fail_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        // A missing file is an I/O failure (exit 3), not invalid input.
+        let err = Suite::load(&dir.path().join("absent.jsonl"), "absent").unwrap_err();
+        assert!(
+            matches!(err, crate::error::EvalError::Io { action: "read", .. }),
+            "{err}"
+        );
+
+        // Bytes that are not UTF-8 are invalid input.
+        let path = dir.path().join("binary.jsonl");
+        std::fs::write(&path, [0xFF, 0xFE]).unwrap();
+        let err = Suite::load(&path, "binary").unwrap_err();
+        assert!(err.to_string().contains("not UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn a_broken_sidecar_fails_the_suite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.jsonl");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&valid_question()).unwrap() + "\n",
+        )
+        .unwrap();
+
+        // Sidecar JSON that does not parse is invalid input.
+        std::fs::write(dir.path().join("meta.meta.json"), "{not json").unwrap();
+        let err = Suite::load(&path, "meta").unwrap_err();
+        assert!(err.to_string().contains("is invalid"), "{err}");
+
+        // A sidecar that cannot be read is an I/O failure.
+        let unread_path = dir.path().join("unread.jsonl");
+        std::fs::write(
+            &unread_path,
+            serde_json::to_string(&valid_question()).unwrap() + "\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("unread.meta.json")).unwrap();
+        let err = Suite::load(&unread_path, "unread").unwrap_err();
+        assert!(
+            matches!(err, crate::error::EvalError::Io { action: "read", .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn load_reads_the_meta_sidecar() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("meta.jsonl");
@@ -495,6 +577,7 @@ mod tests {
         .unwrap();
         for bad in [
             "not-a-date",
+            "2026-11",
             "2026-13-01",
             "2026-02-30",
             "2026-11-02T00:00:00Z",

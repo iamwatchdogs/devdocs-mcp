@@ -9,17 +9,26 @@ use rusqlite::Connection;
 
 /// The `devdocs` binary the subprocess pass needs.
 ///
-/// The helper locates the binary beside the test binary, so it handles the
-/// `deps/` directory, the `--release` profile, and the platform
-/// `EXE_SUFFIX`. `cargo test -p devdocs-eval` does not build `devdocs` as a
-/// side effect, so on a clean target the helper builds it once with
-/// `cargo build --locked -p devdocs` and caches the path.
+/// The helper derives the path from `CARGO_BIN_EXE_devdocs-eval`. Cargo
+/// embeds that absolute path at compile time, and it points at this
+/// package's own binary beside the test binary, so its parent is the active
+/// profile directory. The helper expects `devdocs` in the same directory,
+/// with the platform `EXE_SUFFIX`. `cargo test -p devdocs-eval` does not
+/// build `devdocs` as a side effect, so on a clean target the helper builds
+/// it once and caches the path.
+///
+/// The fallback build is deterministic. It receives the absolute parent of
+/// the profile directory as `--target-dir`, so cargo writes the default
+/// profile layout there and the output lands exactly where the helper
+/// looks, even when `CARGO_TARGET_DIR` is relative. The build also removes
+/// `CARGO_BUILD_TARGET`, so cargo does not nest the target triple twice
+/// under that directory.
 pub fn devdocs_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
-        let (bin, release) = binary_beside_the_test();
+        let (bin, profile_dir) = binary_beside_the_test();
         if !bin.is_file() {
-            build_devdocs(release);
+            build_devdocs(&profile_dir);
         }
         assert!(
             bin.is_file(),
@@ -31,33 +40,44 @@ pub fn devdocs_bin() -> PathBuf {
     .clone()
 }
 
-/// The `devdocs` path that matches the test binary's target profile.
-fn binary_beside_the_test() -> (PathBuf, bool) {
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let mut profile_dir = exe
+/// The `devdocs` path that matches the test binary's target profile, with
+/// the profile directory that holds it.
+fn binary_beside_the_test() -> (PathBuf, PathBuf) {
+    let eval = PathBuf::from(env!("CARGO_BIN_EXE_devdocs-eval"));
+    let profile_dir = eval
         .parent()
-        .expect("the test binary has a parent")
+        .expect("the devdocs-eval binary has a parent")
         .to_path_buf();
-    if profile_dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("deps") {
-        profile_dir = profile_dir
-            .parent()
-            .expect("the deps directory has a parent")
-            .to_path_buf();
-    }
-    let release = profile_dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("release");
     let bin = profile_dir.join(format!("devdocs{}", std::env::consts::EXE_SUFFIX));
-    (bin, release)
+    (bin, profile_dir)
 }
 
-/// Builds `devdocs` into the active target directory.
-fn build_devdocs(release: bool) {
+/// Builds `devdocs` into the profile directory the helper expects.
+fn build_devdocs(profile_dir: &Path) {
+    let profile = profile_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("the profile directory has a UTF-8 name");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = std::process::Command::new(cargo);
     command
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["build", "--locked", "-p", "devdocs"]);
-    if release {
-        command.arg("--release");
+        .env_remove("CARGO_BUILD_TARGET")
+        .args(["build", "--locked", "-p", "devdocs"])
+        .arg("--target-dir")
+        .arg(
+            profile_dir
+                .parent()
+                .expect("the profile directory has a parent"),
+        );
+    match profile {
+        "debug" => {}
+        "release" => {
+            command.arg("--release");
+        }
+        other => {
+            command.args(["--profile", other]);
+        }
     }
     let status = command.status().expect("cargo runs the devdocs build");
     assert!(

@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-06T18:00:00Z
+timestamp: 2026-11-06T21:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -86,7 +86,7 @@ A cold miss returns `not_indexed` with a sync hint. An abstention is a valid res
 
 ## Result envelope
 
-The unified shape for CLI JSON and MCP structured output (research: retrieval-design.md §3.8):
+The unified shape for CLI JSON and MCP structured output (research: retrieval-design.md §3.8). `source_url` is the chunk's page URL when the chunk carries one, else the source origin URL (docs/implementation/07 §llms.txt adapter):
 
 ```json
 {

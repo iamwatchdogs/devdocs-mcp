@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use devdocs_ingest::{FixtureSet, IngestJob, gate_fetch};
+use devdocs_ingest::{FixtureSet, GitPin, IngestJob, gate_fetch};
 use devdocs_model::config::Config;
 use devdocs_model::envelope::{ResultEnvelope, SourceSummary};
 use devdocs_model::error::{Error, UpstreamCode};
@@ -209,13 +209,18 @@ fn withdraw_on_terminal_refusal(config: &Config, index_url: &Url) -> Result<(), 
 /// points): the publish-time withdrawal cannot run, because this refusal
 /// happens before any publish.
 ///
+/// The effective kind dispatches the adapter (docs/implementation/07
+/// §Priority ladder): an explicit `--kind` wins, then the config
+/// `[sources.<name>].kind`, then `llms_txt`.
+///
 /// # Errors
 /// [`Error`] for the gate refusal (`FETCH_BLOCKED`), guard refusals and
-/// failures, parse failures, and store failures.
+/// failures, parse failures, git failures, and store failures.
 pub fn run_add(
     config: &Config,
     source: &str,
     version: Option<&str>,
+    kind: Option<&str>,
     fixture_dir: Option<&std::path::Path>,
 ) -> Result<serde_json::Value, Error> {
     let index_url = Url::parse(source).map_err(|e| Error::Usage(format!("bad source URL: {e}")))?;
@@ -229,13 +234,40 @@ pub fn run_add(
         }
     };
 
-    // 2. The fixture set, when replaying.
+    // 2. The effective kind. `--kind` wins, then the config entry.
+    let effective_kind = kind
+        .or_else(|| {
+            config
+                .sources
+                .get(&grant.name)
+                .and_then(|entry| entry.kind.as_deref())
+        })
+        .unwrap_or("llms_txt");
+
+    if effective_kind == "git" {
+        // `--fixture` replays recorded HTTP responses; the git adapter has
+        // no replay surface, so a silent drop would run against the network.
+        if fixture_dir.is_some() {
+            return Err(Error::Usage(
+                "--fixture replays HTTP recordings and does not apply to git sources".to_owned(),
+            ));
+        }
+        // The pin must be explicit: there is no "latest" tag to resolve.
+        let Some(pin) = version else {
+            return Err(Error::Usage(
+                "git sources require --version (a tag or a commit SHA)".to_owned(),
+            ));
+        };
+        return run_add_git(config, &index_url, &grant.name, pin);
+    }
+
+    // 3. The fixture set, when replaying.
     let fixture = fixture_dir
         .map(FixtureSet::load)
         .transpose()
         .map_err(map_ingest_error)?;
 
-    // 3. The guard and the ingest run. The tokio runtime is local to the
+    // 4. The guard and the ingest run. The tokio runtime is local to the
     // command: the rest of the CLI stays synchronous.
     let guard = devdocs_ingest::FetchGuard::from_fetch_config(&config.fetch);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -254,16 +286,68 @@ pub fn run_add(
     // blocking task running; do not wait for it when the runtime drops.
     runtime.shutdown_background();
     let outcome = result.map_err(map_ingest_error)?;
+    add_report(&outcome)
+}
 
+/// Runs the git branch of `devdocs add`: the pin is the `--version` value
+/// (40 hex → commit pin, otherwise tag pin), the clone runs inside
+/// [`IngestJob::run_git`]'s `spawn_blocking` — not through the HTTP fetch
+/// guard, which does not govern the git transport
+/// (docs/implementation/07 §Git adapter) — and the version label is the
+/// pin itself.
+///
+/// # Errors
+/// [`Error`] for any ingest failure (`IngestJob::run_git` maps the whole
+/// plan/fetch/segment/publish chain).
+fn run_add_git(
+    config: &Config,
+    repo_url: &Url,
+    library: &str,
+    pin: &str,
+) -> Result<serde_json::Value, Error> {
+    let guard = devdocs_ingest::FetchGuard::from_fetch_config(&config.fetch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("cannot start the async runtime: {e}"),
+        })?;
+
+    let store = open_store(config, false)?;
+    // The clone directory lands under the store's data root, the directory
+    // `open_store` already created with mode 0700.
+    let data_root = config.index.path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
+    let job = IngestJob::new(config, &guard, None);
+    let result = runtime.block_on(job.run_git(
+        Arc::clone(&store),
+        repo_url,
+        library,
+        pin,
+        GitPin::from(pin),
+        &data_root,
+    ));
+    // A run that hit the total cap can leave its in-flight segmentation
+    // blocking task running; do not wait for it when the runtime drops.
+    runtime.shutdown_background();
+    let outcome = result.map_err(map_ingest_error)?;
+    add_report(&outcome)
+}
+
+/// The `add --json` report both adapters return; the event report also
+/// goes to stderr as log lines (the default filter is `warn`, so the lines
+/// surface only under `--verbose`)
+/// (docs/implementation/07 §Normalization pipeline).
+fn add_report(outcome: &devdocs_ingest::IngestOutcome) -> Result<serde_json::Value, Error> {
     tracing::info!(
         pages = outcome.pages,
         skipped = outcome.skipped_pages,
         chunks = outcome.chunks,
         "ingest finished"
     );
-    // The event report goes to stderr as log lines; the default filter is
-    // `warn`, so the lines surface only under `--verbose`
-    // (docs/implementation/07 §Normalization pipeline).
     outcome.events.log();
     // defensive: `IngestEvents` is a plain struct of integer counters, so
     // `serde_json::to_value` cannot fail on it; the mapping exists only to
@@ -280,6 +364,7 @@ pub fn run_add(
         "pages": outcome.pages,
         "skipped_pages": outcome.skipped_pages,
         "chunks": outcome.chunks,
+        "commit_sha": outcome.commit_sha,
         "events": events,
     }))
 }
@@ -364,7 +449,115 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
         },
         E::NoIngestablePages { index } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
-            detail: format!("no ingestable markdown pages linked from {index}"),
+            detail: format!("no ingestable pages for {index}"),
         },
+        E::GitBinaryMissing => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: "GIT_BINARY_MISSING: the git executable was not found on PATH".to_owned(),
+        },
+        E::GitInvalidPin { pin } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_INVALID_PIN: pin `{pin}` starts with `-`"),
+        },
+        E::GitUrlMismatch { planned, actual } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!(
+                "GIT_URL_MISMATCH: fetch URL `{actual}` does not match the planned URL `{planned}`"
+            ),
+        },
+        E::GitCommand { command, stderr } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_COMMAND_FAILED: `{command}` failed: {stderr}"),
+        },
+        E::GitSpawn { message } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_SPAWN_FAILED: {message}"),
+        },
+        E::GitTempDir { message } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_TEMP_DIR: {message}"),
+        },
+        E::GitWalk { message } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_WALK_FAILED: {message}"),
+        },
+        E::GitCommitShaInvalid(sha) => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_COMMIT_SHA_INVALID: rev-parse returned `{sha}`"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::map_ingest_error;
+    use devdocs_ingest::IngestError;
+    use devdocs_model::error::{Error, UpstreamCode};
+
+    /// The git adapter error kinds and the stable code prefixes their
+    /// CLI mapping must keep (docs/implementation/05 §Error model).
+    fn git_error_cases() -> Vec<(IngestError, &'static str)> {
+        vec![
+            (
+                IngestError::GitInvalidPin {
+                    pin: "-oProxyCommand=no".to_owned(),
+                },
+                "GIT_INVALID_PIN",
+            ),
+            (
+                IngestError::GitUrlMismatch {
+                    planned: "file:///a".to_owned(),
+                    actual: "file:///b".to_owned(),
+                },
+                "GIT_URL_MISMATCH",
+            ),
+            (
+                IngestError::GitCommand {
+                    command: "git clone".to_owned(),
+                    stderr: "boom".to_owned(),
+                },
+                "GIT_COMMAND_FAILED",
+            ),
+            (
+                IngestError::GitSpawn {
+                    message: "no exec".to_owned(),
+                },
+                "GIT_SPAWN_FAILED",
+            ),
+            (
+                IngestError::GitTempDir {
+                    message: "cannot create /tmp/x: denied".to_owned(),
+                },
+                "GIT_TEMP_DIR",
+            ),
+            (
+                IngestError::GitWalk {
+                    message: "unreadable".to_owned(),
+                },
+                "GIT_WALK_FAILED",
+            ),
+            (
+                IngestError::GitCommitShaInvalid("not-a-sha".to_owned()),
+                "GIT_COMMIT_SHA_INVALID",
+            ),
+        ]
+    }
+
+    /// Every git adapter error kind maps onto `UPSTREAM_ERROR` with its
+    /// stable code prefix intact (docs/implementation/05 §Error model).
+    #[test]
+    fn git_errors_map_upstream_with_their_code_prefix() {
+        for (error, code) in git_error_cases() {
+            let Error::Upstream { code: got, detail } = map_ingest_error(error) else {
+                panic!("expected an upstream error for {code}");
+            };
+            assert_eq!(got, UpstreamCode::UpstreamError);
+            assert!(
+                detail.starts_with(&format!("{code}:")),
+                "detail `{detail}` lacks the {code} prefix"
+            );
+        }
     }
 }

@@ -3,6 +3,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::{Segmenter, boundary_inside_fence, contextual_header, fence_intervals};
+use crate::symbols::grammar_for;
+
+/// Whether this build carries the grammar for `lang`: without its feature
+/// the fence counts unsupported and yields no symbol, so each
+/// symbol-carrying test branches on it and pins the degrade behavior in
+/// every feature state.
+fn grammar_enabled(lang: &str) -> bool {
+    grammar_for(lang).is_some()
+}
 
 /// The fence probe over a text's precomputed intervals.
 fn probe(text: &str, at: usize) -> bool {
@@ -115,6 +124,31 @@ fn midsize_block_splits_with_overlap() {
     assert!(
         chunks[1].body.starts_with(shared),
         "the second piece does not carry the overlap text"
+    );
+}
+
+/// A midsize split flushes the blocks packed ahead of it: the prose chunk
+/// closes before the split pieces begin, and the first split piece rides
+/// the block's symbols.
+#[test]
+fn midsize_split_flushes_the_packed_current() {
+    // 45 words ≈ 62 heuristic tokens: inside the (target, 2× target) band
+    // of the 40-token segmenter, with a small paragraph packed ahead.
+    let words = (0..45).map(|i| format!("tok{i}")).collect::<Vec<_>>();
+    let page = format!("## Mid\n\nsmall prose\n\n{}\n", words.join(" "));
+    let chunks = small().segment("acme", "1.0", &page);
+    assert!(
+        chunks.len() >= 3,
+        "expected the prose chunk plus split pieces: {chunks:?}"
+    );
+    assert!(
+        chunks[0].body.contains("small prose"),
+        "the first chunk is the flushed prose, got: {:?}",
+        chunks[0].body
+    );
+    assert!(
+        !chunks[1].body.contains("small prose"),
+        "the split pieces do not re-serve the flushed prose"
     );
 }
 
@@ -341,17 +375,29 @@ proptest::proptest! {
 fn merge_pass_merges_fence_crossing_boundaries_in_order() {
     // The unclosed fence at byte 3 covers every offset from 3 on.
     let text = "a\n```\ncode\n";
-    let merge = |spans: Vec<std::ops::Range<usize>>| super::merge_until_fence_safe(spans, text);
+    let merge = |spans: Vec<std::ops::Range<usize>>| {
+        let candidates: Vec<super::Candidate> = spans
+            .into_iter()
+            .map(|span| super::Candidate {
+                span,
+                symbols: Vec::new(),
+            })
+            .collect();
+        super::merge_until_fence_safe(candidates, text)
+    };
     // A single span returns untouched.
+    let spans = |candidates: Vec<super::Candidate>| -> Vec<std::ops::Range<usize>> {
+        candidates.into_iter().map(|c| c.span).collect()
+    };
     let single: Vec<std::ops::Range<usize>> = std::iter::once(0..2).collect();
-    assert_eq!(merge(single.clone()), single);
+    assert_eq!(spans(merge(single.clone())), single);
     // Boundaries 4 and 8 sit inside the fence: the chain merges into one
     // span, one merge per boundary.
-    assert_eq!(merge(vec![0..4, 4..8, 8..12]), vec![0..12]);
+    assert_eq!(spans(merge(vec![0..4, 4..8, 8..12])), vec![0..12]);
     // Boundary 2 sits outside (before the fence), boundary 4 inside: the
     // last span absorbs into its predecessor; its own end, also inside
     // the fence, merges nothing once it is the final span.
-    assert_eq!(merge(vec![0..2, 2..4, 8..12]), vec![0..2, 2..12]);
+    assert_eq!(spans(merge(vec![0..2, 2..4, 8..12])), vec![0..2, 2..12]);
 }
 
 /// The segmenter debug shape names its limits.
@@ -418,11 +464,18 @@ fn fence_probe_handles_marker_lines_and_unclosed_fences() {
 /// (docs/implementation/07 §Normalization pipeline, the ingest events).
 #[test]
 fn unknown_fence_languages_are_counted() {
-    let (chunks, stats) = Segmenter::new().unwrap().segment_with_stats(
-        "lib",
-        "1.0",
-        "# T\n\n```cobol\nMOVE A TO B.\n```\n\nbody\n",
-    );
+    // The debug event formats only under a subscriber that enables it.
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .finish();
+    let (chunks, stats) = tracing::subscriber::with_default(subscriber, || {
+        Segmenter::new().unwrap().segment_with_stats(
+            "lib",
+            "1.0",
+            "# T\n\n```cobol\nMOVE A TO B.\n```\n\nbody\n",
+        )
+    });
     assert_ne!(chunks, [] as [super::PreparedChunk; 0]);
     assert_eq!(stats.unknown_fence_languages, 1);
     assert_eq!(stats.skipped_blocks, 0);
@@ -447,6 +500,268 @@ fn unknown_fence_languages_are_counted() {
         "lib",
         "1.0",
         "# T\n\n```language-python\nx\n```\n\nbody\n",
+    );
+    assert_eq!(stats.unknown_fence_languages, 0);
+}
+
+/// A rust fence carries its extracted symbols on the produced chunk, in
+/// block order; prose around the fence joins the same chunk.
+#[test]
+fn rust_fence_symbols_land_on_the_chunk() {
+    let (chunks, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\nprose\n\n```rust\nfn parse_config() {}\nstruct Command;\n```\n\nmore prose\n",
+    );
+    if !grammar_enabled("rust") {
+        assert_eq!(
+            stats.unsupported_fence_languages, 1,
+            "without the grammar the fence counts unsupported"
+        );
+        assert!(
+            chunks.iter().all(|chunk| chunk.symbols.is_empty()),
+            "without the grammar no symbol is extracted"
+        );
+        return;
+    }
+    assert_eq!(stats.unsupported_fence_languages, 0);
+    let chunk = chunks
+        .iter()
+        .find(|chunk| !chunk.symbols.is_empty())
+        .expect("a chunk carries the fence's symbols");
+    let names: Vec<&str> = chunk.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["parse_config", "Command"]);
+    assert_eq!(chunk.symbols[0].kind, "function");
+    assert_eq!(chunk.symbols[1].kind, "struct");
+    assert_eq!(chunk.symbols[0].line, 1, "line is 1-based in the fence");
+}
+
+/// A fence naming an unknown language (`wasm`) is counted and the chunk is
+/// still produced; a symbol-capable language without its grammar
+/// (TypeScript, no grammar by design) counts as unsupported. Unnamed
+/// fences count as neither.
+#[test]
+fn unsupported_and_unknown_fences_are_counted_but_never_fail() {
+    let (chunks, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```wasm\n(module)\n```\n\nbody\n",
+    );
+    assert_eq!(stats.unknown_fence_languages, 1);
+    assert_eq!(stats.unsupported_fence_languages, 0);
+    assert!(!chunks.is_empty(), "the source still produces chunks");
+
+    let (chunks, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```ts\nconst x = 1;\n```\n\n```bash\necho hi\n```\n\nbody\n",
+    );
+    assert_eq!(
+        stats.unsupported_fence_languages, 1,
+        "ts counts, bash does not"
+    );
+    assert_eq!(stats.unknown_fence_languages, 0);
+    assert!(!chunks.is_empty(), "the source still produces chunks");
+
+    let (_, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```\nplain\n```\n\nbody\n",
+    );
+    assert_eq!(stats.unknown_fence_languages, 0);
+    assert_eq!(stats.unsupported_fence_languages, 0);
+}
+
+/// A fenced code block nested in a list item extracts its symbols onto the
+/// chunk its container block packs into; the extraction sees the fence at
+/// any container depth (docs/implementation/07 §Symbol extraction).
+#[test]
+fn nested_fences_extract_symbols() {
+    let page = "# Guide\n\n- step one:\n\n  ```rust\n  fn nested_in_list() {}\n  ```\n";
+    let (chunks, stats) = Segmenter::new()
+        .unwrap()
+        .segment_with_stats("lib", "1.0", page);
+    let names: Vec<&str> = chunks
+        .iter()
+        .flat_map(|chunk| chunk.symbols.iter().map(|s| s.name.as_str()))
+        .collect();
+    if grammar_enabled("rust") {
+        assert_eq!(names, vec!["nested_in_list"]);
+    } else {
+        assert_eq!(
+            stats.unsupported_fence_languages, 1,
+            "without the grammar the fence counts unsupported"
+        );
+        assert!(names.is_empty(), "without the grammar no symbol emerges");
+    }
+
+    // A fence inside a blockquote.
+    let page = "# Guide\n\n> run this:\n>\n> ```go\n> func Nested() {}\n> ```\n";
+    let (chunks, stats) = Segmenter::new()
+        .unwrap()
+        .segment_with_stats("lib", "1.0", page);
+    let names: Vec<&str> = chunks
+        .iter()
+        .flat_map(|chunk| chunk.symbols.iter().map(|s| s.name.as_str()))
+        .collect();
+    if grammar_enabled("go") {
+        assert_eq!(names, vec!["Nested"]);
+    } else {
+        assert_eq!(
+            stats.unsupported_fence_languages, 1,
+            "without the grammar the fence counts unsupported"
+        );
+        assert!(names.is_empty(), "without the grammar no symbol emerges");
+    }
+
+    // A fence inside a list nested in a list.
+    let page =
+        "# Guide\n\n- outer:\n\n  - inner:\n\n    ```python\n    def deep(): pass\n    ```\n";
+    let (chunks, stats) = Segmenter::new()
+        .unwrap()
+        .segment_with_stats("lib", "1.0", page);
+    let names: Vec<&str> = chunks
+        .iter()
+        .flat_map(|chunk| chunk.symbols.iter().map(|s| s.name.as_str()))
+        .collect();
+    if grammar_enabled("python") {
+        assert_eq!(names, vec!["deep"]);
+    } else {
+        assert_eq!(
+            stats.unsupported_fence_languages, 1,
+            "without the grammar the fence counts unsupported"
+        );
+        assert!(names.is_empty(), "without the grammar no symbol emerges");
+    }
+}
+
+/// The fence counters cover nested fences too: an unknown nested language
+/// counts, and an unnamed nested fence stays uncounted
+/// (docs/implementation/07 §Symbol extraction, the counters).
+#[test]
+fn nested_fence_counters_match_top_level_ones() {
+    // Unknown nested language.
+    let page = "# T\n\n- item:\n\n  ```wasm,foo\n  (module)\n  ```\n";
+    let (chunks, stats) = Segmenter::new()
+        .unwrap()
+        .segment_with_stats("lib", "1.0", page);
+    assert_eq!(stats.unknown_fence_languages, 1);
+    assert_eq!(stats.unsupported_fence_languages, 0);
+    assert!(chunks.iter().all(|chunk| chunk.symbols.is_empty()));
+
+    // Unsupported nested language (TypeScript has no grammar by design).
+    let page = "# T\n\n> ```ts\n> const x = 1;\n> ```\n";
+    let (_, stats) = Segmenter::new()
+        .unwrap()
+        .segment_with_stats("lib", "1.0", page);
+    assert_eq!(stats.unsupported_fence_languages, 1);
+
+    // An unnamed nested fence names no language, so it counts in neither.
+    let page = "# T\n\n- item:\n\n  ```\n  plain\n  ```\n";
+    let (_, stats) = Segmenter::new()
+        .unwrap()
+        .segment_with_stats("lib", "1.0", page);
+    assert_eq!(stats.unknown_fence_languages, 0);
+    assert_eq!(stats.unsupported_fence_languages, 0);
+}
+
+/// An oversized list that splits routes each nested-fence symbol group to
+/// the piece containing its fence, not to the first piece: a rust fence in
+/// a later item carries its symbol on the chunk holding that fence.
+#[test]
+fn split_container_routes_nested_symbols_to_their_piece() {
+    // Prose items push the list into the (target, 2× target) band of the
+    // 40-token segmenter (~62 heuristic tokens); the fence sits in the
+    // final item, past the first split piece.
+    let mut items: Vec<String> = (1..=6)
+        .map(|n| format!("- prose item number {n} with words\n"))
+        .collect();
+    items.push("- last:\n\n  ```rust\n  fn deep_item_fn() {}\n  ```\n".to_owned());
+    let page = format!("## List\n\n{}", items.join("\n"));
+    let chunks = small().segment("lib", "1.0", &page);
+    let list_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|chunk| chunk.section_path == vec!["List"])
+        .collect();
+    assert!(
+        list_chunks.len() >= 2,
+        "expected the list to split: {list_chunks:?}"
+    );
+    if !grammar_enabled("rust") {
+        assert!(
+            list_chunks.iter().all(|chunk| chunk.symbols.is_empty()),
+            "without the grammar no symbol is extracted: {list_chunks:?}"
+        );
+        return;
+    }
+    let carrying: Vec<_> = list_chunks
+        .iter()
+        .filter(|chunk| chunk.symbols.iter().any(|s| s.name == "deep_item_fn"))
+        .collect();
+    assert_eq!(
+        carrying.len(),
+        1,
+        "the symbol lands on exactly one piece: {list_chunks:?}"
+    );
+    assert!(
+        carrying[0].body.contains("fn deep_item_fn() {}"),
+        "the carrying piece holds the fence: {:?}",
+        carrying[0].body
+    );
+    assert!(
+        !list_chunks[0].body.contains("fn deep_item_fn() {}"),
+        "the first piece is prose only: {:?}",
+        list_chunks[0].body
+    );
+}
+
+/// The fence language is the first token up to whitespace or a comma, so
+/// attribute-bearing info strings name their language
+/// (docs/implementation/07 §Symbol extraction).
+#[test]
+fn fence_info_attributes_do_not_hide_the_language() {
+    // A comma-joined attribute (`rust,ignore` is one whitespace token).
+    let (chunks, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```rust,ignore\nfn tagged() {}\n```\n\nbody\n",
+    );
+    assert_eq!(stats.unknown_fence_languages, 0);
+    if grammar_enabled("rust") {
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.symbols.iter().any(|s| s.name == "tagged")),
+            "the comma attribute keeps the language symbol-capable"
+        );
+    } else {
+        assert!(
+            chunks.iter().all(|chunk| chunk.symbols.is_empty()),
+            "without the grammar no symbol is extracted"
+        );
+    }
+
+    // A colon-joined attribute after a comma.
+    let (_, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```python,name: x\nvalue = 1\n```\n\nbody\n",
+    );
+    assert_eq!(stats.unknown_fence_languages, 0);
+
+    // A genuinely unknown comma token still counts as unknown.
+    let (_, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```wasm,foo\n(module)\n```\n\nbody\n",
+    );
+    assert_eq!(stats.unknown_fence_languages, 1);
+
+    // The whitespace-separated attribute form keeps working.
+    let (_, stats) = Segmenter::new().unwrap().segment_with_stats(
+        "lib",
+        "1.0",
+        "# T\n\n```rust ignore\nfn spaced() {}\n```\n\nbody\n",
     );
     assert_eq!(stats.unknown_fence_languages, 0);
 }

@@ -144,9 +144,9 @@ pub enum Command {
     },
     /// Write the SKILL.md companion file.
     Skill {
-        /// The skill operation.
+        /// The skill operation; omit it to install.
         #[command(subcommand)]
-        op: SkillOp,
+        op: Option<SkillOp>,
     },
     /// Start the MCP server on stdio.
     Mcp {
@@ -203,6 +203,9 @@ pub enum SkillOp {
         /// Where to write the file.
         #[arg(long, value_name = "PATH")]
         path: Option<PathBuf>,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -336,10 +339,10 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
         Command::Open { doc_ref, cursor } => run_open_command(cli, doc_ref, *cursor),
         Command::Verify { doc_ref } => run_verify_command(cli, doc_ref),
         Command::Versions { library } => run_versions_command(cli, library),
+        Command::Skill { op } => run_skill_command(op.as_ref()),
         Command::Sync { .. }
         | Command::Symbol { .. }
         | Command::Source { .. }
-        | Command::Skill { .. }
         | Command::Mcp { .. }
         | Command::Db { .. }
         | Command::Eval { .. } => print_placeholder(),
@@ -471,6 +474,91 @@ fn summarize_add(result: &serde_json::Value) -> String {
     format!("indexed {library} {version}: {pages} pages, {chunks} chunks")
 }
 
+/// Runs the `skill` subcommands; a bare `devdocs skill` installs.
+fn run_skill_command(op: Option<&SkillOp>) -> Result<(), Error> {
+    match op {
+        Some(SkillOp::Install { path, force }) => skill_install(path.as_deref(), *force),
+        None => skill_install(None, false),
+    }
+}
+
+/// Write the SKILL.md companion file; refuse to overwrite without force.
+/// The create is exclusive when force is off, the same policy `config init`
+/// carries, and every filesystem failure maps to USAGE with the io error
+/// detail (docs/implementation/08 §The skill companion).
+fn skill_install(path: Option<&std::path::Path>, force: bool) -> Result<(), Error> {
+    let path = path.unwrap_or_else(|| std::path::Path::new("SKILL.md"));
+    // The refusal happens before any write attempt, so an existing
+    // directory is never touched.
+    if path.is_dir() {
+        return Err(Error::Usage(format!(
+            "skill path {} is a directory; --path takes a file path",
+            path.display()
+        )));
+    }
+    write_exclusive(
+        path,
+        force,
+        crate::commands::SKILL_MD,
+        |target, e| match target {
+            IoTarget::Parent(p) => Error::Usage(format!(
+                "cannot create parent directory {}: {e}",
+                p.display()
+            )),
+            IoTarget::File if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Error::Usage(format!(
+                    "skill file already exists at {}; pass --force to overwrite",
+                    path.display()
+                ))
+            }
+            IoTarget::File => Error::Usage(format!("cannot write {}: {e}", path.display())),
+        },
+    )
+}
+
+/// Which path of a [`write_exclusive`] target an io failure concerned: the
+/// parent directory that had to be created, or the target file itself.
+enum IoTarget<'a> {
+    Parent(&'a std::path::Path),
+    File,
+}
+
+/// Create the parent directories of `path`, then write `content` to it:
+/// an exclusive create when `force` is off (no check-then-write race
+/// window), a truncate when on. The caller maps each io failure through
+/// `on_io`, which receives the [`IoTarget`] the failure concerned and
+/// reads the [`std::io::ErrorKind::AlreadyExists`] kind off the error. On
+/// success prints `{"wrote": path}` on stdout.
+fn write_exclusive(
+    path: &std::path::Path,
+    force: bool,
+    content: &str,
+    on_io: impl Fn(IoTarget<'_>, std::io::Error) -> Error,
+) -> Result<(), Error> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| on_io(IoTarget::Parent(parent), e))?;
+    }
+    let open = if force {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+    } else {
+        // Exclusive create: no check-then-write race window.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    };
+    let mut file = open.map_err(|e| on_io(IoTarget::File, e))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| on_io(IoTarget::File, e))?;
+    write_stdout_line(&serde_json::json!({"wrote": path.display().to_string()}).to_string())
+}
+
 /// Print the empty result envelope: the deliberate M1 placeholder that the
 /// owning milestones replace (docs/implementation/13 §M1).
 fn print_placeholder() -> Result<(), Error> {
@@ -552,44 +640,27 @@ fn run_config(cli: &Cli, op: &ConfigOp) -> Result<(), Error> {
 /// USAGE with exit 1 is the least-wrong documented code, and the detail
 /// names --force).
 fn config_init(path: &std::path::Path, force: bool) -> Result<(), Error> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| Error::ConfigInvalid {
-            key_path: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
-    }
-    let open = if force {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-    } else {
-        // Exclusive create: no check-then-write race window.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-    };
-    let mut file = open.map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            Error::Usage(format!(
-                "user config already exists at {}; pass --force to overwrite",
-                path.display()
-            ))
-        } else {
-            Error::ConfigInvalid {
+    // Every failure maps with the full config file path, even when the io
+    // failure concerned the parent directory: the file-exists refusal
+    // applies to the config file itself, and CONFIG_INVALID carries the
+    // config path, not the parent's.
+    write_exclusive(
+        path,
+        force,
+        &user_config_template(),
+        |target, e| match target {
+            IoTarget::File if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Error::Usage(format!(
+                    "user config already exists at {}; pass --force to overwrite",
+                    path.display()
+                ))
+            }
+            _ => Error::ConfigInvalid {
                 key_path: path.display().to_string(),
                 reason: e.to_string(),
-            }
-        }
-    })?;
-    file.write_all(user_config_template().as_bytes())
-        .map_err(|e| Error::ConfigInvalid {
-            key_path: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
-    write_stdout_line(&serde_json::json!({"wrote": path.display().to_string()}).to_string())
+            },
+        },
+    )
 }
 
 /// Validate one file, or the resolved layer chain when no path is given.

@@ -936,7 +936,6 @@ mod tests {
     /// clone (docs/implementation/09 §Local storage controls).
     #[test]
     fn a_stale_clone_dir_is_swept_at_the_next_create() {
-        use std::fs::File;
         use std::time::{Duration, SystemTime};
 
         let _order = TEMP_CLONE_ORDER.lock().unwrap();
@@ -956,7 +955,27 @@ mod tests {
         // Age the planted dir past the cap: the sweep only removes
         // entries older than the total ingest cap.
         let old = SystemTime::now() - crate::pipeline::TOTAL_INGEST_CAP - Duration::from_secs(60);
-        File::open(&stale).unwrap().set_modified(old).unwrap();
+        // Windows only grants FILE_WRITE_ATTRIBUTES to a handle opened
+        // with an explicit access mask plus FILE_FLAG_BACKUP_SEMANTICS;
+        // a plain `File::open` on a directory cannot set the mtime.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0000_0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            std::fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&stale)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        #[cfg(not(windows))]
+        {
+            use std::fs::File;
+            File::open(&stale).unwrap().set_modified(old).unwrap();
+        }
 
         // A young clone dir stays: it could belong to another process's
         // live clone (the registry is per-process).

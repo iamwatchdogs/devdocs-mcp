@@ -151,18 +151,19 @@ fn clone_tag(
 /// (docs/implementation/07 §Git adapter).
 fn verify_tag(dir: &Path, pin: &str, extra_config: &[&str]) -> Result<(), IngestError> {
     let tag_ref = format!("refs/tags/{pin}^{{commit}}");
-    if run_git(
+    match run_git(
         dir,
         &["rev-parse", "--verify", "--quiet", &tag_ref],
         extra_config,
-    )
-    .is_err()
-    {
-        return Err(IngestError::GitPinNotTag {
+    ) {
+        Ok(_) => Ok(()),
+        // `--quiet` means the rev-parse itself failed on a missing ref;
+        // any other error is operational and keeps its own mapping.
+        Err(IngestError::GitCommand { .. }) => Err(IngestError::GitPinNotTag {
             pin: pin.to_owned(),
-        });
+        }),
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 /// Clones a commit pin and returns whether the full-clone fallback ran:

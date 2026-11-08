@@ -31,6 +31,40 @@ use crate::guard::FetchGuard;
 use crate::llms_txt::parse_llms_txt;
 use crate::relations::PageRelations;
 use crate::segment::Segmenter;
+use crate::symbols::ExtractedSymbol;
+
+impl From<&ExtractedSymbol> for devdocs_store::Symbol {
+    fn from(sym: &ExtractedSymbol) -> Self {
+        Self {
+            name: sym.name.clone(),
+            kind: sym.kind.clone(),
+        }
+    }
+}
+
+/// Converts extracted symbols into the store's symbol rows, name and kind
+/// carried over (docs/implementation/07 §Normalization pipeline, the
+/// symbol pass).
+fn store_symbols(symbols: &[ExtractedSymbol]) -> Vec<devdocs_store::Symbol> {
+    symbols.iter().map(devdocs_store::Symbol::from).collect()
+}
+
+/// Builds a chunk's symbol rows plus its primary symbol: the declared
+/// symbol whose name the contextual header names, else the first declared
+/// one (docs/implementation/07 §Normalization pipeline, the symbol pass).
+fn chunk_symbols(
+    header: &str,
+    symbols: &[ExtractedSymbol],
+) -> (Vec<devdocs_store::Symbol>, Option<devdocs_store::Symbol>) {
+    (
+        store_symbols(symbols),
+        symbols
+            .iter()
+            .find(|sym| header_names_symbol(header, &sym.name))
+            .or_else(|| symbols.first())
+            .map(devdocs_store::Symbol::from),
+    )
+}
 
 /// The total ingest wall-time cap (docs/implementation/09 invariant 7: "by
 /// config"; the config key lands with the M6 network work, the cap holds
@@ -498,15 +532,37 @@ impl<'a> IngestJob<'a> {
         // Segment every stripped document (docs/implementation/07
         // §Segmentation algorithm), one spawn_blocking per page.
         let segmenter = Segmenter::new()?;
-        for doc in &docs {
+        Self::segment_docs(&segmenter, library, version, &docs, &mut run).await?;
+
+        if run.new_chunks.is_empty() {
+            return Err(IngestError::NoIngestablePages {
+                index: origin_url.to_owned(),
+            });
+        }
+        Ok(run)
+    }
+
+    /// Segments every stripped document into `run`, one `spawn_blocking` per
+    /// page (docs/implementation/07 §Segmentation algorithm).
+    async fn segment_docs(
+        segmenter: &Segmenter,
+        library: &str,
+        version: &str,
+        docs: &[PageDocument],
+        run: &mut RunState,
+    ) -> Result<(), IngestError> {
+        for doc in docs {
             let (chunks, stats) =
-                segment_page(&segmenter, library, version, doc.body.clone()).await?;
+                segment_page(segmenter, library, version, doc.body.clone()).await?;
             run.events.skipped_blocks += stats.skipped_blocks;
             run.events.unknown_fence_languages += stats.unknown_fence_languages;
+            run.events.unsupported_fence_languages += stats.unsupported_fence_languages;
             for chunk in chunks {
+                let (symbols, symbol) = chunk_symbols(&chunk.header, &chunk.symbols);
                 run.new_chunks.push(NewChunk {
                     section_path: chunk.section_path,
-                    symbol: None,
+                    symbols,
+                    symbol,
                     text: chunk.text,
                     token_count: chunk.token_count,
                     content_hash: chunk.content_hash,
@@ -515,13 +571,7 @@ impl<'a> IngestJob<'a> {
             }
             run.events.pages += 1;
         }
-
-        if run.new_chunks.is_empty() {
-            return Err(IngestError::NoIngestablePages {
-                index: origin_url.to_owned(),
-            });
-        }
-        Ok(run)
+        Ok(())
     }
 
     /// Ingests one already-resolved page link: fetch, prefer the v2
@@ -933,6 +983,20 @@ fn is_page_url(url: &Url) -> bool {
     matches!(ext.as_str(), "md" | "mdx" | "html" | "htm" | "xhtml")
 }
 
+/// Whether the contextual header names `symbol`: a whole `›`-separated
+/// breadcrumb segment equals the symbol name, case-insensitively. The
+/// leading `[library version` segment is not a breadcrumb and never
+/// matches, and a substring inside a longer segment does not either, so
+/// `push` does not match the breadcrumb `pushState`
+/// (docs/implementation/07 §Normalization pipeline, the symbol pass).
+fn header_names_symbol(header: &str, symbol: &str) -> bool {
+    header.split('›').skip(1).any(|segment| {
+        segment
+            .trim_matches(|c: char| c.is_whitespace() || c == ']')
+            .eq_ignore_ascii_case(symbol)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1018,6 +1082,31 @@ mod tests {
         assert!(is_index_url(&url("/docs/api/llms.txt")));
         assert!(!is_index_url(&url("/llms-full.txt")));
         assert!(!is_index_url(&url("/docs/page.md")));
+    }
+
+    /// The primary-symbol header match takes whole breadcrumb segments,
+    /// case-insensitively; a near-name inside a longer segment does not
+    /// match, and the `[library version` part is not a breadcrumb
+    /// (docs/implementation/07 §Normalization pipeline, the symbol pass).
+    #[test]
+    fn header_names_symbol_matches_whole_segments() {
+        let header = "[acme 2.1.0 › Routing › Push State]";
+        assert!(header_names_symbol(header, "push state"));
+        assert!(header_names_symbol(header, "PUSH STATE"));
+        assert!(header_names_symbol("[acme 2.1.0 › push]", "push"));
+        // `push` does not match the breadcrumb `pushState`.
+        assert!(!header_names_symbol("[acme 2.1.0 › pushState]", "push"));
+        // The library/version part is not a breadcrumb segment.
+        assert!(!header_names_symbol("[acme 2.1.0]", "acme 2.1.0"));
+        // A dotted identifier matches only as the whole segment.
+        assert!(header_names_symbol(
+            "[acme 2.1.0 › obj.method]",
+            "obj.method"
+        ));
+        assert!(!header_names_symbol(
+            "[acme 2.1.0 › use obj.method]",
+            "obj.method"
+        ));
     }
 
     /// The most specific index governs: the deepest directory whose path

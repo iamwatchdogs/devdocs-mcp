@@ -10,8 +10,9 @@ use devdocs_model::VersionStatus;
 use devdocs_retrieve::Plan;
 use devdocs_retrieve::Query;
 use devdocs_retrieve::RetrieveError;
-use devdocs_retrieve::serve::{open, search, versions};
+use devdocs_retrieve::serve::{open, search, symbol, versions};
 use devdocs_store::Store;
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 /// Seeds one active and one inactive source of `acme`, plus one active
@@ -471,4 +472,293 @@ fn open_resumes_a_multibyte_chunk_without_panic() {
     }
     assert!(served.len() > 1, "the budget must cut the chunk");
     assert_eq!(served.concat(), full_text);
+}
+
+/// A symbol-rung store failure surfaces as a store failure through both
+/// the search pipeline and the exact lookup — a corrupted index must not
+/// masquerade as a miss.
+#[test]
+fn a_store_failure_propagates_from_the_symbol_rung() {
+    let (dir, store) = seeded();
+    let conn = Connection::open(dir.path().join("docs.db")).unwrap();
+    conn.execute("DROP TABLE symbols", []).unwrap();
+    drop(conn);
+
+    let plan = Plan::defaults();
+    let query = Query::new("middleware", None, None);
+    let error = search(&store, &query, std::path::Path::new("."), &plan).unwrap_err();
+    assert!(matches!(error, RetrieveError::Store(_)), "{error}");
+
+    let error = symbol(&store, "acme", None, "makeWidget", &plan).unwrap_err();
+    assert!(matches!(error, RetrieveError::Store(_)), "{error}");
+}
+
+/// Seeds `acme` 1.0.0 with two active origins: the first carries only the
+/// prefix sibling `makeWidgetPro` (its chunk ids are lower), the second
+/// carries the exact `makeWidget`.
+fn seeded_symbol_two_origins() -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        conn.execute(
+            "INSERT INTO sources(library, version, kind, origin_url, license_status, fetched_at, active) \
+             VALUES ('acme', '1.0.0', 'llms_txt', 'https://example.test/acme-b', 'approved_index', \
+             '2026-01-01T00:00:00Z', 1)",
+            [],
+        )?;
+        let prefix = conn.last_insert_rowid();
+        let exact = devdocs_testkit::seed_source(conn, "acme", true)?;
+        let prefix_chunk = devdocs_testkit::seed_chunk(
+            conn,
+            prefix,
+            0,
+            "[\"Widgets\"]",
+            None,
+            "The widget factory grows a second form.",
+        )?;
+        conn.execute(
+            "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidgetPro', ?1, 'function')",
+            [prefix_chunk],
+        )?;
+        let exact_chunk = devdocs_testkit::seed_chunk(
+            conn,
+            exact,
+            0,
+            "[\"Widgets\"]",
+            None,
+            "The widget factory builds one widget.",
+        )?;
+        conn.execute(
+            "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidget', ?1, 'function')",
+            [exact_chunk],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
+/// Seeds one `acme` 1.0.0 source with 40 chunks that all declare the
+/// `useRouter` symbol — more than the limit×4 retrieval head (8×4 = 32).
+fn seeded_many_symbol_chunks() -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        let source = devdocs_testkit::seed_source(conn, "acme", true)?;
+        for ordinal in 0..40 {
+            let chunk = devdocs_testkit::seed_chunk(
+                conn,
+                source,
+                i64::from(ordinal),
+                &format!("[\"Guide {ordinal}\"]"),
+                None,
+                "The router hook configures navigation.",
+            )?;
+            conn.execute(
+                "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('useRouter', ?1, 'function')",
+                [chunk],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
+/// Symbol pagination reaches past the retrieval head: 40 matches page
+/// through `--cursor` without repeats, and the final page closes with an
+/// honest `truncated: false` instead of reporting the head as the whole
+/// result set (docs/08 §Result envelope: truncated when content remains).
+#[test]
+fn symbol_pagination_reaches_past_the_retrieval_head() {
+    let (_dir, store) = seeded_many_symbol_chunks();
+    let plan = Plan::defaults();
+    let mut served: Vec<String> = Vec::new();
+    let mut cursor: Option<u64> = None;
+    for page in 0..10 {
+        let page_plan = Plan {
+            cursor,
+            ..plan.clone()
+        };
+        let envelope = symbol(&store, "acme", None, "useRouter", &page_plan).unwrap();
+        assert!(
+            envelope.results.len() <= 8,
+            "a page never exceeds the limit: {}",
+            envelope.results.len()
+        );
+        served.extend(envelope.results.iter().map(|item| item.doc_ref.clone()));
+        let Some(next) = envelope.next_cursor else {
+            assert!(
+                !envelope.truncated,
+                "the final page must close honestly: page {page}"
+            );
+            break;
+        };
+        assert!(
+            envelope.truncated,
+            "a cursor page implies content remains: page {page}"
+        );
+        cursor = Some(next.parse().unwrap());
+    }
+    assert_eq!(served.len(), 40, "every match is reachable");
+    let unique: std::collections::BTreeSet<&String> = served.iter().collect();
+    assert_eq!(unique.len(), 40, "no repeats across pages");
+}
+
+/// Seeds `acme` 1.0.0 and 0.9.0; only 1.0.0 declares the `makeWidget`
+/// symbol, while the 0.9.0 chunk mentions it in text so the pinned FTS
+/// rung still serves a page.
+fn seeded_symbol_two_versions() -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        let current = devdocs_testkit::seed_source(conn, "acme", true)?;
+        conn.execute(
+            "INSERT INTO sources(library, version, kind, origin_url, license_status, fetched_at, active) \
+             VALUES ('acme', '0.9.0', 'llms_txt', 'https://example.test/acme-old', 'approved_index', \
+             '2026-01-01T00:00:00Z', 1)",
+            [],
+        )?;
+        let older = conn.last_insert_rowid();
+        let _older_chunk = devdocs_testkit::seed_chunk(
+            conn,
+            older,
+            0,
+            "[\"Widgets\"]",
+            None,
+            "The makeWidget factory maps routing requests.",
+        )?;
+        let current_chunk = devdocs_testkit::seed_chunk(
+            conn,
+            current,
+            0,
+            "[\"Widgets\"]",
+            None,
+            "The widget factory builds one widget.",
+        )?;
+        conn.execute(
+            "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidget', ?1, 'function')",
+            [current_chunk],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
+/// The search symbol rung pins to the served version: a symbol only the
+/// non-pinned version carries must not answer a pinned search — the rung
+/// used to run at the library scope, leaking the other version's symbol
+/// chunk (docs/08 §Version resolution).
+#[test]
+fn the_search_symbol_rung_serves_only_the_pinned_version() {
+    let (dir, store) = seeded_symbol_two_versions();
+    let query = Query::new("makeWidget", Some("acme"), Some("0.9.0"));
+    let envelope = search(&store, &query, dir.path(), &Plan::defaults()).unwrap();
+    let served: Vec<&str> = envelope
+        .results
+        .iter()
+        .map(|item| item.served_version.as_str())
+        .collect();
+    assert_eq!(served, vec!["0.9.0"], "{served:?}");
+
+    // The unpinned search still finds the symbol through the picked
+    // highest version.
+    let query = Query::new("makeWidget", Some("acme"), None);
+    let envelope = search(&store, &query, dir.path(), &Plan::defaults()).unwrap();
+    assert!(
+        envelope
+            .results
+            .iter()
+            .any(|item| item.doc_ref.ends_with("#makewidget")),
+        "the unpinned search must serve the symbol, got {:?}",
+        envelope
+            .results
+            .iter()
+            .map(|i| &i.doc_ref)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Seeds `acme` with two active versions — 0.9.0 ingested first (lower
+/// chunk ids), 1.0.0 second — both declaring the `makeWidget` symbol.
+fn seeded_symbol_both_versions() -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        let older = devdocs_testkit::seed_source(conn, "acme", true)?;
+        conn.execute(
+            "UPDATE sources SET version = '0.9.0', \
+             origin_url = 'https://example.test/acme-old' WHERE source_id = ?1",
+            [older],
+        )?;
+        let current = devdocs_testkit::seed_source(conn, "acme", true)?;
+        for (source, ordinal) in [(older, 0), (current, 0)] {
+            let chunk = devdocs_testkit::seed_chunk(
+                conn,
+                source,
+                ordinal,
+                "[\"Widgets\"]",
+                None,
+                "The widget factory builds one widget.",
+            )?;
+            conn.execute(
+                "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidget', ?1, 'function')",
+                [chunk],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
+/// The unpinned symbol lookup serves the highest active version: a bare
+/// library target pins to it under the alias rule instead of searching
+/// the library scope, where the stale version's lower chunk ids would
+/// surface first (docs/08 §Version policy).
+#[test]
+fn the_unpinned_symbol_lookup_serves_the_highest_version() {
+    let (_dir, store) = seeded_symbol_both_versions();
+    let envelope = symbol(&store, "acme", None, "makeWidget", &Plan::defaults()).unwrap();
+    assert!(
+        envelope
+            .results
+            .iter()
+            .all(|item| item.served_version == "1.0.0"),
+        "the unpinned lookup must serve 1.0.0 only, got {:?}",
+        envelope
+            .results
+            .iter()
+            .map(|item| item.served_version.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        envelope
+            .results
+            .iter()
+            .all(|item| item.version_status == VersionStatus::Alias),
+        "the unpinned lookup keeps the alias status, got {:?}",
+        envelope
+            .results
+            .iter()
+            .map(|item| item.version_status)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The symbol ladder applies across the pinned target: the exact hit in
+/// the second origin outranks the prefix-only sibling in the first, whose
+/// lower chunk ids would otherwise win the rank tie
+/// (docs/implementation/08 §Retrieval ladder).
+#[test]
+fn the_symbol_ladder_applies_across_the_pinned_target() {
+    let (_dir, store) = seeded_symbol_two_origins();
+    let plan = Plan {
+        limit: 1,
+        ..Plan::defaults()
+    };
+    let envelope = symbol(&store, "acme", Some("1.0.0"), "makeWidget", &plan).unwrap();
+    assert_eq!(envelope.results.len(), 1, "{:?}", envelope.results);
+    assert!(
+        envelope.results[0].doc_ref.ends_with("#makewidget"),
+        "the exact hit must rank first, got {:?}",
+        envelope.results
+    );
 }

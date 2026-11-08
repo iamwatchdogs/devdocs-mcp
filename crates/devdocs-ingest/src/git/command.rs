@@ -7,9 +7,6 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 use crate::error::IngestError;
 
 /// The `GIT_*` environment variables every invocation strips, so an
@@ -106,11 +103,10 @@ pub(crate) fn run_git(
 ) -> Result<String, IngestError> {
     let mut command = build_git_command(cwd, args, extra_config);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    // Own process group on unix: the child is isolated from
-    // terminal-generated signals, and a process-group kill stays possible
-    // without ever signalling our own group.
-    #[cfg(unix)]
-    command.process_group(0);
+    // The child stays in the CLI's process group: terminal Ctrl-C reaches
+    // git and its transport helpers directly (they share git's group), so
+    // the ctrlc handler's cleanup cannot leave a slow clone running after
+    // the CLI exits.
     let mut child = command.spawn().map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => IngestError::GitBinaryMissing,
         _ => IngestError::GitSpawn {
@@ -186,12 +182,9 @@ fn wait_until(
     }
 }
 
-/// Kills the child and reaps it so no git process outlives the deadline.
-/// On unix the child was spawned as its own process-group leader; std
-/// exposes no group-kill and the workspace forbids unsafe FFI, so the kill
-/// reaches the git process itself and git's transport helpers observe the
-/// closed pipe and exit on their next write
-/// (docs/implementation/09 §Git subprocess safety).
+/// Kills the direct child and reaps it so no git process outlives the
+/// deadline. git's transport helpers observe the closed pipe and exit on
+/// their next write (docs/implementation/09 §Git subprocess safety).
 fn kill_and_reap(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();

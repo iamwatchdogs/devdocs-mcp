@@ -573,10 +573,10 @@ fn unsupported_and_unknown_fences_are_counted_but_never_fail() {
 }
 
 /// A fenced code block nested in a list item extracts its symbols onto the
-/// chunk its container block packs into; the extraction sees the fence at
-/// any container depth (docs/implementation/07 §Symbol extraction).
+/// chunk its container block packs into (docs/implementation/07 §Symbol
+/// extraction).
 #[test]
-fn nested_fences_extract_symbols() {
+fn nested_fence_in_list_extract_symbols() {
     let page = "# Guide\n\n- step one:\n\n  ```rust\n  fn nested_in_list() {}\n  ```\n";
     let (chunks, stats) = Segmenter::new()
         .unwrap()
@@ -594,8 +594,13 @@ fn nested_fences_extract_symbols() {
         );
         assert!(names.is_empty(), "without the grammar no symbol emerges");
     }
+}
 
-    // A fence inside a blockquote.
+/// A fenced code block inside a blockquote extracts its symbols onto the
+/// chunk its container block packs into (docs/implementation/07 §Symbol
+/// extraction).
+#[test]
+fn nested_fence_in_blockquote_extract_symbols() {
     let page = "# Guide\n\n> run this:\n>\n> ```go\n> func Nested() {}\n> ```\n";
     let (chunks, stats) = Segmenter::new()
         .unwrap()
@@ -613,8 +618,13 @@ fn nested_fences_extract_symbols() {
         );
         assert!(names.is_empty(), "without the grammar no symbol emerges");
     }
+}
 
-    // A fence inside a list nested in a list.
+/// A fenced code block inside a list nested in a list extracts its symbols;
+/// the extraction sees the fence at any container depth
+/// (docs/implementation/07 §Symbol extraction).
+#[test]
+fn nested_fence_in_deep_list_extract_symbols() {
     let page =
         "# Guide\n\n- outer:\n\n  - inner:\n\n    ```python\n    def deep(): pass\n    ```\n";
     let (chunks, stats) = Segmenter::new()

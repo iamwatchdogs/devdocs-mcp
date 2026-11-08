@@ -121,8 +121,9 @@ pub enum IngestError {
         /// What failed.
         message: String,
     },
-    /// A git invocation ran past the total-cap deadline and was killed and
-    /// reaped instead of orphaning the clone's network I/O
+    /// A git invocation ran past its per-invocation deadline (set at the
+    /// total-cap duration) and was killed and reaped instead of orphaning
+    /// the clone's network I/O
     /// (docs/implementation/09 §Git subprocess safety).
     #[error("GIT_TIMEOUT: `{command}` exceeded the {seconds}s deadline and was killed")]
     GitTimeout {

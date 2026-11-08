@@ -220,7 +220,7 @@ fn add_with_an_unsupported_config_kind_is_a_usage_error() {
     );
     assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
     assert!(
-        stderr.contains("--kind openapi is not supported yet"),
+        stderr.contains("source kind openapi is not supported yet"),
         "stderr: {stderr}"
     );
     assert!(!db.exists(), "a rejected add must not create the database");

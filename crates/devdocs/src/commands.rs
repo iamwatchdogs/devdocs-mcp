@@ -249,7 +249,7 @@ pub fn run_add(
     // adapter over that URL and publish wrong content.
     if !matches!(effective_kind, "llms_txt" | "git") {
         return Err(Error::Usage(format!(
-            "--kind {effective_kind} is not supported yet; this slice ingests llms_txt and git sources only"
+            "source kind {effective_kind} is not supported yet; this slice ingests llms_txt and git sources only"
         )));
     }
 

@@ -225,12 +225,12 @@ fn add_git_without_the_git_binary_fails_upstream() {
     assert!(stderr.contains("GIT_BINARY_MISSING"), "stderr: {stderr}");
 }
 
-/// An option-shaped pin (leading `-`) reaches the adapter and fails as
-/// `UPSTREAM_ERROR` with the documented `GIT_INVALID_PIN` detail — the
+/// An option-shaped pin (leading `-`) is a user-input mistake: the
 /// argv-vector rule rejects it before any git runs
-/// (docs/implementation/09 §Git subprocess safety).
+/// (docs/implementation/09 §Git subprocess safety), so it fails as
+/// `USAGE` (exit 1) with the `GIT_INVALID_PIN` detail kept.
 #[test]
-fn add_git_with_an_option_shaped_pin_fails_upstream() {
+fn add_git_with_an_option_shaped_pin_fails_usage() {
     let env = Env::new();
     let repo_dir = env.root.join("repo");
     std::fs::create_dir_all(&repo_dir).expect("repo dir");
@@ -254,7 +254,8 @@ fn add_git_with_an_option_shaped_pin_fails_upstream() {
             db.to_str().expect("db path"),
         ],
     );
-    assert_eq!(code, 3, "stderr: {stderr}");
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("USAGE"), "stderr: {stderr}");
     assert!(stderr.contains("GIT_INVALID_PIN"), "stderr: {stderr}");
 }
 

@@ -455,10 +455,12 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: "GIT_BINARY_MISSING: the git executable was not found on PATH".to_owned(),
         },
-        E::GitInvalidPin { pin } => Error::Upstream {
-            code: UpstreamCode::UpstreamError,
-            detail: format!("GIT_INVALID_PIN: pin `{pin}` starts with `-`"),
-        },
+        // A pin starting with `-` is a user-input mistake, not an upstream
+        // failure: nothing ran, so it maps onto USAGE like the sibling
+        // input checks in `run_add` (docs/implementation/05 §Error model).
+        E::GitInvalidPin { pin } => {
+            Error::Usage(format!("GIT_INVALID_PIN: pin `{pin}` starts with `-`"))
+        }
         E::GitPinNotTag { pin } => Error::Usage(format!(
             "GIT_PIN_NOT_TAG: pin `{pin}` is not a tag; use a tag name or a commit SHA"
         )),
@@ -510,12 +512,6 @@ mod tests {
     fn git_error_cases() -> Vec<(IngestError, &'static str)> {
         vec![
             (
-                IngestError::GitInvalidPin {
-                    pin: "-oProxyCommand=no".to_owned(),
-                },
-                "GIT_INVALID_PIN",
-            ),
-            (
                 IngestError::GitUrlMismatch {
                     planned: "file:///a".to_owned(),
                     actual: "file:///b".to_owned(),
@@ -561,8 +557,9 @@ mod tests {
         ]
     }
 
-    /// Every git adapter error kind maps onto `UPSTREAM_ERROR` with its
-    /// stable code prefix intact (docs/implementation/05 §Error model).
+    /// Every remaining git adapter error kind maps onto `UPSTREAM_ERROR`
+    /// with its stable code prefix intact (docs/implementation/05 §Error
+    /// model).
     #[test]
     fn git_errors_map_upstream_with_their_code_prefix() {
         for (error, code) in git_error_cases() {
@@ -590,5 +587,19 @@ mod tests {
         };
         assert!(detail.starts_with("GIT_PIN_NOT_TAG:"), "detail: {detail}");
         assert!(detail.contains("is not a tag"), "detail: {detail}");
+    }
+
+    /// An option-shaped pin is a user-input mistake: it maps onto
+    /// `USAGE`, not `UPSTREAM_ERROR`, with the `GIT_INVALID_PIN` detail
+    /// prefix kept (docs/implementation/05 §Error model).
+    #[test]
+    fn an_option_shaped_pin_maps_to_usage() {
+        let error = map_ingest_error(IngestError::GitInvalidPin {
+            pin: "-oProxyCommand=no".to_owned(),
+        });
+        let Error::Usage(detail) = error else {
+            panic!("expected a usage error for an option-shaped pin");
+        };
+        assert!(detail.starts_with("GIT_INVALID_PIN:"), "detail: {detail}");
     }
 }

@@ -459,6 +459,9 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_INVALID_PIN: pin `{pin}` starts with `-`"),
         },
+        E::GitPinNotTag { pin } => Error::Usage(format!(
+            "GIT_PIN_NOT_TAG: pin `{pin}` is not a tag; use a tag name or a commit SHA"
+        )),
         E::GitUrlMismatch { planned, actual } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!(
@@ -572,5 +575,20 @@ mod tests {
                 "detail `{detail}` lacks the {code} prefix"
             );
         }
+    }
+
+    /// A pin that is not a tag is a user-input mistake: it maps onto
+    /// `USAGE`, not `UPSTREAM_ERROR` (docs/implementation/05 §Error
+    /// model).
+    #[test]
+    fn a_pin_that_is_not_a_tag_maps_to_usage() {
+        let error = map_ingest_error(IngestError::GitPinNotTag {
+            pin: "main".to_owned(),
+        });
+        let Error::Usage(detail) = error else {
+            panic!("expected a usage error for a non-tag pin");
+        };
+        assert!(detail.starts_with("GIT_PIN_NOT_TAG:"), "detail: {detail}");
+        assert!(detail.contains("is not a tag"), "detail: {detail}");
     }
 }

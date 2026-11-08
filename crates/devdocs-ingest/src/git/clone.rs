@@ -95,6 +95,7 @@ impl GitPlan {
         let fallback_used = match self.kind {
             PinKind::Tag => {
                 clone_tag(tmp, url, &self.pin, &dir.to_string_lossy(), extra_config)?;
+                verify_tag(dir, &self.pin, extra_config)?;
                 false
             }
             PinKind::Commit => clone_commit(dir, tmp, url, &self.pin, extra_config)?,
@@ -140,6 +141,27 @@ fn clone_tag(
         ],
         extra_config,
     )?;
+    Ok(())
+}
+
+/// Verifies the pin the tag clone resolved is an exact tag: `git clone
+/// --branch` also accepts branch names, and a branch pin would publish a
+/// mutable, non-reproducible ref. The rev-parse resolves the tag ref
+/// directly, so a branch name of the same spelling fails
+/// (docs/implementation/07 §Git adapter).
+fn verify_tag(dir: &Path, pin: &str, extra_config: &[&str]) -> Result<(), IngestError> {
+    let tag_ref = format!("refs/tags/{pin}^{{commit}}");
+    if run_git(
+        dir,
+        &["rev-parse", "--verify", "--quiet", &tag_ref],
+        extra_config,
+    )
+    .is_err()
+    {
+        return Err(IngestError::GitPinNotTag {
+            pin: pin.to_owned(),
+        });
+    }
     Ok(())
 }
 
@@ -302,6 +324,29 @@ mod tests {
         assert!(bodies.iter().any(|b| b.contains("The guide body.")));
         // The tag checkout is shallow: the docs-v2 branch file never shows.
         assert!(!bodies.iter().any(|b| b.contains("Only on docs-v2.")));
+    }
+
+    /// A non-SHA pin that names a branch without a tag of that spelling
+    /// fails as `GitPinNotTag`: `git clone --branch` also accepts branch
+    /// names, and a branch pin would publish a mutable, non-reproducible
+    /// ref — a pin must be an exact tag or a commit SHA
+    /// (docs/implementation/07 §Git adapter). The fixture's `docs-v2`
+    /// exists as a branch without a tag; the tag pin above still passes.
+    #[test]
+    fn a_branch_only_pin_is_rejected() {
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let repo_dir = tempdir().unwrap();
+        let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
+        let data = tempdir().unwrap();
+        let url = format!("file://{}", repo.work_dir.display());
+
+        let git_plan = plan(&url, "docs-v2", data.path()).unwrap();
+        assert_eq!(git_plan.kind(), PinKind::Tag);
+        let error = git_plan.fetch(&url, &default_extensions()).unwrap_err();
+        match error {
+            IngestError::GitPinNotTag { pin } => assert_eq!(pin, "docs-v2"),
+            other => panic!("expected GitPinNotTag, got {other:?}"),
+        }
     }
 
     /// A commit pin resolves directly on a local repository under the

@@ -87,6 +87,15 @@ pub enum IngestError {
         /// The rejected pin.
         pin: String,
     },
+    /// A non-SHA pin the tag clone resolved is not an exact tag:
+    /// `git clone --branch` also accepts branch names, and a branch pin
+    /// would publish a mutable, non-reproducible ref
+    /// (docs/implementation/07 §Git adapter).
+    #[error("GIT_PIN_NOT_TAG: pin `{pin}` is not a tag; use a tag name or a commit SHA")]
+    GitPinNotTag {
+        /// The rejected pin.
+        pin: String,
+    },
     /// The URL at fetch differs from the planned URL; a changed URL aborts
     /// the run (docs/implementation/09 §Git subprocess safety).
     #[error("GIT_URL_MISMATCH: fetch URL `{actual}` does not match the planned URL `{planned}`")]

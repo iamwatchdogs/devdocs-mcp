@@ -61,6 +61,13 @@ fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Comman
     for key in STRIPPED_ENV {
         command.env_remove(key);
     }
+    // After the strip: a noninteractive ssh transport. `SSH_ASKPASS` and
+    // `DISPLAY` survive the env removal and the ssh child still holds the
+    // controlling tty, so a passphrase-protected `ssh://` source would
+    // wait for human input until the ingest cap; BatchMode makes ssh fail
+    // promptly on any passphrase or host-key prompt while agent-backed
+    // keys keep working (docs/implementation/09 §Git subprocess safety).
+    command.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
     command
 }
 
@@ -130,8 +137,9 @@ mod tests {
 
     /// The builder `run_git` executes hardens the child env: every
     /// ambient `GIT_*` control and location variable is removed, the
-    /// prompt and system config pins are set — what an operator shell may
-    /// carry into the process never reaches the git child
+    /// prompt and system config pins are set, and the ssh transport is
+    /// pinned noninteractive — what an operator shell may carry into the
+    /// process never reaches the git child
     /// (docs/implementation/09 §Git subprocess safety).
     #[test]
     fn the_git_builder_strips_the_ambient_git_env_from_the_child() {
@@ -147,7 +155,6 @@ mod tests {
             "GIT_COMMON_DIR",
             "GIT_CONFIG_COUNT",
             "GIT_ASKPASS",
-            "GIT_SSH_COMMAND",
             "GIT_SSH_VARIANT",
             "GIT_STDERR",
         ] {
@@ -157,7 +164,11 @@ mod tests {
                 "{key} must be removed from the child env"
             );
         }
-        for key in ["GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM"] {
+        for key in [
+            "GIT_TERMINAL_PROMPT",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_SSH_COMMAND",
+        ] {
             assert!(
                 envs.get(std::ffi::OsStr::new(key))
                     .is_some_and(Option::is_some),

@@ -20,8 +20,9 @@ use crate::error::IngestError;
 /// an override match short-circuits before the ignore rules are consulted
 /// (ignore 0.4.34 `dir.rs`, `matched_ignore`) — so a `*.md` override
 /// would re-admit `.gitignore`d markdown. Filtering after the walk keeps
-/// gitignore authoritative over the allowlist. Files that fail to read as
-/// UTF-8 are skipped and counted.
+/// gitignore authoritative over the allowlist. Only UTF-8 decode failures
+/// are skipped and counted; a file read that fails at the I/O level fails
+/// the walk.
 pub(crate) fn walk_docs(
     dir: &Path,
     extensions: &[String],
@@ -68,7 +69,13 @@ pub(crate) fn walk_docs(
             continue;
         }
         let relative = path.strip_prefix(dir).unwrap_or(path);
-        let Ok(body) = std::fs::read_to_string(path) else {
+        // Read bytes first: an I/O error (permission denied, EIO) must
+        // fail the walk, not masquerade as a skipped non-UTF-8 file —
+        // only the decode failure is skippable.
+        let bytes = std::fs::read(path).map_err(|e| IngestError::GitWalk {
+            message: format!("read failed for {}: {e}", path.display()),
+        })?;
+        let Ok(body) = String::from_utf8(bytes) else {
             skipped_non_utf8 += 1;
             continue;
         };
@@ -203,6 +210,36 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    /// A file the walk cannot read surfaces as `GitWalk`: an I/O error
+    /// must not be skipped and counted as non-UTF-8
+    /// (docs/implementation/07 §Git adapter). POSIX only: a 000 file
+    /// stays readable for its owner on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_file_fails_the_walk() {
+        let repo_dir = tempdir().unwrap();
+        let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
+        let locked = repo.work_dir.join("README.md");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let error = walk_docs(&repo.work_dir, &default_extensions()).unwrap_err();
+        assert!(
+            matches!(error, crate::error::IngestError::GitWalk { .. }),
+            "{error:?}"
+        );
+
+        // Restore so the tempdir cleanup can run.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
     }
 

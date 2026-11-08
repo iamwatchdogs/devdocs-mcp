@@ -83,7 +83,7 @@ codacy:
     @if ! command -v codacy-analysis >/dev/null 2>&1; then \
         echo "codacy-analysis not installed (optional gate, skipped): pnpm add -g @codacy/analysis-cli (fallback if PATH is not refreshed: pnpm exec codacy-analysis)"; \
     elif [ ! -f .codacy/codacy.config.json ]; then \
-        echo "codacy-analysis not initialized (optional gate, skipped): codacy-analysis init --remote gh iamwatchdogs devdocs-mcp"; \
+        echo "codacy-analysis not initialized (optional gate, skipped): codacy-analysis init --remote gh iamwatchdogs devdocs-mcp (refresh an existing snapshot after .codacy.yml changes: codacy-analysis update-config)"; \
     elif [ -z "$(git rev-parse -q --verify origin/main 2>/dev/null)" ]; then \
         echo "codacy gate skipped: origin/main not found to diff against"; \
     else \
@@ -124,11 +124,15 @@ msrv:
         exit 1; \
     fi
 
-# Compile the binary in every feature state CI checks.
+# Compile the binary and the ingest crate in every feature state CI checks.
+# The ingest crate is checked, not built: only its feature resolution is
+# at stake, and the grammar-less state must stay compilable.
 features:
     cargo build --locked -p devdocs --no-default-features
     cargo build --locked -p devdocs --no-default-features --features exact-tokens
     cargo build --locked -p devdocs --no-default-features --features embeddings
+    cargo check --locked -p devdocs-ingest --no-default-features
+    cargo check --locked -p devdocs-ingest --features symbols
 
 # Run the default eval suite and print the gate table (docs/implementation/14).
 # A gate that is not PASS exits 2 — the honest state until the retrieval

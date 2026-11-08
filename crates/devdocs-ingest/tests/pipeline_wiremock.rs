@@ -34,6 +34,18 @@ const INTRO: &str = concat!(
     "## Install\n\nRun the installer.\n"
 );
 
+/// The intro page with a rust fenced block, for the symbol-pass tests.
+#[cfg(feature = "grammar-rust")]
+const INTRO_WITH_CODE: &str = concat!(
+    "# Intro\n\nThe Acme SDK ships a client for every runtime.\n\n",
+    "## parse_config\n\n",
+    "```rust\n",
+    "fn parse_config(path: &str) -> Config {\n",
+    "    Config::load(path)\n",
+    "}\n",
+    "```\n"
+);
+
 /// A config with the acme source registered at the wiremock index URL.
 fn config(index_url: &str) -> Config {
     let mut sources = BTreeMap::new();
@@ -205,20 +217,7 @@ async fn wire_ingest_fails_when_the_llms_full_probe_hits_a_server_error() {
 async fn wire_ingest_publishes_symbols_idempotently() {
     let server = MockServer::start().await;
     mount_ok(&server, "/llms.txt", INDEX).await;
-    mount_ok(
-        &server,
-        "/intro.md",
-        concat!(
-            "# Intro\n\nThe Acme SDK ships a client for every runtime.\n\n",
-            "## parse_config\n\n",
-            "```rust\n",
-            "fn parse_config(path: &str) -> Config {\n",
-            "    Config::load(path)\n",
-            "}\n",
-            "```\n"
-        ),
-    )
-    .await;
+    mount_ok(&server, "/intro.md", INTRO_WITH_CODE).await;
 
     let index_url = format!("{}/llms.txt", server.uri());
     let config = config(&index_url);

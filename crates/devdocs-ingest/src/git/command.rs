@@ -17,7 +17,10 @@ use crate::error::IngestError;
 /// object store, inject config, or hijack prompting and SSH
 /// (docs/implementation/09 §Git subprocess safety). Removing
 /// `GIT_CONFIG_COUNT` disables the whole ambient
-/// `GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` config family.
+/// `GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` config family, and removing
+/// `GIT_CONFIG_PARAMETERS` disables the legacy parameter-string channel
+/// git still honors alongside it — both carry config that a hostile
+/// repo's `.gitattributes` could turn into a smudge-filter execution.
 const STRIPPED_ENV: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -26,6 +29,7 @@ const STRIPPED_ENV: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
     "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
     "GIT_ASKPASS",
     "GIT_SSH_COMMAND",
     "GIT_SSH_VARIANT",
@@ -271,6 +275,7 @@ mod tests {
             "GIT_ALTERNATE_OBJECT_DIRECTORIES",
             "GIT_COMMON_DIR",
             "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
             "GIT_ASKPASS",
             "GIT_SSH_VARIANT",
             "GIT_STDERR",

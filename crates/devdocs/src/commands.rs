@@ -473,6 +473,12 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_SPAWN_FAILED: {message}"),
         },
+        E::GitTimeout { command, seconds } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!(
+                "GIT_TIMEOUT: `{command}` exceeded the {seconds}s deadline and was killed"
+            ),
+        },
         E::GitTempDir { message } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_TEMP_DIR: {message}"),
@@ -525,6 +531,13 @@ mod tests {
                     message: "no exec".to_owned(),
                 },
                 "GIT_SPAWN_FAILED",
+            ),
+            (
+                IngestError::GitTimeout {
+                    command: "git clone".to_owned(),
+                    seconds: 600,
+                },
+                "GIT_TIMEOUT",
             ),
             (
                 IngestError::GitTempDir {

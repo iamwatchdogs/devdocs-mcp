@@ -112,6 +112,16 @@ pub enum IngestError {
         /// What failed.
         message: String,
     },
+    /// A git invocation ran past the total-cap deadline and was killed and
+    /// reaped instead of orphaning the clone's network I/O
+    /// (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_TIMEOUT: `{command}` exceeded the {seconds}s deadline and was killed")]
+    GitTimeout {
+        /// The argv of the killed invocation (without the config args).
+        command: String,
+        /// The deadline in seconds.
+        seconds: u64,
+    },
     /// The private temp clone directory could not be created or does not
     /// carry mode 0700 (docs/implementation/09 §Local storage controls).
     #[error("GIT_TEMP_DIR: {message}")]

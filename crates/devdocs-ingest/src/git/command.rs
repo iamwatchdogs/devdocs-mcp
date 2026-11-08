@@ -58,6 +58,15 @@ fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Comman
     command.args(args).current_dir(cwd);
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GIT_CONFIG_NOSYSTEM", "1");
+    // Isolate the user's global git config too: a hostile repo's
+    // `.gitattributes` could otherwise trigger an operator-defined global
+    // smudge filter via `core.attributesFile` during checkout. Git's
+    // compiled-in default credential helper does not come from
+    // ~/.gitconfig, and the per-command `-c` overrides still win.
+    #[cfg(windows)]
+    command.env("GIT_CONFIG_GLOBAL", "NUL");
+    #[cfg(not(windows))]
+    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
     for key in STRIPPED_ENV {
         command.env_remove(key);
     }
@@ -137,9 +146,9 @@ mod tests {
 
     /// The builder `run_git` executes hardens the child env: every
     /// ambient `GIT_*` control and location variable is removed, the
-    /// prompt and system config pins are set, and the ssh transport is
-    /// pinned noninteractive — what an operator shell may carry into the
-    /// process never reaches the git child
+    /// prompt, system, and user-global config pins are set, and the ssh
+    /// transport is pinned noninteractive — what an operator shell may
+    /// carry into the process never reaches the git child
     /// (docs/implementation/09 §Git subprocess safety).
     #[test]
     fn the_git_builder_strips_the_ambient_git_env_from_the_child() {
@@ -167,6 +176,7 @@ mod tests {
         for key in [
             "GIT_TERMINAL_PROMPT",
             "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_GLOBAL",
             "GIT_SSH_COMMAND",
         ] {
             assert!(

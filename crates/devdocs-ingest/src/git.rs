@@ -570,8 +570,10 @@ fn walk_docs(dir: &Path, extensions: &[String]) -> Result<(Vec<PageDocument>, us
             skipped_non_utf8 += 1;
             continue;
         };
+        // Page paths are OS-independent `/`-separated, so the results
+        // compare equal across platforms.
         docs.push(PageDocument {
-            path: relative.to_string_lossy().into_owned(),
+            path: relative.to_string_lossy().replace('\\', "/"),
             body,
             page_url: None,
         });

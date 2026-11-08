@@ -111,8 +111,10 @@ impl TempClone {
                     tmp.display()
                 ),
             })?;
-        // `keep` hands the removal duty to this guard.
-        let path = handle.keep();
+        // The guard stays alive through the permission work: on any
+        // refusal its `Drop` removes the half-made clone dir instead of
+        // leaking it until the stale sweep.
+        let path = handle.path().to_path_buf();
         // tempfile creates its directory 0755; the contract here is 0700.
         #[cfg(unix)]
         {
@@ -125,6 +127,8 @@ impl TempClone {
         }
         verify_private_dir(&tmp)?;
         verify_private_dir(&path)?;
+        // `keep` hands the removal duty to this guard.
+        let path = handle.keep();
         if let Ok(mut slot) = REGISTERED_PATH.lock() {
             *slot = Some(path.clone());
         }
@@ -523,6 +527,18 @@ mod tests {
             other => panic!("expected GitTempDir, got {other:?}"),
         };
         assert!(message.contains("755"), "message: {message}");
+        // The refused create must not leak its half-made clone dir: the
+        // guard is still alive when the verification fails.
+        let leaked = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("devdocs-git-")
+            });
+        assert!(!leaked, "the refusal must not leak a devdocs-git-* dir");
     }
 
     /// A guard whose clone dir cannot be removed logs the failure and

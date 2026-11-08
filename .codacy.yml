@@ -3,8 +3,11 @@
 # engine by the store tests. Codacy's SQL compatibility analyzer parses them
 # with a PostgreSQL grammar and reports valid SQLite syntax (CREATE VIRTUAL
 # TABLE, trigger bodies) as errors, so the directory stays out of analysis.
+# The leading `**/` matters: the files live under crates/*/migrations/, and
+# a root-relative `migrations/**` never matches them, so the analyzer also
+# misreads the SQL as T-SQL and demands T-SQL session settings.
 exclude_paths:
-  - "migrations/**"
+  - "**/migrations/**"
   # Workflow security is owned by zizmor and CodeQL in CI. Codacy's
   # GitHub-Actions pinning pattern misreads the local `$`-prefixed action
   # refs as unpinned third-party actions and reports false positives.

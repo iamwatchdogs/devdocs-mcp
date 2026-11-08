@@ -212,7 +212,7 @@ fn verify_private_dir(_path: &Path) -> Result<(), IngestError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use tempfile::tempdir;
 
@@ -415,6 +415,89 @@ mod tests {
         // registered path.
         let _second = TempClone::create(data.path()).unwrap();
         assert!(registered.exists(), "the registered clone must survive");
+    }
+
+    /// SIGTERM fires the cleanup handler: a helper process installs the
+    /// handler through `TempClone::create`, the parent signals it, and the
+    /// clone dir is gone. Needs the `termination` feature on `ctrlc` —
+    /// without it the handler runs on SIGINT only and the helper outlives
+    /// the signal. POSIX only: signal delivery is a unix contract.
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_cleanup_removes_the_clone_dir() {
+        use std::time::{Duration, Instant};
+
+        const CHILD_ENV: &str = "DEVDOCS_SIGTERM_CHILD";
+        const REPORT_ENV: &str = "DEVDOCS_SIGTERM_REPORT";
+
+        fn wait_for(path: &Path, budget: Duration) -> Option<String> {
+            let deadline = Instant::now() + budget;
+            while Instant::now() < deadline {
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    return Some(text);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            None
+        }
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            // Helper mode: create a clone, report its path, then idle
+            // until the SIGTERM handler removes it and exits.
+            let report = PathBuf::from(std::env::var_os(REPORT_ENV).expect("report path env"));
+            let data = report.parent().expect("report parent").join("data");
+            let guard = TempClone::create(&data).expect("helper clone");
+            std::fs::write(&report, guard.path().display().to_string()).expect("report write");
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let shared = tempdir().unwrap();
+        let report = shared.path().join("clone-path");
+
+        // Re-execute this test binary in helper mode: libtest matches the
+        // full test path exactly (crate-name prefix stripped), and the env
+        // var flips the test body into the helper branch above.
+        let test_name = module_path!()
+            .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+            .unwrap_or(module_path!())
+            .to_owned()
+            + "::sigterm_cleanup_removes_the_clone_dir";
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(CHILD_ENV, "1")
+            .env(REPORT_ENV, &report)
+            .spawn()
+            .unwrap();
+
+        let Some(clone_path) = wait_for(&report, Duration::from_secs(30)) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the helper never reported its clone path");
+        };
+        let clone_path = PathBuf::from(clone_path);
+        assert!(clone_path.exists(), "helper clone dir must exist");
+
+        std::process::Command::new("kill")
+            .args(["-s", "TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let status = child.try_wait().unwrap().expect("helper must exit");
+        assert!(
+            !clone_path.exists(),
+            "SIGTERM must remove the helper clone dir"
+        );
+        assert!(
+            status.code().is_none_or(|code| code == 130),
+            "helper exit: {status}"
+        );
     }
 
     /// A tmp root left at 0755 fails the private-dir contract: the create

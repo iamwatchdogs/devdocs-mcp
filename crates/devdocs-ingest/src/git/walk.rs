@@ -8,10 +8,12 @@ use crate::chrome::PageDocument;
 use crate::error::IngestError;
 
 /// Walks the clone directory with the `ignore` walker and collects the
-/// docs matching the extension allowlist. The walk respects `.gitignore`
+/// docs matching the extension allowlist. The walk honors only the
+/// clone's own in-tree `.gitignore` and `.ignore` rules
 /// (docs/implementation/07 §Git adapter): `require_git(true)` keeps the
 /// ignore rules scoped to repositories, `follow_links(false)` never
-/// follows a symlink out of the clone.
+/// follows a symlink out of the clone, and the host-level sources are
+/// pinned off so they cannot hide committed docs.
 ///
 /// The extension allowlist filters in the loop, not through an override
 /// whitelist: the `ignore` crate gives overrides the highest precedence —
@@ -28,9 +30,21 @@ pub(crate) fn walk_docs(
     // The walker keeps the `ignore` default of skipping hidden entries:
     // dot files and dot directories (`.github/`, `.config/mkdocs.yml`)
     // never reach the allowlist (docs/implementation/07 §Git adapter).
+    //
+    // The walk honors only the clone's own in-tree `.gitignore` and
+    // `.ignore` rules. The host-level sources are pinned off
+    // (`parents(false)`, `git_global(false)`, `git_exclude(false)`) for
+    // pin determinism: an ancestor `.ignore`, the operator's global
+    // `core.excludesFile`, or `.git/info/exclude` would otherwise hide
+    // committed docs and make the corpus machine-dependent or empty
+    // (`NoIngestablePages`). The global-gitignore path is not covered
+    // in-repo: the matcher reads the host git config at runtime.
     let walker = ignore::WalkBuilder::new(dir)
         .require_git(true)
         .follow_links(false)
+        .parents(false)
+        .git_global(false)
+        .git_exclude(false)
         .build();
 
     let mut docs = Vec::new();
@@ -95,6 +109,25 @@ mod tests {
         assert!(paths.contains(&"README.md"), "paths: {paths:?}");
         assert!(paths.contains(&"docs/guide.md"), "paths: {paths:?}");
         assert!(!paths.contains(&"secret.md"), "paths: {paths:?}");
+    }
+
+    /// A host-level `.ignore` in a parent of the clone root must not
+    /// hide committed docs: the walk honors only the clone's own rules
+    /// (docs/implementation/07 §Git adapter).
+    #[test]
+    fn the_walk_ignores_a_parent_ignore_file() {
+        // Wrap the clone root so its parent is a controllable temp dir.
+        let wrapper = tempdir().unwrap();
+        let clone_dir = wrapper.path().join("clone");
+        std::fs::create_dir_all(&clone_dir).unwrap();
+        let repo = devdocs_testkit::git_repo::docs_repo(&clone_dir).unwrap();
+        std::fs::write(wrapper.path().join(".ignore"), "*.md\n").unwrap();
+
+        let (docs, skipped) = walk_docs(&repo.work_dir, &default_extensions()).unwrap();
+        assert_eq!(skipped, 0);
+        let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
+        assert!(paths.contains(&"README.md"), "paths: {paths:?}");
+        assert!(paths.contains(&"docs/guide.md"), "paths: {paths:?}");
     }
 
     /// The default allowlist picks up the markdown and txt files of the

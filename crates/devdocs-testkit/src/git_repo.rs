@@ -3,8 +3,9 @@
 //! The helpers shell out to the `git` binary with argv vectors only: no
 //! shell, no interpolated command line. The child env pins
 //! `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0`, and each repo
-//! sets `user.name` and `user.email` locally, so a fixture run cannot
-//! read the host identity or ever prompt.
+//! sets `user.name` and `user.email` locally and disables commit and
+//! tag signing, so a fixture run cannot read the host identity, sign
+//! anything, or ever prompt.
 
 use std::ffi::OsStr;
 use std::io;
@@ -53,7 +54,8 @@ where
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Set the identity locally so commits never read the host config.
+/// Set the identity and signing config locally so commits and tags
+/// never read the host config.
 fn configure_local_identity(dir: &Path) -> io::Result<()> {
     git(dir, ["config", "--local", "user.name", "devdocs-test"])?;
     git(
@@ -67,6 +69,9 @@ fn configure_local_identity(dir: &Path) -> io::Result<()> {
     )?;
     // A host that signs commits by default would break the fixture.
     git(dir, ["config", "--local", "commit.gpgsign", "false"])?;
+    // Same for tags: a signed or annotated tag object would not resolve
+    // `rev-parse v1.0.0` to the commit.
+    git(dir, ["config", "--local", "tag.gpgsign", "false"])?;
     Ok(())
 }
 

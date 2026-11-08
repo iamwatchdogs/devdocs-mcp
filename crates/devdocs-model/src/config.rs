@@ -356,6 +356,14 @@ impl PartialConfig {
     /// [`Error::ConfigInvalid`] when a set variable does not parse into its
     /// target type; the error names the variable.
     pub fn from_env() -> Result<Self, Error> {
+        Self::from_env_with(|var| std::env::var_os(var))
+    }
+
+    /// `from_env` with the `DEVDOCS_INGEST_GIT_EXTENSIONS` lookup
+    /// injectable, so tests can cover the layering without the
+    /// process-global env mutation this crate's `unsafe_code` ban
+    /// forbids.
+    fn from_env_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<Self, Error> {
         use env_vars::{
             FETCH_CONCURRENCY, FETCH_MAX_BYTES, FETCH_MAX_REDIRECTS, FETCH_TIMEOUT_MS,
             FETCH_USER_AGENT, INDEX_EMBEDDINGS, INDEX_PATH, INGEST_GIT_EXTENSIONS, SEARCH_LIMIT,
@@ -401,8 +409,10 @@ impl PartialConfig {
             apply_num(var, target)?;
         }
 
-        if let Some(raw) = env_string(INGEST_GIT_EXTENSIONS)? {
-            ingest.git_extensions = Some(parse_git_extensions(&raw));
+        if let Some(exts) =
+            git_extensions_from_raw(INGEST_GIT_EXTENSIONS, env(INGEST_GIT_EXTENSIONS))?
+        {
+            ingest.git_extensions = Some(exts);
         }
 
         layer.fetch = fetch;
@@ -456,6 +466,28 @@ fn env_string(var: &str) -> Result<Option<String>, Error> {
         None => Ok(None),
         Some(raw) => coerce_utf8(var, raw),
     }
+}
+
+/// Turn a `DEVDOCS_INGEST_GIT_EXTENSIONS` value into the env layer's
+/// contribution. Unlike the other variables an empty value counts as
+/// set: it yields an empty list so the merge overrides a config-file
+/// list and `normalize_git_extensions` falls back to the defaults
+/// (docs/implementation/07 §Git adapter).
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when the value is not valid UTF-8.
+fn git_extensions_from_raw(
+    var: &str,
+    raw: Option<std::ffi::OsString>,
+) -> Result<Option<Vec<String>>, Error> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let raw = raw.into_string().map_err(|_| Error::ConfigInvalid {
+        key_path: var.to_owned(),
+        reason: "expected a valid UTF-8 value".to_owned(),
+    })?;
+    Ok(Some(parse_git_extensions(&raw)))
 }
 
 /// Split a raw `DEVDOCS_INGEST_GIT_EXTENSIONS` value into entries:
@@ -971,6 +1003,62 @@ refresh_days = 2
         let config = Config::load(&over).unwrap();
         assert_eq!(config.ingest.git_extensions, ["md"]);
         assert_eq!(config.fetch.concurrency, 4);
+    }
+
+    /// An empty `DEVDOCS_INGEST_GIT_EXTENSIONS` counts as set: the env
+    /// layer it produces overrides a config-file list, so the resolution
+    /// falls back to the defaults; an unset variable leaves the
+    /// config-file list in place (docs/implementation/07 §Git adapter).
+    /// The env lookup is injected because process env mutation needs
+    /// `unsafe`, which this crate forbids.
+    #[test]
+    fn empty_git_extensions_env_overrides_the_file_layer() {
+        use super::env_vars::INGEST_GIT_EXTENSIONS;
+        use std::ffi::OsString;
+
+        let file_layer = PartialConfig::parse("[ingest]\ngit_extensions = [\"md\"]\n").unwrap();
+
+        // Unset: the config-file list wins.
+        let env_layer = PartialConfig::from_env_with(|_| None).unwrap();
+        let mut merged = PartialConfig::default();
+        merged.merge(file_layer.clone());
+        merged.merge(env_layer);
+        assert_eq!(
+            super::normalize_git_extensions(merged.ingest.git_extensions.clone()),
+            ["md".to_owned()]
+        );
+
+        // Set to empty: the env layer contributes `Some(vec![])`, which
+        // overrides the file list and resolves to the defaults.
+        let env_layer =
+            PartialConfig::from_env_with(|var| (var == INGEST_GIT_EXTENSIONS).then(OsString::new))
+                .unwrap();
+        let mut merged = PartialConfig::default();
+        merged.merge(file_layer);
+        merged.merge(env_layer);
+        assert_eq!(
+            super::normalize_git_extensions(merged.ingest.git_extensions.clone()),
+            super::DEFAULT_GIT_EXTENSIONS
+        );
+    }
+
+    /// A set but non-UTF-8 `DEVDOCS_INGEST_GIT_EXTENSIONS` value stays a
+    /// config error, not silence. Unix-only: Windows environment values
+    /// are always UTF-16.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_git_extensions_env_is_a_config_error() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let var = env_vars::INGEST_GIT_EXTENSIONS;
+        let raw = std::ffi::OsString::from_vec(vec![0xff, 0xfe]);
+        let error = super::git_extensions_from_raw(var, Some(raw)).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, var);
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     /// An unknown key under `[ingest]` fails validation and names the key.

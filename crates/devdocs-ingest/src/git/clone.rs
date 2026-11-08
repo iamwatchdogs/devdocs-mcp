@@ -310,7 +310,7 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
         let data = tempdir().unwrap();
-        let url = format!("file://{}", repo.work_dir.display());
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
 
         let git_plan = plan(&url, "v1.0.0", data.path()).unwrap();
         assert_eq!(git_plan.kind(), PinKind::Tag);
@@ -338,7 +338,7 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
         let data = tempdir().unwrap();
-        let url = format!("file://{}", repo.work_dir.display());
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
 
         let git_plan = plan(&url, "docs-v2", data.path()).unwrap();
         assert_eq!(git_plan.kind(), PinKind::Tag);
@@ -358,7 +358,7 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
         let data = tempdir().unwrap();
-        let url = format!("file://{}", repo.work_dir.display());
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
 
         let git_plan = plan(&url, &repo.tag_sha, data.path()).unwrap();
         assert_eq!(git_plan.kind(), PinKind::Commit);
@@ -385,7 +385,7 @@ mod tests {
 
         // Mid-history commit: reachable from `main`, named by no ref.
         let mid_history = fixture_git(&repo.work_dir, &["rev-parse", "HEAD~1"]);
-        let url = format!("file://{}", mirror.display());
+        let url = devdocs_testkit::git_repo::file_url(&mirror).unwrap();
         let data = tempdir().unwrap();
 
         let git_plan = plan(&url, &mid_history, data.path()).unwrap();
@@ -411,7 +411,7 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
         let data = tempdir().unwrap();
-        let url = format!("file://{}", repo.work_dir.display());
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
 
         let git_plan = plan(&url, "v1.0.0", data.path()).unwrap();
         let error = git_plan
@@ -435,7 +435,7 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
         let data = tempdir().unwrap();
-        let url = format!("file://{}", repo.work_dir.display());
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
 
         for pin in ["--upload-pack=evil", "-oProxyCommand=touch/nothing", "-"] {
             let error = plan(&url, pin, data.path()).unwrap_err();
@@ -455,7 +455,7 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
         let data = tempdir().unwrap();
-        let url = format!("file://{}", repo.work_dir.display());
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
 
         for pin in [
             format!("x; touch {}", data.path().join("semicolon").display()),

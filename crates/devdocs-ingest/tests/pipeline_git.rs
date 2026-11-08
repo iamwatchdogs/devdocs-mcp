@@ -34,8 +34,10 @@ fn fixture_git(dir: &Path, args: &[&str]) -> String {
 
 /// The `file://` URL of a local repository path — the exact string the
 /// gate matches against the registry entry and the adapter plans with.
+/// `Url::from_file_path` percent-encodes the path, so a fixture
+/// directory holding a literal `%XX` escape stays parseable.
 fn repo_url(path: &Path) -> Url {
-    Url::parse(&format!("file://{}", path.display())).unwrap()
+    Url::from_file_path(path).unwrap()
 }
 
 /// A config with the `acme` git source registered at the index stage for

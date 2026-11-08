@@ -120,6 +120,15 @@ pub fn docs_repo(dir: &Path) -> io::Result<DocsRepo> {
     })
 }
 
+/// The `file://` URL of a local repository path. Git percent-decodes the
+/// path of a `file://` URL, so a fixture directory holding a literal
+/// `%XX` escape needs `Url::from_file_path`'s percent-encoding.
+pub fn file_url(path: &Path) -> io::Result<String> {
+    Ok(url::Url::from_file_path(path)
+        .map_err(|()| io::Error::new(io::ErrorKind::InvalidInput, "not a file path"))?
+        .to_string())
+}
+
 /// Clone `source` into a bare repository at `dir/mirror.git` and return
 /// the mirror path. The `file://` origin forces every later fetch through
 /// upload-pack, and the mirror pins `uploadpack.allowReachableSHA1InWant`
@@ -129,7 +138,7 @@ pub fn docs_repo(dir: &Path) -> io::Result<DocsRepo> {
 /// rejection must fetch with `-c protocol.version=0`.
 pub fn bare_mirror(source: &Path, dir: &Path) -> io::Result<PathBuf> {
     let mirror = dir.join("mirror.git");
-    let source_url = format!("file://{}", source.display());
+    let source_url = file_url(source)?;
     git(
         dir,
         vec![
@@ -209,7 +218,7 @@ mod tests {
 
         let probe = tempdir().unwrap();
         git(probe.path(), ["init", "-q"]).unwrap();
-        let mirror_url = format!("file://{}", mirror.display());
+        let mirror_url = super::file_url(&mirror).unwrap();
         let fetch = git(
             probe.path(),
             [

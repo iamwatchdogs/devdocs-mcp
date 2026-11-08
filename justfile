@@ -83,7 +83,7 @@ codacy:
     @if ! command -v codacy-analysis >/dev/null 2>&1; then \
         echo "codacy-analysis not installed (optional gate, skipped): pnpm add -g @codacy/analysis-cli (fallback if PATH is not refreshed: pnpm exec codacy-analysis)"; \
     elif [ ! -f .codacy/codacy.config.json ]; then \
-        echo "codacy-analysis not initialized (optional gate, skipped): codacy-analysis init --remote gh iamwatchdogs devdocs-mcp"; \
+        echo "codacy-analysis not initialized (optional gate, skipped): codacy-analysis init --remote gh iamwatchdogs devdocs-mcp (refresh an existing snapshot after .codacy.yml changes: codacy-analysis update-config)"; \
     elif [ -z "$(git rev-parse -q --verify origin/main 2>/dev/null)" ]; then \
         echo "codacy gate skipped: origin/main not found to diff against"; \
     else \

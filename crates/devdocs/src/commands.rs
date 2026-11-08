@@ -244,6 +244,15 @@ pub fn run_add(
         })
         .unwrap_or("llms_txt");
 
+    // The config entry's kind is a free-form string the CLI edge never
+    // validates, so an unknown kind would silently run the llms.txt
+    // adapter over that URL and publish wrong content.
+    if !matches!(effective_kind, "llms_txt" | "git") {
+        return Err(Error::Usage(format!(
+            "--kind {effective_kind} is not supported yet; this slice ingests llms_txt and git sources only"
+        )));
+    }
+
     if effective_kind == "git" {
         // `--fixture` replays recorded HTTP responses; the git adapter has
         // no replay surface, so a silent drop would run against the network.

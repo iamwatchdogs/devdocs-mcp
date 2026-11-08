@@ -185,6 +185,47 @@ fn add_git_refuses_a_fixture_replay() {
     assert!(!db.exists(), "a rejected add must not create the database");
 }
 
+/// The `[sources.<name>].kind` value is free-form config the CLI edge
+/// never validates; an unsupported kind must not silently run the
+/// llms.txt adapter over that URL — usage error, no database.
+#[test]
+fn add_with_an_unsupported_config_kind_is_a_usage_error() {
+    let env = Env::new();
+    let url = "https://docs.example.com/llms.txt";
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[sources.acme]\n\
+             kind = \"openapi\"\n\
+             url = \"{url}\"\n\
+             license = \"MIT\"\n\
+             status = \"approved_fetch\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("docs.db");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            url,
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    assert!(
+        stderr.contains("--kind openapi is not supported yet"),
+        "stderr: {stderr}"
+    );
+    assert!(!db.exists(), "a rejected add must not create the database");
+}
+
 /// With no `git` executable on PATH the add fails as `UPSTREAM_ERROR`
 /// (exit 3) with the documented `GIT_BINARY_MISSING` detail
 /// (docs/implementation/08 §Error codes).

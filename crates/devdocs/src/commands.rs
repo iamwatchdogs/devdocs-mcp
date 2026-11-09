@@ -543,7 +543,9 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
                 "GIT_URL_MISMATCH: fetch URL `{actual}` does not match the planned URL `{planned}`"
             ),
         },
-        E::GitCommand { command, stderr } => Error::Upstream {
+        E::GitCommand {
+            command, stderr, ..
+        } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_COMMAND_FAILED: `{command}` failed: {stderr}"),
         },
@@ -595,6 +597,7 @@ mod tests {
                 IngestError::GitCommand {
                     command: "git clone".to_owned(),
                     stderr: "boom".to_owned(),
+                    full_stderr: "boom".to_owned(),
                 },
                 "GIT_COMMAND_FAILED",
             ),

@@ -176,6 +176,10 @@ fn run_child(
                 return Err(IngestError::GitCommand {
                     command: command_text,
                     stderr: stderr_tail(&stderr),
+                    // The untruncated text, kept for the adapter's refusal
+                    // classification: a refusal line early in the stream
+                    // can fall out of the 512-byte display tail.
+                    full_stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 });
             }
             Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
@@ -447,6 +451,49 @@ mod tests {
         // Bounded: the deadline plus the reader grace, far below the
         // 30-second sleep fixtures an unbounded join would wait on.
         assert!(elapsed < Duration::from_secs(10));
+    }
+
+    /// A failing child's `GitCommand` error keeps the display tail bounded
+    /// while the classification field carries the complete stderr: an
+    /// early refusal line must survive the 512-byte tail cut
+    /// (docs/implementation/07 §Git adapter). Unix-gated: the fixture is
+    /// `sh`.
+    #[cfg(unix)]
+    #[test]
+    fn run_child_keeps_the_full_stderr_beside_the_bounded_tail() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("echo refusal-line >&2; head -c 600 /dev/zero | tr '\\0' x >&2; exit 1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let error = super::run_child(
+            &mut child,
+            "git fetch origin".to_owned(),
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        match error {
+            IngestError::GitCommand {
+                stderr,
+                full_stderr,
+                ..
+            } => {
+                assert!(stderr.len() <= 512);
+                // The fixture's refusal line sits before 600 bytes of
+                // padding, so the tail alone cannot classify it.
+                assert!(
+                    !stderr.contains("refusal-line"),
+                    "fixture broken: the tail must not carry the refusal"
+                );
+                assert!(full_stderr.starts_with("refusal-line\n"));
+                assert!(full_stderr.len() > 600);
+            }
+            other => panic!("expected GitCommand, got {other:?}"),
+        }
     }
 
     /// A shutdown request stops the wait loop while the child still runs:

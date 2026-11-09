@@ -224,7 +224,7 @@ fn clone_commit(
         return Ok(false);
     };
     match direct_error {
-        IngestError::GitCommand { stderr, .. } if is_sha_fetch_refusal(&stderr) => {
+        IngestError::GitCommand { full_stderr, .. } if is_sha_fetch_refusal(&full_stderr) => {
             tracing::warn!(
                 "the server refused the SHA fetch of {pin}; falling back to a full clone"
             );

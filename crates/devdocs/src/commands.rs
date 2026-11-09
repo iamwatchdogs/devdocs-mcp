@@ -804,6 +804,7 @@ mod tests {
                 embeddings: false,
             },
             search: devdocs_model::config::SearchConfig {
+                // nosemgrep: codacy.yaml.security.hard-coded-tokens
                 max_tokens_default: 2000,
                 limit_default: 8,
                 rrf_k: 60,

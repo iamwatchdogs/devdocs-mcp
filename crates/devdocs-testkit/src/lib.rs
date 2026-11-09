@@ -36,6 +36,7 @@ pub fn base_config() -> devdocs_model::config::Config {
             embeddings: false,
         },
         search: SearchConfig {
+            // nosemgrep: codacy.yaml.security.hard-coded-tokens
             max_tokens_default: 2000,
             limit_default: 8,
             rrf_k: 60,

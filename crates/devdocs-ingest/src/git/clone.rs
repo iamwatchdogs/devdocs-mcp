@@ -122,10 +122,11 @@ impl GitPlan {
 /// shallow single-branch clone then omits the tag ref entirely. So the
 /// adapter initializes the plan's directory and fetches the tag through a
 /// refspec that names `refs/tags` only, then detaches onto it. Git
-/// reports a remote ref it does not carry as `couldn't find remote ref`:
-/// that one `GitCommand` failure means the pin names no tag and maps to
-/// `GitPinNotTag`; an invalid refspec or any other failure is operational
-/// and propagates (docs/implementation/07 §Git adapter).
+/// reports a remote ref it does not carry as `couldn't find remote ref`
+/// naming the fetched tag ref: only that `GitCommand` failure means the
+/// pin names no tag and maps to `GitPinNotTag`; an invalid refspec or any
+/// other failure is operational and propagates
+/// (docs/implementation/07 §Git adapter).
 fn clone_tag(
     tmp: &Path,
     dir: &Path,
@@ -136,6 +137,7 @@ fn clone_tag(
     let dir_arg = dir.to_string_lossy().into_owned();
     run_git(tmp, &["init", &dir_arg], extra_config)?;
     let refspec = format!("+refs/tags/{pin}:refs/tags/{pin}");
+    let tag_path = format!("refs/tags/{pin}");
     let fetched = run_git(
         dir,
         &["fetch", "--depth", "1", "--filter=blob:none", url, &refspec],
@@ -144,7 +146,7 @@ fn clone_tag(
     match fetched {
         Ok(_) => {}
         Err(IngestError::GitCommand { stderr, .. })
-            if stderr.contains("couldn't find remote ref") =>
+            if stderr.contains("couldn't find remote ref") && stderr.contains(&tag_path) =>
         {
             return Err(IngestError::GitPinNotTag {
                 pin: pin.to_owned(),
@@ -152,9 +154,18 @@ fn clone_tag(
         }
         Err(error) => return Err(error),
     }
-    let tag_ref = format!("refs/tags/{pin}^{{commit}}");
-    run_git(dir, &["checkout", "--detach", &tag_ref], extra_config)?;
+    run_git(
+        dir,
+        &["checkout", "--detach", &tag_commit_ref(pin)],
+        extra_config,
+    )?;
     Ok(())
+}
+
+/// The peel-to-commit ref a tag pin detaches onto: the tag object itself
+/// is not a commit, so checkout and verification both name `^{commit}`.
+fn tag_commit_ref(pin: &str) -> String {
+    format!("refs/tags/{pin}^{{commit}}")
 }
 
 /// Verifies the fetched pin is an exact tag: a branch pin would publish
@@ -164,7 +175,7 @@ fn clone_tag(
 /// every other error is operational and propagates
 /// (docs/implementation/07 §Git adapter).
 fn verify_tag(dir: &Path, pin: &str, extra_config: &[&str]) -> Result<(), IngestError> {
-    let tag_ref = format!("refs/tags/{pin}^{{commit}}");
+    let tag_ref = tag_commit_ref(pin);
     match run_git(
         dir,
         &["rev-parse", "--verify", "--quiet", &tag_ref],

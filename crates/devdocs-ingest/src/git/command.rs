@@ -51,9 +51,9 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 
 /// Builds the command one `git` invocation runs: `git`, the per-command
 /// `-c` config (base plus extras), then `args`, from `cwd`. The child env
-/// is hardened here: the prompt and system config pins, then the removal
-/// of every [`STRIPPED_ENV`] variable so an ambient value cannot reach
-/// the git child (docs/implementation/09 §Git subprocess safety).
+/// is hardened here: the prompt, system config, and locale pins, then the
+/// removal of every [`STRIPPED_ENV`] variable so an ambient value cannot
+/// reach the git child (docs/implementation/09 §Git subprocess safety).
 /// Extracted so tests assert on the exact command `run_git` executes,
 /// not on a seam beside it.
 fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Command {
@@ -68,6 +68,12 @@ fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Comman
     command.args(args).current_dir(cwd);
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GIT_CONFIG_NOSYSTEM", "1");
+    // Pin the locale: error classification reads git's stderr text (the
+    // missing-tag and SHA-refusal paths), and a translated diagnostic
+    // would break the match. `LANGUAGE` overrides `LC_ALL` for gettext,
+    // so it must go too.
+    command.env("LC_ALL", "C");
+    command.env_remove("LANGUAGE");
     // Isolate the user's global git config too: a hostile repo's
     // `.gitattributes` could otherwise trigger an operator-defined global
     // smudge filter via `core.attributesFile` during checkout. Git's
@@ -275,6 +281,7 @@ mod tests {
             "GIT_SSH_VARIANT",
             "GIT_SSL_NO_VERIFY",
             "GIT_STDERR",
+            "LANGUAGE",
         ] {
             assert_eq!(
                 envs.get(std::ffi::OsStr::new(key)),
@@ -287,6 +294,7 @@ mod tests {
             "GIT_CONFIG_NOSYSTEM",
             "GIT_CONFIG_GLOBAL",
             "GIT_SSH_COMMAND",
+            "LC_ALL",
         ] {
             assert!(
                 envs.get(std::ffi::OsStr::new(key))

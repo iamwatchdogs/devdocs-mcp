@@ -277,7 +277,7 @@ fn symbol_target_sources(
         return Err(MissReason::NotIndexed.into());
     }
     let served = match version {
-        Some(version) => version.to_owned(),
+        Some(version) => normalize_sha(version),
         None => {
             // The unpinned request serves the highest active version; the
             // returned served-version element stays `None` so the items
@@ -294,6 +294,19 @@ fn symbol_target_sources(
         return Err(MissReason::VersionAbsent.into());
     }
     Ok((source_ids, version.map(str::to_owned)))
+}
+
+/// The stored label for a pinned lookup: a git commit SHA is stored
+/// lowercase, so an exactly-40-hex request matches case-insensitively
+/// (the same rule `version::pick` applies); a tag keeps its casing.
+#[must_use]
+fn normalize_sha(version: &str) -> String {
+    let is_sha = version.len() == 40 && version.bytes().all(|b| b.is_ascii_hexdigit());
+    if is_sha {
+        version.to_ascii_lowercase()
+    } else {
+        version.to_owned()
+    }
 }
 
 /// Walks the pinned symbol stream window by window. Window 0 runs the
@@ -822,6 +835,7 @@ pub fn versions(
 
 #[cfg(test)]
 mod tests {
+<<<<<<< HEAD
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::served_item;
@@ -862,5 +876,19 @@ mod tests {
             1.0,
         );
         assert_eq!(item.source_url, "https://example.test/next");
+
+    use super::normalize_sha;
+
+    /// A 40-hex request lowercases; tag casing and short or non-hex
+    /// inputs pass through untouched.
+    #[test]
+    fn normalize_sha_lowercases_only_full_hex_requests() {
+        assert_eq!(
+            normalize_sha("ABCDEF0123456789ABCDEF0123456789ABCDEF01"),
+            "abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert_eq!(normalize_sha("v1.0.0"), "v1.0.0");
+        assert_eq!(normalize_sha("CAFEBABE"), "CAFEBABE");
+        assert_eq!(normalize_sha("ghijkl"), "ghijkl");
     }
 }

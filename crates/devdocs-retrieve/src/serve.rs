@@ -20,7 +20,7 @@ use crate::fusion::fuse;
 use crate::item::{match_ref, to_result_item};
 use crate::matchexpr::rung_match_expr;
 use crate::resolver::{ProjectContext, Query, resolve};
-use crate::rung::{Scope, fts_rung, symbol_rung};
+use crate::rung::{Scope, fts_rung, symbol_rung, symbol_rungs, symbol_rungs_attempt};
 use crate::version::{Version, is_migration_query, pick};
 
 /// The search/open knobs the CLI carries.
@@ -50,6 +50,28 @@ impl Plan {
     }
 }
 
+/// The packed pipeline outcome: the hits in served order with their fusion
+/// scores, the pack state, and the per-item status inputs.
+#[derive(Debug, Clone)]
+pub struct PackedSearch {
+    /// The packed hits with their fusion scores, in served order.
+    pub items: Vec<(Hit, f64)>,
+    /// Whether the token budget cut the page.
+    pub truncated: bool,
+    /// The resume cursor, when the budget cut the page.
+    pub next_cursor: Option<String>,
+    /// The pick status the version policy applied.
+    pub pick_status: VersionStatus,
+    /// The version the pipeline served, when one was picked.
+    pub served_version: Option<String>,
+    /// The requested version text, when the query carried one.
+    pub requested_text: Option<String>,
+    /// The symbol-rung (rung 1) hits as captured before fusion and packing
+    /// — the eval harness's symbol-recall input, independent of what the
+    /// budget pack served (docs/implementation/14 §Metrics).
+    pub symbol_rung_hits: Vec<Hit>,
+}
+
 /// Runs the search pipeline end to end.
 ///
 /// `project` is the directory the resolver starts its lockfile walk from —
@@ -70,14 +92,83 @@ pub fn search(
     // expiry has passed drops out at the next query, not the next sync.
     store.sweep_expired(&now_rfc3339())?;
     let ctx = ProjectContext::detect(project);
-    let resolved = resolve(query, &ctx);
+    search_with_context(store, query, &ctx, plan)
+}
+
+/// The search pipeline with a caller-supplied project context: the eval
+/// harness passes an empty context so host lockfiles never leak into a
+/// run, while the CLI keeps the lockfile walk.
+///
+/// # Errors
+/// The same paths as [`search`].
+pub fn search_with_context(
+    store: &Store,
+    query: &Query,
+    ctx: &ProjectContext,
+    plan: &Plan,
+) -> Result<ResultEnvelope, RetrieveError> {
+    let packed = search_packed(store, query, ctx, plan)?;
+    let results: Vec<ResultItem> = packed
+        .items
+        .iter()
+        .map(|(hit, score)| {
+            let status = item_status(
+                &hit.version,
+                packed.served_version.as_deref(),
+                packed.requested_text.as_deref(),
+                packed.pick_status,
+            );
+            to_result_item(hit, packed.requested_text.as_deref(), status, *score)
+        })
+        .collect();
+    Ok(ResultEnvelope {
+        results,
+        truncated: packed.truncated,
+        next_cursor: packed.next_cursor,
+        served_at: now_rfc3339(),
+    })
+}
+
+/// The search pipeline through fusion, cursor resume, and the budget pack,
+/// returning the packed hits instead of the envelope — callers that grade
+/// raw hits (the eval harness) skip the envelope mapping.
+///
+/// # Errors
+/// The same paths as [`search`].
+pub fn search_packed(
+    store: &Store,
+    query: &Query,
+    ctx: &ProjectContext,
+    plan: &Plan,
+) -> Result<PackedSearch, RetrieveError> {
+    let resolved = resolve(query, ctx);
 
     // Plan the rungs from the resolution. The headroom is 4× the requested
-    // hits (docs/08 §Rungs, rung 2).
+    // hits (docs/08 §Rungs, rungs 1 and 2). The version pick hoists ahead
+    // of the rungs so the symbol rung pins to the served version exactly
+    // like the FTS rungs do.
     let headroom = plan.limit.saturating_mul(4).max(1);
-    let mut rung_hits: Vec<Vec<Hit>> = vec![symbol_rung(store, scope_for(&resolved))];
-    let (pick_status, served_version, requested_text) =
-        version_rung_hits(store, query, &resolved, headroom, &mut rung_hits)?;
+    let served = version_pick(store, &resolved)?;
+    let mut rung_hits: Vec<Vec<Hit>> = match &served {
+        Some(pinned) => symbol_rungs(store, &query.text, &pinned.source_ids, headroom, 0)?.0,
+        None => vec![symbol_rung(
+            store,
+            &query.text,
+            scope_for(&resolved),
+            headroom,
+        )?],
+    };
+    // The rung-1 output, captured before the FTS rungs land in
+    // `rung_hits`: the union of the symbol rung's lists.
+    let symbol_rung_hits = rung_hits.iter().flatten().cloned().collect();
+    let (pick_status, served_version, requested_text) = version_rung_hits(
+        store,
+        query,
+        &resolved,
+        headroom,
+        &mut rung_hits,
+        served.as_ref(),
+    )?;
 
     // Fuse the rungs and pack under the count cap and the token budget.
     let fused = fuse(plan.rrf_k, &rung_hits);
@@ -91,6 +182,59 @@ pub fn search(
         usize::try_from(plan.limit).unwrap_or(usize::MAX),
         plan.max_tokens,
     );
+    Ok(PackedSearch {
+        items: packed.items,
+        truncated: packed.truncated,
+        next_cursor: packed.next_cursor,
+        pick_status,
+        served_version,
+        requested_text,
+        symbol_rung_hits,
+    })
+}
+
+/// The exact symbol lookup (docs/08 §CLI contract: `devdocs symbol
+/// <library@version> <symbol>`). The target resolves first — a library the
+/// index lacks is [`MissReason::NotIndexed`], a version it lacks is
+/// [`MissReason::VersionAbsent`] — then the symbol rung runs alone through
+/// the same fusion-and-pack path (docs/implementation/08 §Retrieval ladder:
+/// cheap, decisive). A pinned version scopes the rung to that version's
+/// sources; without one the rung pins to the highest active version's
+/// sources under the alias rule, the items keeping the alias status. A
+/// resolved target whose lookup serves nothing is the
+/// [`MissReason::SymbolAbsent`] miss (docs/implementation/13 §M5).
+///
+/// # Errors
+/// [`RetrieveError::Miss`] on the miss paths (exit 2) and
+/// [`RetrieveError::Store`] for store failures.
+pub fn symbol(
+    store: &Store,
+    library: &str,
+    version: Option<&str>,
+    symbol: &str,
+    plan: &Plan,
+) -> Result<ResultEnvelope, RetrieveError> {
+    let headroom = plan.limit.saturating_mul(4).max(1);
+    let (source_ids, served_version) = symbol_target_sources(store, library, version)?;
+    // The ladder attempts ran across the pinned sources — the first
+    // attempt with a non-empty union fixed the match mode — so one
+    // source's exact hit beats another source's prefix-only match; fusion
+    // ranks that attempt's per-source rungs, ties by chunk id. Pagination
+    // walks headroom-sized windows past the retrieval head.
+    let fused = symbol_stream(store, symbol, &source_ids, plan, headroom)?;
+    let Some(fused) = fused else {
+        return Err(MissReason::SymbolAbsent.into());
+    };
+    let pick_status = if served_version.is_some() {
+        VersionStatus::Verified
+    } else {
+        VersionStatus::Alias
+    };
+    let packed = pack(
+        fused,
+        usize::try_from(plan.limit).unwrap_or(usize::MAX),
+        plan.max_tokens,
+    );
     let results: Vec<ResultItem> = packed
         .items
         .iter()
@@ -98,19 +242,126 @@ pub fn search(
             let status = item_status(
                 &hit.version,
                 served_version.as_deref(),
-                requested_text.as_deref(),
+                version,
                 pick_status,
             );
-            to_result_item(hit, requested_text.as_deref(), status, *score)
+            to_result_item(hit, version, status, *score)
         })
         .collect();
-
     Ok(ResultEnvelope {
         results,
         truncated: packed.truncated,
         next_cursor: packed.next_cursor,
         served_at: now_rfc3339(),
     })
+}
+
+/// The pinned sources of one symbol lookup target: both branches pin — a
+/// pinned version resolves to its sources, a bare library to the highest
+/// active version's sources (the alias rule, docs/08 §Version policy), so
+/// a stale version's lower chunk ids never surface first. Returns the
+/// source ids and the served version, `Some` only for a pinned one — the
+/// pick-status input.
+///
+/// # Errors
+/// [`RetrieveError::Miss`] with [`MissReason::NotIndexed`] when the
+/// library has no active version, with [`MissReason::VersionAbsent`] when
+/// the served version resolves to no source, [`RetrieveError::Store`] for
+/// store failures.
+fn symbol_target_sources(
+    store: &Store,
+    library: &str,
+    version: Option<&str>,
+) -> Result<(Vec<i64>, Option<String>), RetrieveError> {
+    let available: Vec<Version> = store
+        .library_versions(library)?
+        .into_iter()
+        .map(Version::from)
+        .collect();
+    if available.is_empty() {
+        return Err(MissReason::NotIndexed.into());
+    }
+    let served = match version {
+        Some(version) => version.to_owned(),
+        None => {
+            // The unpinned request serves the highest active version; the
+            // returned served-version element stays `None` so the items
+            // keep the alias status.
+            pick(&available, None)
+                .version
+                .ok_or(MissReason::NotIndexed)?
+                .as_str()
+                .to_owned()
+        }
+    };
+    let source_ids = store.find_sources(library, &served)?;
+    if source_ids.is_empty() {
+        return Err(MissReason::VersionAbsent.into());
+    }
+    Ok((source_ids, version.map(str::to_owned)))
+}
+
+/// Walks the pinned symbol stream window by window. Window 0 runs the
+/// ladder and fixes the match attempt; with a cursor, further
+/// headroom-sized windows fetch past the retrieval head — every store
+/// query stays bounded — until the cursor is found and the tail covers
+/// the page with one lookahead row, which keeps the packed `truncated`
+/// flag honest. Returns `None` when the lookup matched nothing at all —
+/// the [`MissReason::SymbolAbsent`] miss input.
+///
+/// # Errors
+/// [`RetrieveError::Usage`] for a cursor the stream never served,
+/// [`RetrieveError::Store`] for store failures.
+fn symbol_stream(
+    store: &Store,
+    symbol: &str,
+    source_ids: &[i64],
+    plan: &Plan,
+    headroom: u32,
+) -> Result<Option<Vec<(Hit, f64)>>, RetrieveError> {
+    let head = usize::try_from(headroom).unwrap_or(usize::MAX);
+    let limit = usize::try_from(plan.limit).unwrap_or(usize::MAX);
+    let mut stream: Vec<(Hit, f64)> = Vec::new();
+    let mut attempt: Option<usize> = None;
+    let mut window: u32 = 0;
+    loop {
+        let offset = window.saturating_mul(headroom);
+        let rungs = if let Some(index) = attempt {
+            symbol_rungs_attempt(store, symbol, source_ids, headroom, offset, index)?
+        } else {
+            let (rungs, won) = symbol_rungs(store, symbol, source_ids, headroom, offset)?;
+            attempt = won;
+            rungs
+        };
+        // A rung at the full window marks the store's LIMIT: more windows
+        // may follow.
+        let more = rungs.iter().any(|rung| rung.len() >= head);
+        stream.extend(fuse(plan.rrf_k, &rungs));
+        if window == 0 && stream.is_empty() {
+            return Ok(None);
+        }
+        let Some(cursor) = plan.cursor else {
+            // No cursor: the first page serves the retrieval head.
+            return Ok(Some(stream));
+        };
+        let id = i64::try_from(cursor).unwrap_or(-1);
+        match stream.iter().position(|(hit, _)| hit.chunk_id == id) {
+            Some(position) => {
+                // One row past the limit keeps `truncated` honest; the
+                // store running out does the same.
+                if stream.len() - (position + 1) > limit || !more {
+                    return Ok(Some(stream[position + 1..].to_vec()));
+                }
+            }
+            // The cursor names no served chunk and the store ran out.
+            None if !more => {
+                return Err(UsageError::UnknownCursor(cursor.to_string()).into());
+            }
+            // Not found yet, more windows may follow.
+            None => {}
+        }
+        window += 1;
+    }
 }
 
 /// The fallback rungs (docs/08 §Version resolution, step 4): search every
@@ -145,34 +396,36 @@ fn fallback_rung_hits(
     Ok((VersionStatus::Alias, None, version.map(str::to_owned)))
 }
 
-/// The version-resolution rungs (docs/08 §Version resolution): with a
-/// resolved library, the served source's FTS rung plus the
-/// migration-question rung via [`nearest_older`]; without one, the
-/// fallback rungs via [`fallback_rung_hits`]. Appends the rungs to
-/// `rung_hits` and returns the per-item status inputs — the pick status,
-/// the served version, and the requested version.
+/// The version a resolved library serves, computed once for the whole
+/// search: the pick outcome, the pinned source ids of the served version,
+/// and the available versions (the migration rung's input).
+struct ServedVersion {
+    /// The library the pick served, for the migration rung's lookup.
+    library: String,
+    /// The served version.
+    served: Version,
+    /// The status the served results carry.
+    status: VersionStatus,
+    /// Every active source of the `(library, version)` pair.
+    source_ids: Vec<i64>,
+    /// Every active version the library carries.
+    available: Vec<Version>,
+}
+
+/// The version pick over a resolved library's available versions
+/// (docs/08 §Version resolution), with the served version's pinned source
+/// ids. `None` when no library resolved or the index carries no active
+/// version for it — the caller turns that into the weak-hint fallback or
+/// the `not_indexed` miss.
 ///
 /// # Errors
-/// [`RetrieveError::Miss`] with `not_indexed` when the library has no
-/// sources or the pick serves none, [`RetrieveError::Store`] for store
-/// failures.
-fn version_rung_hits(
+/// [`RetrieveError::Store`] for store failures.
+fn version_pick(
     store: &Store,
-    query: &Query,
     resolved: &crate::resolver::Resolved,
-    headroom: u32,
-    rung_hits: &mut Vec<Vec<Hit>>,
-) -> Result<(VersionStatus, Option<String>, Option<String>), RetrieveError> {
+) -> Result<Option<ServedVersion>, RetrieveError> {
     let Some(library) = &resolved.library else {
-        // Without a library, search every approved source (docs/08
-        // §Version resolution, step 4).
-        return fallback_rung_hits(
-            store,
-            query,
-            resolved.version.as_deref(),
-            headroom,
-            rung_hits,
-        );
+        return Ok(None);
     };
     let available: Vec<Version> = store
         .library_versions(library)?
@@ -180,33 +433,71 @@ fn version_rung_hits(
         .map(Version::from)
         .collect();
     if available.is_empty() {
-        if query.library.is_none() {
-            // The library came from a lockfile or a query mention — a
-            // weak hint (docs/08 §Version resolution, steps 2 and 3). An
-            // absent weak-hint library degrades to the fallback (step 4);
-            // only a flag-named library is a hard miss. A version rides
-            // along only from the flags (step 1), never from the weak
-            // hint that named the absent library.
-            return fallback_rung_hits(store, query, query.version.as_deref(), headroom, rung_hits);
-        }
-        return Err(MissReason::NotIndexed.into());
+        return Ok(None);
     }
-    let pick = pick(&available, resolved.version.as_deref());
-    let served = pick.version.clone().ok_or(MissReason::NotIndexed)?;
-    // The pinned scope serves every active origin of the
-    // `(library, version)` pair; the schema allows several per pair.
+    let picked = pick(&available, resolved.version.as_deref());
+    let Some(served) = picked.version else {
+        return Ok(None);
+    };
     let source_ids = store.find_sources(library, served.as_str())?;
     if source_ids.is_empty() {
-        return Err(MissReason::NotIndexed.into());
+        return Ok(None);
     }
+    Ok(Some(ServedVersion {
+        library: library.clone(),
+        served,
+        status: picked.status,
+        source_ids,
+        available,
+    }))
+}
+
+/// The version-resolution rungs (docs/08 §Version resolution): with a
+/// served version (precomputed by [`version_pick`]), the pinned sources'
+/// FTS rung plus the migration-question rung via [`nearest_older`];
+/// without one, the fallback rungs via [`fallback_rung_hits`]. Appends
+/// the rungs to `rung_hits` and returns the per-item status inputs — the
+/// pick status, the served version, and the requested version.
+///
+/// # Errors
+/// [`RetrieveError::Miss`] with `not_indexed` when a flag-named library
+/// serves no version, [`RetrieveError::Store`] for store failures.
+fn version_rung_hits(
+    store: &Store,
+    query: &Query,
+    resolved: &crate::resolver::Resolved,
+    headroom: u32,
+    rung_hits: &mut Vec<Vec<Hit>>,
+    served: Option<&ServedVersion>,
+) -> Result<(VersionStatus, Option<String>, Option<String>), RetrieveError> {
+    let Some(served) = served else {
+        // No version serves. A flag-named library is the hard miss; the
+        // weak hints — lockfile, query mention, no library at all —
+        // degrade to the fallback (docs/08 §Version resolution, steps 2
+        // through 4). A version rides along only from the flags (step 1),
+        // never from the weak hint that named the absent library.
+        if query.library.is_some() {
+            return Err(MissReason::NotIndexed.into());
+        }
+        return fallback_rung_hits(store, query, query.version.as_deref(), headroom, rung_hits);
+    };
+    // The pinned scope serves every active origin of the
+    // `(library, version)` pair; the schema allows several per pair.
     let expr = rung_match_expr(&query.text);
-    rung_hits.push(store.search_fts_sources(&expr, &source_ids, headroom)?);
-    if let Some(migration) = migration_rung(store, query, library, &served, &available, headroom)? {
+    rung_hits.push(store.search_fts_sources(&expr, &served.source_ids, headroom)?);
+    if let Some(migration) = migration_rung(
+        store,
+        query,
+        &served.library,
+        &served.served,
+        &served.available,
+        headroom,
+    )? {
         rung_hits.push(migration);
     }
     Ok((
-        pick.status,
-        Some(served.as_str().to_owned()),
+        served.status,
+        Some(served.served.as_str().to_owned()),
         resolved.version.clone(),
     ))
 }

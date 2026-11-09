@@ -33,14 +33,26 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
     },
     EmbeddedMigration {
         version: 2,
-        name: "0002_license_gate",
+        name: "0002_symbols_symbol_nocase",
         sql: include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0002_license_gate.sql"
+            "/migrations/0002_symbols_symbol_nocase.sql"
+        )),
+        destructive: false,
+    },
+    EmbeddedMigration {
+        version: 3,
+        name: "0003_license_gate",
+        sql: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0003_license_gate.sql"
         )),
         destructive: false,
     },
 ];
+
+/// How many migrations ship with the store, in application order.
+pub const MIGRATION_COUNT: usize = MIGRATIONS.len();
 
 /// Options for the migration runner.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

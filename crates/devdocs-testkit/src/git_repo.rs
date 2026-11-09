@@ -5,8 +5,9 @@
 //! inherited `GIT_*` variable first — a git hook exports `GIT_DIR` and
 //! friends pointing at the enclosing repo — then pins
 //! `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0`, and each repo
-//! sets `user.name` and `user.email` locally, so a fixture run cannot
-//! read the host identity, ever prompt, or touch any repo but its own.
+//! sets `user.name` and `user.email` locally and disables commit and
+//! tag signing, so a fixture run cannot read the host identity, sign
+//! anything, ever prompt, or touch any repo but its own.
 
 use std::ffi::OsStr;
 use std::io;
@@ -65,7 +66,8 @@ where
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Set the identity locally so commits never read the host config.
+/// Set the identity and signing config locally so commits and tags
+/// never read the host config.
 fn configure_local_identity(dir: &Path) -> io::Result<()> {
     git(dir, ["config", "--local", "user.name", "devdocs-test"])?;
     git(
@@ -79,6 +81,9 @@ fn configure_local_identity(dir: &Path) -> io::Result<()> {
     )?;
     // A host that signs commits by default would break the fixture.
     git(dir, ["config", "--local", "commit.gpgsign", "false"])?;
+    // Same for tags: a signed or annotated tag object would not resolve
+    // `rev-parse v1.0.0` to the commit.
+    git(dir, ["config", "--local", "tag.gpgsign", "false"])?;
     Ok(())
 }
 
@@ -127,6 +132,15 @@ pub fn docs_repo(dir: &Path) -> io::Result<DocsRepo> {
     })
 }
 
+/// The `file://` URL of a local repository path. Git percent-decodes the
+/// path of a `file://` URL, so a fixture directory holding a literal
+/// `%XX` escape needs `Url::from_file_path`'s percent-encoding.
+pub fn file_url(path: &Path) -> io::Result<String> {
+    Ok(url::Url::from_file_path(path)
+        .map_err(|()| io::Error::new(io::ErrorKind::InvalidInput, "not a file path"))?
+        .to_string())
+}
+
 /// Clone `source` into a bare repository at `dir/mirror.git` and return
 /// the mirror path. The `file://` origin forces every later fetch through
 /// upload-pack, and the mirror pins `uploadpack.allowReachableSHA1InWant`
@@ -136,7 +150,7 @@ pub fn docs_repo(dir: &Path) -> io::Result<DocsRepo> {
 /// rejection must fetch with `-c protocol.version=0`.
 pub fn bare_mirror(source: &Path, dir: &Path) -> io::Result<PathBuf> {
     let mirror = dir.join("mirror.git");
-    let source_url = format!("file://{}", source.display());
+    let source_url = file_url(source)?;
     git(
         dir,
         vec![
@@ -216,7 +230,7 @@ mod tests {
 
         let probe = tempdir().unwrap();
         git(probe.path(), ["init", "-q"]).unwrap();
-        let mirror_url = format!("file://{}", mirror.display());
+        let mirror_url = super::file_url(&mirror).unwrap();
         let fetch = git(
             probe.path(),
             [

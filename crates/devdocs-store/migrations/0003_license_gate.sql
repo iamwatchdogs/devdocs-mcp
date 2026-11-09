@@ -1,4 +1,4 @@
--- Migration 0002: the license-gate expiry column.
+-- Migration 0003: the license-gate expiry column.
 --
 -- Source of truth: docs/implementation/06 §Schema, docs/implementation/07
 -- §License gate. Applied migrations never change: a schema change is a new

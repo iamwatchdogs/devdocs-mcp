@@ -14,9 +14,11 @@ use rusqlite::Connection;
 use devdocs_store::{Store, StoreError};
 
 /// The shared base test config: the fetch, index, search, and ingest
-/// defaults every pipeline test starts from, with no sources — the
-/// caller registers its own `[sources.<name>]` entry, so no test writes
-/// a `Config` literal inline.
+/// values every pipeline test starts from, with no sources — the caller
+/// registers its own `[sources.<name>]` entry, so no test writes a
+/// `Config` literal inline. The search section is inert here: the
+/// pipeline never reads it, and the retrieve path overrides what it
+/// needs.
 #[must_use]
 pub fn base_config() -> devdocs_model::config::Config {
     use devdocs_model::config::{
@@ -35,12 +37,7 @@ pub fn base_config() -> devdocs_model::config::Config {
             path: std::path::PathBuf::from("/tmp/unused.db"),
             embeddings: false,
         },
-        search: SearchConfig {
-            // nosemgrep: codacy.yaml.security.hard-coded-tokens
-            max_tokens_default: 2000,
-            limit_default: 8,
-            rrf_k: 60,
-        },
+        search: SearchConfig::default(),
         ingest: IngestConfig {
             git_extensions: DEFAULT_GIT_EXTENSIONS
                 .iter()

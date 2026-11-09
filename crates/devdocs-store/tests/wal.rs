@@ -134,7 +134,7 @@ fn concurrent_open_and_migrate_succeed() {
     let applied_a = store_a.migrate().unwrap();
     assert_eq!(
         applied_a.len(),
-        2,
+        devdocs_store::MIGRATION_COUNT,
         "the first migrator applies every shipped migration"
     );
     let applied_b = store_b.migrate().unwrap();

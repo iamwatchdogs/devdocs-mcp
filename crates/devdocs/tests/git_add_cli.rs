@@ -23,7 +23,8 @@ fn repo_url(path: &Path) -> String {
         .to_string()
 }
 
-/// Writes a config with the `acme` git source approved at the index stage.
+/// Writes a config with the `acme` git source registered; the first sync
+/// bootstrap lands at `approved_index` on its own.
 fn write_git_config(env: &Env, url: &str) -> std::path::PathBuf {
     let config = env.root.join("devdocs.toml");
     std::fs::write(
@@ -184,6 +185,46 @@ fn add_git_refuses_a_fixture_replay() {
     assert!(!db.exists(), "a rejected add must not create the database");
 }
 
+/// The `[sources.<name>].kind` value is free-form config the CLI edge
+/// never validates; an unsupported kind must not silently run the
+/// llms.txt adapter over that URL — usage error, no database.
+#[test]
+fn add_with_an_unsupported_config_kind_is_a_usage_error() {
+    let env = Env::new();
+    let url = "https://docs.example.com/llms.txt";
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[sources.acme]\n\
+             kind = \"openapi\"\n\
+             url = \"{url}\"\n\
+             license = \"MIT\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("docs.db");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            url,
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    assert!(
+        stderr.contains("source kind openapi is not supported yet"),
+        "stderr: {stderr}"
+    );
+    assert!(!db.exists(), "a rejected add must not create the database");
+}
+
 /// With no `git` executable on PATH the add fails as `UPSTREAM_ERROR`
 /// (exit 3) with the documented `GIT_BINARY_MISSING` detail
 /// (docs/implementation/08 §Error codes).
@@ -222,4 +263,170 @@ fn add_git_without_the_git_binary_fails_upstream() {
     );
     assert_eq!(code, 3, "stderr: {stderr}");
     assert!(stderr.contains("GIT_BINARY_MISSING"), "stderr: {stderr}");
+}
+
+/// An option-shaped pin (leading `-`) is a user-input mistake: the
+/// argv-vector rule rejects it before any git runs
+/// (docs/implementation/09 §Git subprocess safety), so it fails as
+/// `USAGE` (exit 1) with the `GIT_INVALID_PIN` detail kept.
+#[test]
+fn add_git_with_an_option_shaped_pin_fails_usage() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            &url,
+            "--version=-upload-pack=evil",
+            "--kind",
+            "git",
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("USAGE"), "stderr: {stderr}");
+    assert!(stderr.contains("GIT_INVALID_PIN"), "stderr: {stderr}");
+}
+
+/// A tag the fixture repository does not carry fails as `USAGE` (exit 1)
+/// with the `GIT_PIN_NOT_TAG` detail — the tag-only refspec fetch reports
+/// the missing remote ref as the pin-not-tag usage error
+/// (docs/implementation/07 §Git adapter; exit code and detail per
+/// docs/implementation/08 §Error codes).
+#[test]
+fn add_git_with_a_missing_tag_fails_usage() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            &url,
+            "--version",
+            "no-such-tag",
+            "--kind",
+            "git",
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("USAGE"), "stderr: {stderr}");
+    assert!(stderr.contains("GIT_PIN_NOT_TAG"), "stderr: {stderr}");
+}
+
+/// A `git` entry on PATH that exists but cannot execute fails as
+/// `UPSTREAM_ERROR` with the `GIT_SPAWN_FAILED` detail — the spawn arm
+/// beside the not-found arm (docs/implementation/08 §Error codes).
+/// POSIX only: a non-executable `git` on PATH fails spawn there; Windows
+/// resolves executables by extension and never reaches this error.
+#[cfg(unix)]
+#[test]
+fn add_git_with_an_unrunnable_git_binary_fails_spawn() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+
+    // A non-executable file named `git` on PATH: the spawn fails with a
+    // permission error, not a lookup miss.
+    let fake_bin = env.root.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("fake bin dir");
+    std::fs::write(fake_bin.join("git"), "not an executable").expect("fake git written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(fake_bin.join("git"), std::fs::Permissions::from_mode(0o644))
+            .expect("fake git mode set");
+    }
+    let mut env_with_path = env;
+    env_with_path.set("PATH", fake_bin.to_str().expect("bin path"));
+
+    let (code, _stdout, stderr) = output(
+        env_with_path.cmd(),
+        &[
+            "add",
+            &url,
+            "--version",
+            "v1.0.0",
+            "--kind",
+            "git",
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(stderr.contains("GIT_SPAWN_FAILED"), "stderr: {stderr}");
+}
+
+/// A `tmp` data root left at mode 0755 fails the private-dir contract as
+/// `UPSTREAM_ERROR` with the `GIT_TEMP_DIR` detail
+/// (docs/implementation/09 §Local storage controls).
+#[test]
+fn add_git_refuses_an_unprivate_tmp_dir() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+
+    // The adapter verifies the tmp root is 0700 before it clones into it.
+    let tmp = env.root.join("tmp");
+    std::fs::create_dir_all(&tmp).expect("tmp dir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+            .expect("tmp mode set");
+    }
+
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            &url,
+            "--version",
+            "v1.0.0",
+            "--kind",
+            "git",
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    #[cfg(unix)]
+    {
+        assert_eq!(code, 3, "stderr: {stderr}");
+        assert!(stderr.contains("GIT_TEMP_DIR"), "stderr: {stderr}");
+    }
 }

@@ -87,6 +87,15 @@ pub enum IngestError {
         /// The rejected pin.
         pin: String,
     },
+    /// A non-SHA pin the tag clone resolved is not an exact tag:
+    /// `git clone --branch` also accepts branch names, and a branch pin
+    /// would publish a mutable, non-reproducible ref
+    /// (docs/implementation/07 §Git adapter).
+    #[error("GIT_PIN_NOT_TAG: pin `{pin}` is not a tag; use a tag name or a commit SHA")]
+    GitPinNotTag {
+        /// The rejected pin.
+        pin: String,
+    },
     /// The URL at fetch differs from the planned URL; a changed URL aborts
     /// the run (docs/implementation/09 §Git subprocess safety).
     #[error("GIT_URL_MISMATCH: fetch URL `{actual}` does not match the planned URL `{planned}`")]
@@ -111,6 +120,17 @@ pub enum IngestError {
     GitSpawn {
         /// What failed.
         message: String,
+    },
+    /// A git invocation ran past its per-invocation deadline (set at the
+    /// total-cap duration) and was killed and reaped instead of orphaning
+    /// the clone's network I/O
+    /// (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_TIMEOUT: `{command}` exceeded the {seconds}s deadline and was killed")]
+    GitTimeout {
+        /// The argv of the killed invocation (without the config args).
+        command: String,
+        /// The deadline in seconds.
+        seconds: u64,
     },
     /// The private temp clone directory could not be created or does not
     /// carry mode 0700 (docs/implementation/09 §Local storage controls).

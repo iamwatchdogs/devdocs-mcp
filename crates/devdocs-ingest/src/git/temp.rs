@@ -70,10 +70,9 @@ fn sweep_stale_clones(tmp: &Path) {
         }
         let stale = entry
             .metadata()
-            .and_then(|meta| meta.modified())
             .ok()
-            .and_then(|mtime| mtime.elapsed().ok())
-            .is_some_and(|age| age >= TOTAL_INGEST_CAP);
+            .and_then(|meta| meta.modified().ok())
+            .is_some_and(|mtime| mtime.elapsed().is_ok_and(|age| age >= TOTAL_INGEST_CAP));
         if !stale {
             continue;
         }
@@ -112,8 +111,10 @@ impl TempClone {
                     tmp.display()
                 ),
             })?;
-        // `keep` hands the removal duty to this guard.
-        let path = handle.keep();
+        // The guard stays alive through the permission work: on any
+        // refusal its `Drop` removes the half-made clone dir instead of
+        // leaking it until the stale sweep.
+        let path = handle.path().to_path_buf();
         // tempfile creates its directory 0755; the contract here is 0700.
         #[cfg(unix)]
         {
@@ -126,6 +127,8 @@ impl TempClone {
         }
         verify_private_dir(&tmp)?;
         verify_private_dir(&path)?;
+        // `keep` hands the removal duty to this guard.
+        let path = handle.keep();
         if let Ok(mut slot) = REGISTERED_PATH.lock() {
             *slot = Some(path.clone());
         }
@@ -213,12 +216,150 @@ fn verify_private_dir(_path: &Path) -> Result<(), IngestError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
 
     use tempfile::tempdir;
 
     use super::super::test_util::{TEMP_CLONE_ORDER, fixture_git};
     use super::{REGISTERED_PATH, TempClone, install_signal_cleanup};
+    #[cfg(unix)]
+    use super::{create_private_dir, verify_private_dir};
+
+    /// Ages a path's mtime past the sweep bound. Windows cannot open a
+    /// directory with a plain `File::open`; `FILE_FLAG_BACKUP_SEMANTICS`
+    /// grants a directory handle there.
+    fn age_path(path: &Path, old: std::time::SystemTime) {
+        #[cfg(unix)]
+        {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_WRITE_ATTRIBUTES | FILE_FLAG_BACKUP_SEMANTICS: the
+            // only access pair that opens a directory handle and may
+            // change its times.
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0001_0000;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            std::fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES | FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+    }
+
+    /// Wraps the spawned helper child so a panic between spawn and the
+    /// explicit SIGTERM delivery cannot leak a running helper: while
+    /// `armed`, `Drop` kills and reaps it (`Child::drop` does not kill).
+    #[cfg(unix)]
+    struct ChildGuard {
+        child: std::process::Child,
+        armed: bool,
+    }
+
+    #[cfg(unix)]
+    impl ChildGuard {
+        fn get(&mut self) -> &mut std::process::Child {
+            &mut self.child
+        }
+
+        /// Marks the child as reaped so `Drop` leaves it alone.
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+
+    /// Env var that flips a re-executed test binary into helper mode.
+    #[cfg(unix)]
+    const CHILD_ENV: &str = "DEVDOCS_SIGTERM_CHILD";
+
+    /// Env var carrying the report file path into the helper.
+    #[cfg(unix)]
+    const REPORT_ENV: &str = "DEVDOCS_SIGTERM_REPORT";
+
+    /// Polls `path` for non-empty file content until `budget` elapses.
+    /// Empty reads are skipped: a published report is never empty.
+    #[cfg(unix)]
+    fn wait_for(path: &Path, budget: Duration) -> Option<String> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && !text.is_empty()
+            {
+                return Some(text);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        None
+    }
+
+    /// The helper-mode child body: installs the signal handler through
+    /// `TempClone::create`, publishes the clone path atomically (write to
+    /// a sibling staging name, then rename), then idles until SIGTERM
+    /// removes the clone and exits. Never returns, so the call site keeps
+    /// its control flow.
+    #[cfg(unix)]
+    fn sigterm_helper_child() {
+        let report = PathBuf::from(std::env::var_os(REPORT_ENV).expect("report path env"));
+        let data = report.parent().expect("report parent").join("data");
+        let guard = TempClone::create(&data).expect("helper clone");
+        let staging = report.with_extension("staging");
+        std::fs::write(&staging, guard.path().display().to_string()).expect("report write");
+        std::fs::rename(&staging, &report).expect("report publish");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+
+    /// A path that already exists as a file refuses the private-dir
+    /// create: the error names the path (`GitTempDir` mapping).
+    #[cfg(unix)]
+    #[test]
+    fn create_private_dir_refuses_an_occupied_path() {
+        let data = tempdir().unwrap();
+        let path = data.path().join("occupied");
+        std::fs::write(&path, "x").unwrap();
+
+        let error = create_private_dir(&path).unwrap_err();
+        assert!(
+            matches!(error, crate::error::IngestError::GitTempDir { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("occupied"));
+    }
+
+    /// A missing path refuses the private-dir verification: the stat
+    /// failure maps to `GitTempDir` naming the path.
+    #[cfg(unix)]
+    #[test]
+    fn verify_private_dir_refuses_a_missing_path() {
+        let data = tempdir().unwrap();
+        let path = data.path().join("absent");
+
+        let error = verify_private_dir(&path).unwrap_err();
+        assert!(
+            matches!(error, crate::error::IngestError::GitTempDir { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("absent"));
+    }
 
     /// Dropping the plan removes the clone directory, the `tmp` parent
     /// keeps its mode 0700, and the clone directory itself was created
@@ -268,10 +409,12 @@ mod tests {
     /// the ingest total cap is swept at the next `TempClone::create`; a
     /// young one survives, as does the freshly created dir — the age
     /// bound keeps the sweep from racing a concurrent process's live
-    /// clone (docs/implementation/09 §Local storage controls).
+    /// clone (docs/implementation/09 §Local storage controls). POSIX
+    /// only: directory-handle time writes are denied on the Windows CI
+    /// runner; there the sweep is verified through the stray-file arm.
+    #[cfg(unix)]
     #[test]
     fn a_stale_clone_dir_is_swept_at_the_next_create() {
-        use std::fs::File;
         use std::time::{Duration, SystemTime};
 
         let _order = TEMP_CLONE_ORDER.lock().unwrap();
@@ -291,7 +434,7 @@ mod tests {
         // Age the planted dir past the cap: the sweep only removes
         // entries older than the total ingest cap.
         let old = SystemTime::now() - crate::pipeline::TOTAL_INGEST_CAP - Duration::from_secs(60);
-        File::open(&stale).unwrap().set_modified(old).unwrap();
+        age_path(&stale, old);
 
         // A young clone dir stays: it could belong to another process's
         // live clone (the registry is per-process).
@@ -308,7 +451,6 @@ mod tests {
     /// sweep candidate: the sweep removes it by file, not only by dir.
     #[test]
     fn the_sweep_removes_a_stale_stray_file() {
-        use std::fs::File;
         use std::time::{Duration, SystemTime};
 
         let _order = TEMP_CLONE_ORDER.lock().unwrap();
@@ -323,7 +465,7 @@ mod tests {
         let stray = tmp.join("devdocs-git-loose");
         std::fs::write(&stray, "not a dir").unwrap();
         let old = SystemTime::now() - crate::pipeline::TOTAL_INGEST_CAP - Duration::from_secs(60);
-        File::open(&stray).unwrap().set_modified(old).unwrap();
+        age_path(&stray, old);
 
         let guard = TempClone::create(data.path()).unwrap();
         assert!(!stray.exists(), "the stale stray file must be swept");
@@ -333,10 +475,11 @@ mod tests {
     /// A fixture clone keeps working while a live clone holds the
     /// registry slot: the sweep skips the registered path even when it is
     /// old enough to be a candidate (docs/implementation/09 §Local
-    /// storage controls).
+    /// storage controls). POSIX only, like the stale-dir sweep test:
+    /// directory-handle time writes are denied on the Windows CI runner.
+    #[cfg(unix)]
     #[test]
     fn the_sweep_skips_the_registered_clone() {
-        use std::fs::File;
         use std::time::{Duration, SystemTime};
 
         let _order = TEMP_CLONE_ORDER.lock().unwrap();
@@ -345,12 +488,168 @@ mod tests {
         let registered = guard.path().to_path_buf();
         // Age the live clone past the cap.
         let old = SystemTime::now() - crate::pipeline::TOTAL_INGEST_CAP - Duration::from_secs(60);
-        File::open(&registered).unwrap().set_modified(old).unwrap();
+        age_path(&registered, old);
 
         // A second create in the same process sweeps, but must skip the
         // registered path.
         let _second = TempClone::create(data.path()).unwrap();
         assert!(registered.exists(), "the registered clone must survive");
+    }
+
+    /// SIGTERM fires the cleanup handler: a helper process installs the
+    /// handler through `TempClone::create`, the parent signals it, and the
+    /// clone dir is gone. Needs the `termination` feature on `ctrlc` —
+    /// without it the handler runs on SIGINT only and the helper outlives
+    /// the signal. POSIX only: signal delivery is a unix contract.
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_cleanup_removes_the_clone_dir() {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            sigterm_helper_child();
+        }
+
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let shared = tempdir().unwrap();
+        let report = shared.path().join("clone-path");
+
+        // Re-execute this binary in helper mode: libtest matches the full
+        // test path exactly (crate-name prefix stripped).
+        let test_name = module_path!()
+            .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+            .unwrap_or(module_path!())
+            .to_owned()
+            + "::sigterm_cleanup_removes_the_clone_dir";
+        // The guard kills the helper on any early exit: `Child::drop` does not.
+        let mut child = ChildGuard {
+            child: std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .env(REPORT_ENV, &report)
+                .spawn()
+                .unwrap(),
+            armed: true,
+        };
+
+        let Some(clone_path) = wait_for(&report, Duration::from_secs(30)) else {
+            panic!("the helper never reported its clone path");
+        };
+        let clone_path = PathBuf::from(clone_path);
+        assert!(clone_path.exists(), "helper clone dir must exist");
+
+        std::process::Command::new("kill")
+            .args(["-s", "TERM", &child.get().id().to_string()])
+            .status()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while child.get().try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let status = child.get().try_wait().unwrap().expect("helper must exit");
+        child.disarm();
+        assert!(
+            !clone_path.exists(),
+            "SIGTERM must remove the helper clone dir"
+        );
+        assert!(
+            status.code().is_none_or(|code| code == 130),
+            "helper exit: {status}"
+        );
+    }
+
+    /// A tmp root left at 0755 fails the private-dir contract: the create
+    /// refuses with `GitTempDir` naming the wrong mode
+    /// (docs/implementation/09 §Local storage controls). POSIX modes only:
+    /// Windows has no owner-rwx restriction to violate.
+    #[cfg(unix)]
+    #[test]
+    fn an_unprivate_tmp_root_refuses_the_create() {
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let data = tempdir().unwrap();
+        let tmp = data.path().join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let error = TempClone::create(data.path()).unwrap_err();
+        let message = match &error {
+            crate::error::IngestError::GitTempDir { message } => message.clone(),
+            other => panic!("expected GitTempDir, got {other:?}"),
+        };
+        assert!(message.contains("755"), "message: {message}");
+        // The refused create must not leak its half-made clone dir: the
+        // guard is still alive when the verification fails.
+        let leaked = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("devdocs-git-")
+            });
+        assert!(!leaked, "the refusal must not leak a devdocs-git-* dir");
+    }
+
+    /// A guard whose clone dir cannot be removed logs the failure and
+    /// clears the registry slot anyway (the `Drop` warn path). POSIX only:
+    /// a write-revoked directory stays removable on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn an_unremovable_clone_dir_warns_on_drop() {
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let data = tempdir().unwrap();
+        let guard = TempClone::create(data.path()).unwrap();
+        let path = guard.path().to_path_buf();
+        // Content inside: removal must unlink it, which the revoked write
+        // bit below forbids.
+        std::fs::write(path.join("leftover"), "x").unwrap();
+
+        // Make removal impossible: no write permission on the clone dir.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+        drop(guard);
+        assert!(path.exists(), "the unremovable clone dir must survive");
+
+        // Restore so the parent tempdir can clean up.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::fs::remove_dir_all(&path).unwrap();
+        assert_eq!(*REGISTERED_PATH.lock().unwrap(), None);
+    }
+
+    /// The sweep ignores a tmp root it cannot read, and a non-clone entry
+    /// in the root is skipped untouched.
+    #[test]
+    fn the_sweep_skips_unreadable_roots_and_foreign_entries() {
+        // A nonexistent root: the early return keeps the create alive.
+        super::sweep_stale_clones(Path::new("/devdocs-nonexistent-root"));
+
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let data = tempdir().unwrap();
+        let tmp = data.path().join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        // A foreign entry (not a `devdocs-git-*` name) never gets touched.
+        let foreign = tmp.join("other-run");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("data"), "x").unwrap();
+        let guard = TempClone::create(data.path()).unwrap();
+        assert!(foreign.exists(), "the foreign entry must survive");
+        assert!(guard.path().exists());
     }
 
     /// The `fixture_git` helper runs real git and trims stdout (used by

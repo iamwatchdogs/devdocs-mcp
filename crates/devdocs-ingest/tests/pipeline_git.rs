@@ -25,8 +25,10 @@ fn fixture_git(dir: &Path, args: &[&str]) -> String {
 
 /// The `file://` URL of a local repository path — the exact string the
 /// gate matches against the registry entry and the adapter plans with.
+/// `Url::from_file_path` percent-encodes the path, so a fixture
+/// directory holding a literal `%XX` escape stays parseable.
 fn repo_url(path: &Path) -> Url {
-    Url::parse(&format!("file://{}", path.display())).unwrap()
+    Url::from_file_path(path).unwrap()
 }
 
 /// A config with the `acme` git source registered at the index stage for
@@ -252,6 +254,47 @@ async fn git_run_refuses_a_corpus_with_no_allowlisted_files() {
     assert!(
         devdocs_testkit::read_chunks(&db_path).unwrap().is_empty(),
         "a refused run must publish no chunks"
+    );
+}
+
+/// A run over a repo whose allowlisted file is not valid UTF-8 skips it
+/// with the count in the events and still publishes the rest
+/// (docs/implementation/07 §Git adapter).
+#[tokio::test]
+async fn git_run_counts_the_non_utf8_skips() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    // A non-UTF-8 allowlisted file joins the fixture repo in a new commit.
+    std::fs::write(repo.work_dir.join("broken.md"), [0xff, 0xfe, 0x00]).unwrap();
+    fixture_git(&repo.work_dir, &["add", "."]);
+    fixture_git(&repo.work_dir, &["commit", "-m", "broken"]);
+    let head = fixture_git(&repo.work_dir, &["rev-parse", "HEAD"]);
+
+    let data = tempdir().unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+    let store = store();
+    let guard = guard(&config);
+    let outcome = IngestJob::new(&config, &guard, None)
+        .run_git(
+            Arc::clone(&store),
+            &url,
+            "acme",
+            "1.0",
+            GitPin::from(head.as_str()),
+            data.path(),
+        )
+        .await
+        .unwrap();
+
+    // The non-UTF-8 file is skipped and counted in the warn log; the
+    // fixture pages still publish.
+    assert_eq!(outcome.pages, 2, "README and guide ingest: {outcome:?}");
+    assert!(outcome.chunks > 0);
+    assert_eq!(
+        outcome.commit_sha.as_deref(),
+        Some(head.as_str()),
+        "the run pins the broken-file commit"
     );
 }
 

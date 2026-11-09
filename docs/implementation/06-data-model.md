@@ -107,11 +107,13 @@ END;
 CREATE TABLE symbols (
   symbol     TEXT NOT NULL,
   chunk_id   INTEGER NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL,                 -- 'function','class','method','route','operation', ...
+  kind       TEXT NOT NULL,                 -- 'function','method','class','struct','enum','trait','type','interface','constant','variable','module'
   PRIMARY KEY (symbol, chunk_id)
 );
 CREATE INDEX idx_symbols_chunk ON symbols(chunk_id);
-
+-- migration 0002: case-insensitive prefix matching for the symbol ladder;
+-- the column collation stays BINARY so exact mode matches byte-exact
+CREATE INDEX idx_symbols_symbol_nocase ON symbols(symbol COLLATE NOCASE);
 -- session_trajectory: per-session served-chunk dedup (phase 2)
 CREATE TABLE session_trajectory (
   session_id TEXT NOT NULL,
@@ -121,9 +123,9 @@ CREATE TABLE session_trajectory (
 );
 ```
 
-## License-gate state (migration 0002)
+## License-gate state (migration 0003)
 
-Migration `0002_license_gate.sql` adds one column to `sources`:
+Migration `0003_license_gate.sql` adds one column to `sources`:
 
 ```sql
 ALTER TABLE sources ADD COLUMN license_expires_at TEXT;
@@ -134,7 +136,14 @@ The column is nullable and non-destructive: existing sources carry no expiry and
 The store is authoritative for the mutable license state: `sources.license_status`, `sources.license_expires_at`, and the audit lines in `meta`. An audit row keys `audit:<rfc3339 nanosecond timestamp>` — the timestamp carries a fixed 9-digit subsecond field, so the key shape never depends on the nanosecond value — and a same-instant collision takes a `-<n>` suffix on the key. The value is `(audit:<ts>, library, from, to, operator[, note])`; `from` joins the distinct row states with `|` when the library's rows disagree (docs/implementation/07 §License gate). The value is a human-readable trail recorded verbatim and is not machine-parsed.
 
 The `LicenseStatus::can_transition_to` test in `crates/devdocs-model/src/source.rs` mirrors the docs/07 transition table move for move — 24 legal moves, everything else refused.
+## Symbol columns
 
+The publish path fills both symbol surfaces ([07](07-ingest-pipeline.md) §Symbol extraction):
+
+- `chunks.symbol` carries the primary symbol of the chunk: the extracted symbol whose whole name equals one `›`-separated breadcrumb segment of the header (case-insensitive), else the first extracted symbol, else NULL.
+- The `symbols` table carries every extracted symbol of the chunk. Writes use `INSERT OR IGNORE`, so the `(symbol, chunk_id)` primary key makes a repeat publish idempotent inside the same transaction.
+
+The extraction pass emits this kind vocabulary: `function`, `method`, `class`, `struct`, `enum`, `trait`, `type`, `interface`, `constant`, `variable`, `module`. A grammar that names no node kind for a construct does not emit a row for it.
 ## FTS5 design decisions
 
 Verified against the SQLite 3.54 FTS5 documentation on 2026-10-28.

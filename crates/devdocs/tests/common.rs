@@ -153,18 +153,22 @@ fn write_manifest(dir: &Path, responses: &Value) {
     .expect("manifest written");
 }
 
-/// Write the devdocs.toml pointing at the acme `llms.txt` source; return
+/// Write the devdocs.toml pointing at the acme `llms.txt` source under
+/// the given `[sources.<name>]` key — the key is the library name; return
 /// its path.
-fn write_config(root: &Path) -> PathBuf {
+fn write_config(root: &Path, name: &str) -> PathBuf {
     let config = root.join("devdocs.toml");
     std::fs::write(
         &config,
-        concat!(
-            "[sources.acme]\n",
-            "kind = \"llms_txt\"\n",
-            "url = \"https://docs.acme.test/llms.txt\"\n",
-            "license = \"MIT\"\n",
-            "attribution = \"© Acme Corp documentation\"\n"
+        format!(
+            concat!(
+                "[sources.\"{name}\"]\n",
+                "kind = \"llms_txt\"\n",
+                "url = \"https://docs.acme.test/llms.txt\"\n",
+                "license = \"MIT\"\n",
+                "attribution = \"© Acme Corp documentation\"\n"
+            ),
+            name = name
         ),
     )
     .expect("config written");
@@ -198,7 +202,7 @@ pub fn indexed_env_at_index() -> (Env, PathBuf) {
     let env = Env::new();
     let dir = env.root.join("fixture");
     std::fs::create_dir_all(&dir).expect("fixture dir");
-    let config = write_config(&env.root);
+    let config = write_config(&env.root, "acme");
     add_fixture_version(&env, &dir, &config, "1.0", &acme_responses(INTRO_V1));
     add_fixture_version(&env, &dir, &config, "2.0", &acme_responses(INTRO_V2));
     (env, config)
@@ -220,6 +224,85 @@ pub fn indexed_env() -> (Env, PathBuf) {
         "test:bootstrap",
     )
     .expect("acme reaches the snippet stage");
+    (env, config)
+}
+
+/// The intro page carrying a fenced JavaScript definition the symbol pass
+/// extracts (docs/implementation/13 §M5): acme 1.0 defines `makeWidget`.
+const INTRO_SYMBOL: &str = concat!(
+    "# Intro\n\n",
+    "The Acme SDK ships a client for every runtime.\n\n",
+    "## Widgets\n\n",
+    "Create a widget with the factory.\n\n",
+    "```js\n",
+    "export function makeWidget(name) {\n",
+    "  return { name };\n",
+    "}\n",
+    "```\n"
+);
+
+/// An indexed fixture corpus whose page carries an extractable symbol:
+/// acme at 1.0 defines `makeWidget`. Returns the environment and the
+/// config path every CLI run needs.
+pub fn symbol_env() -> (Env, PathBuf) {
+    let env = Env::new();
+    let dir = env.root.join("fixture");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let config = write_config(&env.root, "acme");
+    add_fixture_version(&env, &dir, &config, "1.0", &acme_responses(INTRO_SYMBOL));
+    (env, config)
+}
+
+/// The symbol corpus of [`symbol_env`] indexed under the scoped library
+/// name `@scope/pkg` — the `[sources.<name>]` key is the library name.
+/// Returns the environment and the config path every CLI run needs.
+pub fn scoped_symbol_env() -> (Env, PathBuf) {
+    let env = Env::new();
+    let dir = env.root.join("fixture");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let config = write_config(&env.root, "@scope/pkg");
+    add_fixture_version(&env, &dir, &config, "1.0", &acme_responses(INTRO_SYMBOL));
+    (env, config)
+}
+
+/// A second symbol page: `makeWidget` declared again, in its own chunk.
+const WIDGETS_SYMBOL: &str = concat!(
+    "# Widgets\n\n",
+    "The factory grows a second form.\n\n",
+    "## Overloads\n\n",
+    "```js\n",
+    "export function makeWidget(name, zone) {\n",
+    "  return { name, zone };\n",
+    "}\n",
+    "```\n"
+);
+
+/// The index listing both symbol pages.
+const SYMBOL_INDEX: &str = concat!(
+    "# Acme\n\n> Acme widgets documentation.\n\n",
+    "## Guides\n\n",
+    "- [Intro](https://docs.acme.test/intro.md): Start here\n",
+    "- [Widgets](https://docs.acme.test/widgets.md): The widget factory\n"
+);
+
+/// The replay responses the two-symbol corpus serves.
+fn symbol_responses() -> Value {
+    serde_json::json!([
+        { "url": "https://docs.acme.test/llms.txt", "status": 200, "headers": {}, "body": SYMBOL_INDEX },
+        { "url": "https://docs.acme.test/intro.md", "status": 200, "headers": {}, "body": INTRO_SYMBOL },
+        { "url": "https://docs.acme.test/widgets.md", "status": 200, "headers": {}, "body": WIDGETS_SYMBOL },
+    ])
+}
+
+/// An indexed fixture corpus where the symbol query `makeWidget` matches
+/// two chunks (the declaration appears on both pages): the shape the
+/// cursor-resume tests need. Returns the environment and the config path.
+pub fn two_symbol_env() -> (Env, PathBuf) {
+    let env = Env::new();
+    let dir = env.root.join("fixture");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let config = write_config(&env.root, "acme");
+    add_fixture_version(&env, &dir, &config, "1.0", &symbol_responses());
     (env, config)
 }
 

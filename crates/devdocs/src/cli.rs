@@ -378,8 +378,6 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
 /// carries only the result envelope), list joins the declarative config
 /// with the authoritative store state.
 fn run_source_command(cli: &Cli, op: &SourceOp) -> Result<(), Error> {
-    use std::fmt::Write as _;
-
     let config = Config::load(&overrides(cli))?;
     match op {
         SourceOp::Approve {
@@ -417,23 +415,7 @@ fn run_source_command(cli: &Cli, op: &SourceOp) -> Result<(), Error> {
             if cli.json {
                 print_line(&envelope)
             } else {
-                for entry in &envelope.results {
-                    let mut line = format!(
-                        "{} {} ({}) · {}",
-                        entry.name,
-                        entry.status,
-                        entry.license.as_deref().unwrap_or("unknown"),
-                        entry.url.as_deref().unwrap_or(""),
-                    );
-                    if let Some(expires) = &entry.expires {
-                        let _ = write!(line, " · expires {expires}");
-                    }
-                    if let Some(attribution) = &entry.attribution {
-                        let _ = write!(line, " · {attribution}");
-                    }
-                    write_stdout_line(&line)?;
-                }
-                Ok(())
+                write_stdout_text(&summarize_source_list(&envelope))
             }
         }
     }
@@ -502,6 +484,31 @@ fn run_versions_command(cli: &Cli, library: &str) -> Result<(), Error> {
         }
         Ok(())
     }
+}
+
+/// The human-readable `source list` summary without `--json`: one line
+/// per configured source, joined with the store state.
+fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for entry in &envelope.results {
+        let mut line = format!(
+            "{} {} ({}) · {}",
+            entry.name,
+            entry.status,
+            entry.license.as_deref().unwrap_or("unknown"),
+            entry.url.as_deref().unwrap_or(""),
+        );
+        if let Some(expires) = &entry.expires {
+            let _ = write!(line, " · expires {expires}");
+        }
+        if let Some(attribution) = &entry.attribution {
+            let _ = write!(line, " · {attribution}");
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    out
 }
 
 /// The human-readable search summary without `--json`: one line per

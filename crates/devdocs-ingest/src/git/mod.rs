@@ -53,7 +53,15 @@ pub(crate) mod test_util {
     /// Runs `git` against a fixture with the same argv-only, pinned-env
     /// discipline the testkit uses, returning trimmed stdout.
     pub(crate) fn fixture_git(dir: &Path, args: &[&str]) -> String {
-        let output = StdCommand::new("git")
+        let mut command = StdCommand::new("git");
+        // A hook process inherits GIT_DIR, GIT_INDEX_FILE and friends;
+        // drop them so the child only sees the fixture repository.
+        for (key, _) in std::env::vars_os() {
+            if key.as_encoded_bytes().starts_with(b"GIT_") {
+                command.env_remove(&key);
+            }
+        }
+        let output = command
             .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_NOSYSTEM", "1")

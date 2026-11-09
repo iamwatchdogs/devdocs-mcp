@@ -906,6 +906,26 @@ fn source_env() -> (Env, PathBuf) {
     (env, config)
 }
 
+/// One invocation against the indexed corpus: the `--json` envelope and
+/// the config flags ride along so the tests read as one line per call.
+fn source_cmd(env: &Env, cfg: [&str; 2], args: &[&str]) -> (i32, String, String) {
+    let mut with_json = args.to_vec();
+    with_json.extend(["--json", cfg[0], cfg[1]]);
+    output(env.cmd(), &with_json)
+}
+
+/// The audit trail rows, in key order.
+fn audit_lines(db: &std::path::Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(db).expect("db opens");
+    let mut statement = conn
+        .prepare("SELECT value FROM meta WHERE key LIKE 'audit:%' ORDER BY key")
+        .expect("prepare");
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query");
+    rows.map(|row| row.expect("row")).collect()
+}
+
 /// `source approve` walks the full progression: each legal move exits 0
 /// with the JSON transition report, and `source list` reports the final
 /// state (AC3).
@@ -1030,8 +1050,9 @@ fn unknown_stage_and_unknown_library_exit_one() {
 fn denied_to_pending_review_needs_a_note() {
     let (env, config) = source_env();
     let cfg = ["--config", config.to_str().expect("config path")];
-    let (code, stdout, stderr) = output(
-        env.cmd(),
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
         &[
             "source",
             "deny",
@@ -1040,9 +1061,6 @@ fn denied_to_pending_review_needs_a_note() {
             "robots disallow",
             "--operator",
             "test",
-            "--json",
-            cfg[0],
-            cfg[1],
         ],
     );
     assert_eq!(code, 0, "deny: {stderr}");
@@ -1051,18 +1069,8 @@ fn denied_to_pending_review_needs_a_note() {
     assert_eq!(report["note"], "robots disallow");
 
     // Without the note the re-open is a typed usage refusal.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
-        &[
-            "source",
-            "approve",
-            "acme",
-            "pending_review",
-            "--json",
-            cfg[0],
-            cfg[1],
-        ],
-    );
+    let (code, stdout, stderr) =
+        source_cmd(&env, cfg, &["source", "approve", "acme", "pending_review"]);
     assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
     let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
     assert!(
@@ -1074,8 +1082,9 @@ fn denied_to_pending_review_needs_a_note() {
     );
 
     // With the note the re-open lands.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
         &[
             "source",
             "approve",
@@ -1083,9 +1092,6 @@ fn denied_to_pending_review_needs_a_note() {
             "pending_review",
             "--note",
             "re-review after robots fix",
-            "--json",
-            cfg[0],
-            cfg[1],
         ],
     );
     assert_eq!(code, 0, "stderr: {stderr}");
@@ -1129,8 +1135,9 @@ fn source_approve_expires_stamps_the_expiry() {
     let cfg = ["--config", config.to_str().expect("config path")];
 
     // A malformed date refuses at the flag edge.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
         &[
             "source",
             "approve",
@@ -1138,9 +1145,6 @@ fn source_approve_expires_stamps_the_expiry() {
             "approved_embed",
             "--expires",
             "not-a-date",
-            "--json",
-            cfg[0],
-            cfg[1],
         ],
     );
     assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
@@ -1154,8 +1158,9 @@ fn source_approve_expires_stamps_the_expiry() {
     );
 
     // A legal move with a well-formed date stamps every row.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
         &[
             "source",
             "approve",
@@ -1163,9 +1168,6 @@ fn source_approve_expires_stamps_the_expiry() {
             "approved_embed",
             "--expires",
             "2999-01-01",
-            "--json",
-            cfg[0],
-            cfg[1],
         ],
     );
     assert_eq!(code, 0, "stderr: {stderr}");
@@ -1174,7 +1176,7 @@ fn source_approve_expires_stamps_the_expiry() {
     assert_eq!(report["expires"], "2999-01-01");
 
     // The store carries the stamp on every version row.
-    let (code, stdout, stderr) = output(env.cmd(), &["versions", "acme", "--json", cfg[0], cfg[1]]);
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["versions", "acme"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(stdout.contains("2999-01-01"), "stdout: {stdout}");
 }
@@ -1187,8 +1189,9 @@ fn source_approve_expires_stamps_the_expiry() {
 fn add_on_a_denied_source_withdraws_the_published_generation() {
     let (env, config) = source_env();
     let cfg = ["--config", config.to_str().expect("config path")];
-    let (code, _stdout, stderr) = output(
-        env.cmd(),
+    let (code, _stdout, stderr) = source_cmd(
+        &env,
+        cfg,
         &[
             "source",
             "deny",
@@ -1197,25 +1200,13 @@ fn add_on_a_denied_source_withdraws_the_published_generation() {
             "robots disallow",
             "--operator",
             "test",
-            "--json",
-            cfg[0],
-            cfg[1],
         ],
     );
     assert_eq!(code, 0, "deny: {stderr}");
 
     // The re-sync attempt refuses at the gate and withdraws on the way out;
     // no fixture is needed, because nothing is ever fetched.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
-        &[
-            "add",
-            "https://docs.acme.test/llms.txt",
-            "--json",
-            cfg[0],
-            cfg[1],
-        ],
-    );
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["add", "https://docs.acme.test/llms.txt"]);
     assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
     assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
 
@@ -1269,18 +1260,8 @@ fn transitions_sweep_a_passed_expiry_before_the_move() {
     devdocs_testkit::set_source_expiry(&db, "acme", "2026-01-01").expect("expiry set");
 
     // The sweep flips acme to `expired` first; expired cannot move forward.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
-        &[
-            "source",
-            "approve",
-            "acme",
-            "approved_embed",
-            "--json",
-            cfg[0],
-            cfg[1],
-        ],
-    );
+    let (code, stdout, stderr) =
+        source_cmd(&env, cfg, &["source", "approve", "acme", "approved_embed"]);
     assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
     let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
     assert!(
@@ -1293,17 +1274,7 @@ fn transitions_sweep_a_passed_expiry_before_the_move() {
 
     // The audit trail carries the auto:expiry line; the refused move wrote
     // nothing.
-    let audit = |db: &std::path::Path| -> Vec<String> {
-        let conn = rusqlite::Connection::open(db).expect("db opens");
-        let mut statement = conn
-            .prepare("SELECT value FROM meta WHERE key LIKE 'audit:%' ORDER BY key")
-            .expect("prepare");
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("query");
-        rows.map(|row| row.expect("row")).collect()
-    };
-    let lines = audit(&db);
+    let lines = audit_lines(&db);
     // One auto:expiry line per flipped row (acme has two versions); the
     // refused move wrote nothing.
     assert_eq!(lines.len(), 2, "lines: {lines:?}");
@@ -1315,21 +1286,16 @@ fn transitions_sweep_a_passed_expiry_before_the_move() {
 
     // `source deny` also reads the swept state: `expired` is absorbing, so
     // the move refuses too — no re-dating past the sweep.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
-        &[
-            "source",
-            "deny",
-            "acme",
-            "--note",
-            "takedown",
-            "--operator",
-            "test",
-            "--json",
-            cfg[0],
-            cfg[1],
-        ],
-    );
+    let deny = [
+        "source",
+        "deny",
+        "acme",
+        "--note",
+        "takedown",
+        "--operator",
+        "test",
+    ];
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &deny);
     assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
     let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
     assert!(
@@ -1341,7 +1307,7 @@ fn transitions_sweep_a_passed_expiry_before_the_move() {
     );
 
     // The refused deny added no audit line.
-    let lines = audit(&db);
+    let lines = audit_lines(&db);
     assert_eq!(lines.len(), 2, "lines: {lines:?}");
     assert!(
         lines.iter().all(|line| line.contains("auto:expiry")),

@@ -307,6 +307,7 @@ mod tests {
                 text: format!("## Guide\n\n{text}"),
                 token_count: 16,
                 content_hash: content_hash(text),
+                page_url: None,
                 ordinal: u32::try_from(ordinal).unwrap_or(0),
             })
             .collect();

@@ -31,17 +31,26 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("docs.db")).unwrap();
 
-    let applied: Vec<_> = migrate(&mut conn)
-        .unwrap()
-        .into_iter()
-        .map(|m| (m.version, m.name))
-        .collect();
+    let applied = migrate(&mut conn).unwrap();
     assert_eq!(
         applied,
         vec![
-            (1, "0001_init".to_owned()),
-            (2, "0002_symbols_symbol_nocase".to_owned()),
-            (3, "0003_license_gate".to_owned()),
+            devdocs_store::AppliedMigration {
+                version: 1,
+                name: "0001_init".to_owned(),
+            },
+            devdocs_store::AppliedMigration {
+                version: 2,
+                name: "0002_symbols_symbol_nocase".to_owned(),
+            },
+            devdocs_store::AppliedMigration {
+                version: 3,
+                name: "0003_page_url".to_owned(),
+            },
+            devdocs_store::AppliedMigration {
+                version: 4,
+                name: "0004_license_gate".to_owned(),
+            },
         ]
     );
 
@@ -59,7 +68,17 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
+
+    // The page-url column exists on chunks.
+    let page_url: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('chunks') WHERE name = 'page_url'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(page_url, 1, "chunks.page_url must exist after migration");
 
     // The expiry column exists, is nullable, and existing rows carry no
     // expiry.
@@ -105,7 +124,7 @@ fn re_migrating_an_up_to_date_database_applies_nothing() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let created_after: String = conn
         .query_row(
             "SELECT value FROM meta WHERE key = 'schema_created_at'",

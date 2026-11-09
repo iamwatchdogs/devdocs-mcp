@@ -3,7 +3,7 @@ type: guide
 title: Data Model
 description: The complete SQLite schema for devdocs, the FTS5 configuration, the migration system, and the hashing policy. Targets SQLite 3.54 bundled in rusqlite 0.41.
 tags: [devdocs, sqlite, fts5, schema, migrations]
-timestamp: 2026-11-07T03:05:11Z
+timestamp: 2026-11-10T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -123,9 +123,9 @@ CREATE TABLE session_trajectory (
 );
 ```
 
-## License-gate state (migration 0003)
+## License-gate state (migration 0004)
 
-Migration `0003_license_gate.sql` adds one column to `sources`:
+Migration `0004_license_gate.sql` adds one column to `sources`:
 
 ```sql
 ALTER TABLE sources ADD COLUMN license_expires_at TEXT;
@@ -144,6 +144,13 @@ The publish path fills both symbol surfaces ([07](07-ingest-pipeline.md) §Symbo
 - The `symbols` table carries every extracted symbol of the chunk. Writes use `INSERT OR IGNORE`, so the `(symbol, chunk_id)` primary key makes a repeat publish idempotent inside the same transaction.
 
 The extraction pass emits this kind vocabulary: `function`, `method`, `class`, `struct`, `enum`, `trait`, `type`, `interface`, `constant`, `variable`, `module`. A grammar that names no node kind for a construct does not emit a row for it.
+
+Later migration `0003_page_url.sql` adds the linked-page URL to chunks. The column is nullable: git-repo chunks carry NULL (docs/implementation/07 §llms.txt adapter).
+
+```sql
+ALTER TABLE chunks ADD COLUMN page_url TEXT;
+```
+
 ## FTS5 design decisions
 
 Verified against the SQLite 3.54 FTS5 documentation on 2026-10-28.
@@ -197,7 +204,7 @@ pub fn migrate(conn: &mut Connection) -> Result<Vec<AppliedMigration>, StoreErro
 |---|---|
 | library | `sources.library` |
 | version | `sources.version` |
-| source_url | `sources.origin_url` |
+| source_url | `COALESCE(chunks.page_url, sources.origin_url)` |
 | commit_sha | `sources.commit_sha` |
 | content_hash | `chunks.content_hash` (hex in results) |
 | section_path | `chunks.section_path` (JSON array) |

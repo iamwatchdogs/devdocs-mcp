@@ -87,6 +87,7 @@ pub(crate) fn walk_docs(
         docs.push(PageDocument {
             path: path_string,
             body,
+            page_url: None,
         });
     }
     Ok((docs, skipped_non_utf8))

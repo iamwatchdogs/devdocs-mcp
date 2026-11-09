@@ -67,18 +67,18 @@ fn audit_lines(store: &Store) -> Vec<String> {
     rows.map(|row| row.unwrap()).collect()
 }
 
-/// Migration 0003 applies once: `user_version` lands on 3 and a
+/// Migration 0004 applies once: `user_version` lands on 4 and a
 /// re-run applies nothing (docs/implementation/06 §Migrations).
 #[test]
-fn migration_0003_applies_once() {
+fn migration_0004_applies_once() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_with(&dir.path().join("docs.db"), &StoreOptions::default()).unwrap();
     assert_eq!(store.user_version().unwrap(), 0);
 
     let applied = store.migrate().unwrap();
     let names: Vec<_> = applied.iter().map(|m| m.name.as_str()).collect();
-    assert!(names.contains(&"0003_license_gate"), "names: {names:?}");
-    assert_eq!(store.user_version().unwrap(), 3);
+    assert!(names.contains(&"0004_license_gate"), "names: {names:?}");
+    assert_eq!(store.user_version().unwrap(), 4);
 
     let reapplied = store
         .migrate_with_options(&MigrateOptions::default())

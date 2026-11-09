@@ -50,7 +50,7 @@ pub fn to_result_item(
         section: hit.section_path.join(" > "),
         snippet,
         examples: Vec::new(),
-        source_url: hit.source_url.clone(),
+        source_url: hit.result_source_url().to_owned(),
         source_commit: hit.source_commit.clone().unwrap_or_default(),
         requested_version: requested.map(str::to_owned),
         served_version: hit.version.clone(),
@@ -298,6 +298,21 @@ mod tests {
             to_result_item(&hit, None, VersionStatus::Verified, 1.0).snippet,
             ""
         );
+    }
+
+    /// The item cites the chunk's page URL when the chunk carries one, and
+    /// falls back to the source origin URL otherwise
+    /// (docs/implementation/08 §Result envelope).
+    #[test]
+    fn source_url_prefers_the_page_url() {
+        let mut with_page = hit("next.js", "16.2.9", &["Routing"], None);
+        with_page.page_url = Some("https://example.test/next/routing.html".to_owned());
+        let item = to_result_item(&with_page, None, VersionStatus::Verified, 1.0);
+        assert_eq!(item.source_url, "https://example.test/next/routing.html");
+
+        let without_page = hit("next.js", "16.2.9", &["Routing"], None);
+        let item = to_result_item(&without_page, None, VersionStatus::Verified, 1.0);
+        assert_eq!(item.source_url, "https://example.test/next");
     }
 
     /// Ref derivation slugifies the path and the symbol.

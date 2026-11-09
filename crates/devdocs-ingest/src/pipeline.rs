@@ -451,6 +451,7 @@ impl<'a> IngestJob<'a> {
             docs.push(PageDocument {
                 path: export_url.to_string(),
                 body,
+                page_url: Some(export_url.to_string()),
             });
             run.events.full_exports += 1;
         }
@@ -568,6 +569,7 @@ impl<'a> IngestJob<'a> {
                     token_count: chunk.token_count,
                     content_hash: chunk.content_hash,
                     ordinal: u32::try_from(run.new_chunks.len()).unwrap_or(u32::MAX),
+                    page_url: doc.page_url.clone(),
                 });
             }
             run.events.pages += 1;
@@ -670,6 +672,7 @@ impl<'a> IngestJob<'a> {
                     PageDocument {
                         path: twin_url.to_string(),
                         body: twin_body,
+                        page_url: Some(twin_url.to_string()),
                     },
                 );
                 idx
@@ -678,6 +681,7 @@ impl<'a> IngestJob<'a> {
                 docs.push(PageDocument {
                     path: twin_url.to_string(),
                     body: twin_body,
+                    page_url: Some(twin_url.to_string()),
                 });
                 seen.insert(twin_url.to_string(), idx);
                 // The twin-use count tracks documents the buffer gains; an
@@ -692,6 +696,7 @@ impl<'a> IngestJob<'a> {
         let doc = PageDocument {
             path: page_url.to_string(),
             body,
+            page_url: Some(page_url.to_string()),
         };
         if let Some(idx) = slot {
             replace_buffered(docs, seen, idx, doc);
@@ -1058,6 +1063,7 @@ mod tests {
         let doc = |path: &str, body: &str| PageDocument {
             path: path.to_owned(),
             body: body.to_owned(),
+            page_url: None,
         };
         let mut docs = vec![
             doc("https://x/a.md", "# A\n\nalpha\n"),

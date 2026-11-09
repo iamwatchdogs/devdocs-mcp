@@ -61,6 +61,36 @@ fn chunk(ordinal: u32, symbol: Option<(&str, &str)>, body: &str) -> NewChunk {
     }
 }
 
+/// The audit-trail row count.
+fn audit_count(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM meta WHERE key LIKE 'audit:%'",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// A publish against a refused license state must return the typed
+/// `LicenseNotApproved` error carrying the refused status.
+fn assert_license_refused(error: devdocs_store::StoreError, expected: LicenseStatus) {
+    match error {
+        devdocs_store::StoreError::LicenseNotApproved { status: refused } => {
+            assert_eq!(refused, expected);
+        }
+        other => panic!("expected LicenseNotApproved, got {other:?}"),
+    }
+}
+
+/// Flip one stored row to the given license status.
+fn set_row_status(conn: &Connection, version: &str, status: &str) {
+    conn.execute(
+        "UPDATE sources SET license_status = ?1 WHERE version = ?2",
+        rusqlite::params![status, version],
+    )
+    .unwrap();
+}
+
 /// A publish upserts the source and flips it active with its metadata.
 #[test]
 fn publish_upserts_and_activates_the_source() {
@@ -272,12 +302,7 @@ fn a_terminal_license_state_withdraws_the_source() {
         .store
         .publish_generation(&source(LicenseStatus::Revoked), &[])
         .unwrap_err();
-    match error {
-        devdocs_store::StoreError::LicenseNotApproved { status: refused } => {
-            assert_eq!(refused, LicenseStatus::Revoked);
-        }
-        other => panic!("expected LicenseNotApproved, got {other:?}"),
-    }
+    assert_license_refused(error, LicenseStatus::Revoked);
 
     let (status, active): (String, i64) = rig
         .conn
@@ -321,14 +346,7 @@ fn publish_refuses_when_the_stored_state_turned_terminal() {
             None,
         )
         .unwrap();
-    let audit_before: i64 = rig
-        .conn
-        .query_row(
-            "SELECT count(*) FROM meta WHERE key LIKE 'audit:%'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let audit_before = audit_count(&rig.conn);
 
     // The stale re-sync still carries the approved record.
     let error = rig
@@ -338,12 +356,7 @@ fn publish_refuses_when_the_stored_state_turned_terminal() {
             &[chunk(0, None, "a stale republication that never lands.")],
         )
         .unwrap_err();
-    match error {
-        devdocs_store::StoreError::LicenseNotApproved { status: refused } => {
-            assert_eq!(refused, LicenseStatus::Denied);
-        }
-        other => panic!("expected LicenseNotApproved, got {other:?}"),
-    }
+    assert_license_refused(error, LicenseStatus::Denied);
 
     let (status, active): (String, i64) = rig
         .conn
@@ -362,14 +375,7 @@ fn publish_refuses_when_the_stored_state_turned_terminal() {
         .unwrap();
     assert_eq!(chunks, 1, "the stale chunk set must not land");
 
-    let audit_after: i64 = rig
-        .conn
-        .query_row(
-            "SELECT count(*) FROM meta WHERE key LIKE 'audit:%'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let audit_after = audit_count(&rig.conn);
     assert_eq!(
         audit_after, audit_before,
         "the clobbered move must write no audit line"
@@ -439,27 +445,10 @@ fn publish_refuses_when_any_stored_row_is_terminal() {
             .unwrap();
     }
     // Per-row divergence: one row re-enters review, the other stays denied.
-    rig.conn
-        .execute(
-            "UPDATE sources SET license_status = 'denied' WHERE version = '16.2.9'",
-            [],
-        )
-        .unwrap();
-    rig.conn
-        .execute(
-            "UPDATE sources SET license_status = 'pending_review' WHERE version = '16.1.0'",
-            [],
-        )
-        .unwrap();
+    set_row_status(&rig.conn, "16.2.9", "denied");
+    set_row_status(&rig.conn, "16.1.0", "pending_review");
 
-    let audit_before: i64 = rig
-        .conn
-        .query_row(
-            "SELECT count(*) FROM meta WHERE key LIKE 'audit:%'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let audit_before = audit_count(&rig.conn);
 
     // The stale re-sync still carries the approved record.
     let error = rig
@@ -469,12 +458,7 @@ fn publish_refuses_when_any_stored_row_is_terminal() {
             &[chunk(0, None, "a stale republication that never lands.")],
         )
         .unwrap_err();
-    match error {
-        devdocs_store::StoreError::LicenseNotApproved { status: refused } => {
-            assert_eq!(refused, LicenseStatus::Denied);
-        }
-        other => panic!("expected LicenseNotApproved, got {other:?}"),
-    }
+    assert_license_refused(error, LicenseStatus::Denied);
 
     let rows: Vec<(String, String, i64)> = rig
         .conn
@@ -499,14 +483,7 @@ fn publish_refuses_when_any_stored_row_is_terminal() {
         .unwrap();
     assert_eq!(chunks, 2, "the stale chunk set must not land");
 
-    let audit_after: i64 = rig
-        .conn
-        .query_row(
-            "SELECT count(*) FROM meta WHERE key LIKE 'audit:%'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let audit_after = audit_count(&rig.conn);
     assert_eq!(
         audit_after, audit_before,
         "the refusal must write no audit line"

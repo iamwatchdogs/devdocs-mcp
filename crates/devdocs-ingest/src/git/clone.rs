@@ -1,4 +1,4 @@
-//! Pin planning and the pinned fetch: a shallow tag clone, or a commit
+//! Pin planning and the pinned fetch: a shallow tag fetch, or a commit
 //! fetch with a full-clone fallback, then the docs walk
 //! (docs/implementation/07 §Git adapter).
 
@@ -94,7 +94,7 @@ impl GitPlan {
         let tmp = dir.parent().unwrap_or(dir);
         let fallback_used = match self.kind {
             PinKind::Tag => {
-                clone_tag(tmp, url, &self.pin, &dir.to_string_lossy(), extra_config)?;
+                clone_tag(tmp, dir, url, &self.pin, extra_config)?;
                 verify_tag(dir, &self.pin, extra_config)?;
                 false
             }
@@ -117,52 +117,78 @@ impl GitPlan {
     }
 }
 
-/// Clones the planned tag shallowly: one branch, no blobs, no checkout of
-/// any other ref.
+/// Fetches the planned tag shallowly and unambiguously: `clone --branch`
+/// resolves a branch before a tag when both spellings exist, and the
+/// shallow single-branch clone then omits the tag ref entirely. So the
+/// adapter initializes the plan's directory and fetches the tag through a
+/// refspec that names `refs/tags` only, then detaches onto it. Git
+/// reports a remote ref it does not carry as `couldn't find remote ref`
+/// naming the fetched tag ref: only that `GitCommand` failure means the
+/// pin names no tag and maps to `GitPinNotTag`; an invalid refspec or any
+/// other failure is operational and propagates
+/// (docs/implementation/07 §Git adapter).
 fn clone_tag(
     tmp: &Path,
+    dir: &Path,
     url: &str,
     pin: &str,
-    dir_arg: &str,
     extra_config: &[&str],
 ) -> Result<(), IngestError> {
+    let dir_arg = dir.to_string_lossy().into_owned();
+    run_git(tmp, &["init", &dir_arg], extra_config)?;
+    let refspec = format!("+refs/tags/{pin}:refs/tags/{pin}");
+    let tag_path = format!("refs/tags/{pin}");
+    let fetched = run_git(
+        dir,
+        &["fetch", "--depth", "1", "--filter=blob:none", url, &refspec],
+        extra_config,
+    );
+    match fetched {
+        Ok(_) => {}
+        Err(IngestError::GitCommand { stderr, .. })
+            if stderr.contains("couldn't find remote ref") && stderr.contains(&tag_path) =>
+        {
+            return Err(IngestError::GitPinNotTag {
+                pin: pin.to_owned(),
+            });
+        }
+        Err(error) => return Err(error),
+    }
     run_git(
-        tmp,
-        &[
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            pin,
-            "--single-branch",
-            "--filter=blob:none",
-            url,
-            dir_arg,
-        ],
+        dir,
+        &["checkout", "--detach", &tag_commit_ref(pin)],
         extra_config,
     )?;
     Ok(())
 }
 
-/// Verifies the pin the tag clone resolved is an exact tag: `git clone
-/// --branch` also accepts branch names, and a branch pin would publish a
-/// mutable, non-reproducible ref. The rev-parse resolves the tag ref
-/// directly, so a branch name of the same spelling fails
+/// The peel-to-commit ref a tag pin detaches onto: the tag object itself
+/// is not a commit, so checkout and verification both name `^{commit}`.
+fn tag_commit_ref(pin: &str) -> String {
+    format!("refs/tags/{pin}^{{commit}}")
+}
+
+/// Verifies the fetched pin is an exact tag: a branch pin would publish
+/// a mutable, non-reproducible ref, so non-SHA pins are tag-only. The
+/// tag-only refspec fetch guarantees `refs/tags/<pin>`, so a completed
+/// rev-parse that exits non-zero (`--quiet`) means the ref is missing;
+/// every other error is operational and propagates
 /// (docs/implementation/07 §Git adapter).
 fn verify_tag(dir: &Path, pin: &str, extra_config: &[&str]) -> Result<(), IngestError> {
-    let tag_ref = format!("refs/tags/{pin}^{{commit}}");
-    if run_git(
+    let tag_ref = tag_commit_ref(pin);
+    match run_git(
         dir,
         &["rev-parse", "--verify", "--quiet", &tag_ref],
         extra_config,
-    )
-    .is_err()
-    {
-        return Err(IngestError::GitPinNotTag {
+    ) {
+        Ok(_) => Ok(()),
+        // `--quiet` means the rev-parse itself failed on a missing ref;
+        // any other error is operational and keeps its own mapping.
+        Err(IngestError::GitCommand { .. }) => Err(IngestError::GitPinNotTag {
             pin: pin.to_owned(),
-        });
+        }),
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 /// Clones a commit pin and returns whether the full-clone fallback ran:
@@ -327,9 +353,8 @@ mod tests {
     }
 
     /// A non-SHA pin that names a branch without a tag of that spelling
-    /// fails as `GitPinNotTag`: `git clone --branch` also accepts branch
-    /// names, and a branch pin would publish a mutable, non-reproducible
-    /// ref — a pin must be an exact tag or a commit SHA
+    /// fails as `GitPinNotTag`: a branch pin would publish a mutable,
+    /// non-reproducible ref — a pin must be an exact tag or a commit SHA
     /// (docs/implementation/07 §Git adapter). The fixture's `docs-v2`
     /// exists as a branch without a tag; the tag pin above still passes.
     #[test]
@@ -347,6 +372,27 @@ mod tests {
             IngestError::GitPinNotTag { pin } => assert_eq!(pin, "docs-v2"),
             other => panic!("expected GitPinNotTag, got {other:?}"),
         }
+    }
+
+    /// A branch and a tag of the same spelling: the tag pin checks out
+    /// the tag's commit, not the branch's. `clone --branch` resolves a
+    /// branch before a tag, so the fetch goes through a tag-only refspec
+    /// where the branch cannot win (docs/implementation/07 §Git adapter).
+    #[test]
+    fn a_tag_pin_wins_when_a_branch_shares_the_tag_name() {
+        let _order = TEMP_CLONE_ORDER.lock().unwrap();
+        let repo_dir = tempdir().unwrap();
+        let repo = devdocs_testkit::git_repo::docs_repo(repo_dir.path()).unwrap();
+        // A branch of the tag's spelling, pointing at the docs-v2 tip.
+        fixture_git(&repo.work_dir, &["branch", "v1.0.0", &repo.branch_sha]);
+        let data = tempdir().unwrap();
+        let url = devdocs_testkit::git_repo::file_url(&repo.work_dir).unwrap();
+
+        let git_plan = plan(&url, "v1.0.0", data.path()).unwrap();
+        assert_eq!(git_plan.kind(), PinKind::Tag);
+        let fetched = git_plan.fetch(&url, &default_extensions()).unwrap();
+        assert_eq!(fetched.commit_sha, repo.tag_sha);
+        assert_ne!(fetched.commit_sha, repo.branch_sha);
     }
 
     /// A commit pin resolves directly on a local repository under the
@@ -447,8 +493,9 @@ mod tests {
     }
 
     /// A tag carrying shell metacharacters is passed as one argv element:
-    /// the clone simply fails to resolve it, and nothing executes
-    /// (docs/implementation/09 §Git subprocess safety).
+    /// the fetch simply fails to resolve it — git rejects the pin in the
+    /// refspec parse as an invalid refspec (`GitCommand`) — and nothing
+    /// executes (docs/implementation/09 §Git subprocess safety).
     #[test]
     fn shell_metacharacters_in_a_tag_stay_one_argv_element() {
         let _order = TEMP_CLONE_ORDER.lock().unwrap();

@@ -207,15 +207,25 @@ impl<'a> IngestJob<'a> {
         data_root: &std::path::Path,
     ) -> Result<IngestOutcome, IngestError> {
         let grant = self.gate(repo_url, library)?;
+        // A commit pin publishes the pin lowercased as its version label —
+        // the same case-insensitive, normalized-lowercase rule the plan
+        // applies to the fetch — so the same commit added with different
+        // casing publishes one version (docs/implementation/07 §Git
+        // adapter). Tag pins keep their exact casing.
+        let label = if crate::git::is_commit_sha(&pin.0) {
+            pin.0.to_ascii_lowercase()
+        } else {
+            version.to_owned()
+        };
         let prepared = tokio::time::timeout(
             TOTAL_INGEST_CAP,
-            self.prepare_git(repo_url, library, version, &pin.0, data_root, &grant),
+            self.prepare_git(repo_url, library, &label, &pin.0, data_root, &grant),
         )
         .await
         .map_err(|_| IngestError::TotalTimeout {
             seconds: TOTAL_INGEST_CAP.as_secs(),
         })??;
-        self.publish(store, repo_url, library, version, &grant, prepared)
+        self.publish(store, repo_url, library, &label, &grant, prepared)
             .await
     }
 

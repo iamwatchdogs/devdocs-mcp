@@ -226,6 +226,43 @@ async fn git_run_counts_the_sha_fetch_fallback_in_the_events() {
     );
 }
 
+/// A commit pin publishes the pin lowercased as its version label — the
+/// same normalized-lowercase rule the plan applies to the fetch — so the
+/// same commit added with different casing cannot publish two versions
+/// (docs/implementation/07 §Git adapter).
+#[tokio::test]
+async fn git_run_publishes_a_lowercase_label_for_a_commit_pin() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    let mirror_dir = tempdir().unwrap();
+    let mirror = bare_mirror(&repo.work_dir, mirror_dir.path()).unwrap();
+    let url = repo_url(&mirror);
+    let data = tempdir().unwrap();
+    let config = config(&url);
+
+    let store = store();
+    let guard = guard(&config);
+    let upper_pin = repo.tag_sha.to_ascii_uppercase();
+    IngestJob::new(&config, &guard, None)
+        .run_git(
+            Arc::clone(&store),
+            &url,
+            "acme",
+            &upper_pin,
+            GitPin::from(upper_pin.as_str()),
+            data.path(),
+        )
+        .await
+        .unwrap();
+
+    let sources = store.list_sources().unwrap();
+    assert_eq!(sources.len(), 1, "one version row");
+    assert_eq!(
+        sources[0].version, repo.tag_sha,
+        "the version label is the lowercased pin"
+    );
+}
+
 /// A repository with no allowlisted file at all fails with the
 /// zero-corpus refusal and publishes nothing — no source row, no chunks,
 /// no empty generation (docs/implementation/07 §Atomic publish).

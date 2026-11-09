@@ -253,6 +253,37 @@ mod tests {
         }
     }
 
+    /// Wraps the spawned helper child so a panic between spawn and the
+    /// explicit SIGTERM delivery cannot leak a running helper: while
+    /// `armed`, `Drop` kills and reaps it (`Child::drop` does not kill).
+    #[cfg(unix)]
+    struct ChildGuard {
+        child: std::process::Child,
+        armed: bool,
+    }
+
+    #[cfg(unix)]
+    impl ChildGuard {
+        fn get(&mut self) -> &mut std::process::Child {
+            &mut self.child
+        }
+
+        /// Marks the child as reaped so `Drop` leaves it alone.
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+
     /// A path that already exists as a file refuses the private-dir
     /// create: the error names the path (`GitTempDir` mapping).
     #[cfg(unix)]
@@ -437,7 +468,9 @@ mod tests {
         fn wait_for(path: &Path, budget: Duration) -> Option<String> {
             let deadline = Instant::now() + budget;
             while Instant::now() < deadline {
-                if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(text) = std::fs::read_to_string(path)
+                    && !text.is_empty()
+                {
                     return Some(text);
                 }
                 std::thread::sleep(Duration::from_millis(25));
@@ -451,7 +484,11 @@ mod tests {
             let report = PathBuf::from(std::env::var_os(REPORT_ENV).expect("report path env"));
             let data = report.parent().expect("report parent").join("data");
             let guard = TempClone::create(&data).expect("helper clone");
-            std::fs::write(&report, guard.path().display().to_string()).expect("report write");
+            // Publish atomically: the parent must never read a truncated
+            // report. POSIX `rename` swaps the full file in one step.
+            let staging = report.with_extension("staging");
+            std::fs::write(&staging, guard.path().display().to_string()).expect("report write");
+            std::fs::rename(&staging, &report).expect("report publish");
             loop {
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -469,31 +506,35 @@ mod tests {
             .unwrap_or(module_path!())
             .to_owned()
             + "::sigterm_cleanup_removes_the_clone_dir";
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &test_name, "--nocapture"])
-            .env(CHILD_ENV, "1")
-            .env(REPORT_ENV, &report)
-            .spawn()
-            .unwrap();
+        // The guard kills the helper on any early exit (panic, timeout):
+        // `Child::drop` does not kill.
+        let mut child = ChildGuard {
+            child: std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .env(REPORT_ENV, &report)
+                .spawn()
+                .unwrap(),
+            armed: true,
+        };
 
         let Some(clone_path) = wait_for(&report, Duration::from_secs(30)) else {
-            let _ = child.kill();
-            let _ = child.wait();
             panic!("the helper never reported its clone path");
         };
         let clone_path = PathBuf::from(clone_path);
         assert!(clone_path.exists(), "helper clone dir must exist");
 
         std::process::Command::new("kill")
-            .args(["-s", "TERM", &child.id().to_string()])
+            .args(["-s", "TERM", &child.get().id().to_string()])
             .status()
             .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(30);
-        while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        while child.get().try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
         }
-        let status = child.try_wait().unwrap().expect("helper must exit");
+        let status = child.get().try_wait().unwrap().expect("helper must exit");
+        child.disarm();
         assert!(
             !clone_path.exists(),
             "SIGTERM must remove the helper clone dir"

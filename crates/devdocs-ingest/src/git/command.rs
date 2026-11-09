@@ -60,12 +60,12 @@ const READER_GRACE: Duration = Duration::from_secs(2);
 /// Set by the CLI before it exits on the total-cap path: the pipeline's
 /// `timeout` drops the waiting future but the `spawn_blocking` closure
 /// keeps running with its own per-invocation deadline, which can outlive
-/// the total cap — the flag makes [`wait_until`] stop the in-flight git
+/// the total cap — the flag makes `wait_until` stop the in-flight git
 /// child so the clone-dir cleanup can proceed and the runtime shutdown
 /// grace stays short.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// Requests that every running [`run_child`] wait loop kill and reap its
+/// Requests that every running `run_child` wait loop kill and reap its
 /// child at the next poll. The CLI sets this before exiting on the
 /// total-cap path so the in-flight git child is killed and the clone dir
 /// cleanup can proceed (docs/implementation/09 §Git subprocess safety).

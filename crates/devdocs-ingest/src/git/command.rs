@@ -11,8 +11,9 @@ use crate::error::IngestError;
 
 /// The `GIT_*` environment variables every invocation strips, so an
 /// ambient value cannot redirect the child to another repository or
-/// object store, inject config, or hijack prompting and SSH
-/// (docs/implementation/09 §Git subprocess safety). Removing
+/// object store, inject config, hijack prompting or SSH, or disable the
+/// HTTPS certificate check (docs/implementation/09 §Git subprocess
+/// safety). Removing
 /// `GIT_CONFIG_COUNT` disables the whole ambient
 /// `GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` config family, and removing
 /// `GIT_CONFIG_PARAMETERS` disables the legacy parameter-string channel
@@ -30,6 +31,7 @@ const STRIPPED_ENV: &[&str] = &[
     "GIT_ASKPASS",
     "GIT_SSH_COMMAND",
     "GIT_SSH_VARIANT",
+    "GIT_SSL_NO_VERIFY",
     "GIT_STDERR",
 ];
 
@@ -271,6 +273,7 @@ mod tests {
             "GIT_CONFIG_PARAMETERS",
             "GIT_ASKPASS",
             "GIT_SSH_VARIANT",
+            "GIT_SSL_NO_VERIFY",
             "GIT_STDERR",
         ] {
             assert_eq!(

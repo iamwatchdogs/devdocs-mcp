@@ -178,6 +178,35 @@ fn config_init_refuses_overwrite_without_force() {
     assert_eq!(code, 0, "stderr: {stderr}");
 }
 
+/// `config init` maps a parent-create failure to `CONFIG_INVALID` carrying
+/// the full config file path: the refusal is about the config file, even
+/// when the io failure concerned its parent directory.
+#[test]
+fn config_init_names_the_config_path_when_the_parent_cannot_be_created() {
+    let env = Env::new();
+    // A file occupies the `devdocs` directory slot, so create_dir_all
+    // fails before any file open happens.
+    std::fs::create_dir_all(env.root.join("config")).expect("config home");
+    std::fs::write(env.root.join("config").join("devdocs"), "a file").expect("blocker written");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["config", "init"]);
+    assert_eq!(code, 1);
+    assert_eq!(stdout, "");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "CONFIG_INVALID");
+    assert!(
+        error["key_path"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("config.toml"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !error["detail"].as_str().unwrap_or_default().is_empty(),
+        "stderr: {stderr}"
+    );
+}
+
 /// `config validate <path>` reports the failing key path and exits 1.
 #[test]
 fn config_validate_reports_the_failing_key_path() {

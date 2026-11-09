@@ -300,11 +300,12 @@ fn add_git_with_an_option_shaped_pin_fails_usage() {
     assert!(stderr.contains("GIT_INVALID_PIN"), "stderr: {stderr}");
 }
 
-/// A tag the fixture repository does not carry fails the clone as
-/// `UPSTREAM_ERROR` with the `GIT_COMMAND_FAILED` detail
-/// (docs/implementation/08 §Error codes).
+/// A tag the fixture repository does not carry fails as `USAGE` (exit 1)
+/// with the `GIT_PIN_NOT_TAG` detail — the tag-only refspec fetch reports
+/// the missing remote ref as the pin-not-tag usage error
+/// (docs/implementation/07 §Git adapter).
 #[test]
-fn add_git_with_a_missing_tag_fails_upstream() {
+fn add_git_with_a_missing_tag_fails_usage() {
     let env = Env::new();
     let repo_dir = env.root.join("repo");
     std::fs::create_dir_all(&repo_dir).expect("repo dir");
@@ -329,8 +330,9 @@ fn add_git_with_a_missing_tag_fails_upstream() {
             db.to_str().expect("db path"),
         ],
     );
-    assert_eq!(code, 3, "stderr: {stderr}");
-    assert!(stderr.contains("GIT_COMMAND_FAILED"), "stderr: {stderr}");
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stderr.contains("USAGE"), "stderr: {stderr}");
+    assert!(stderr.contains("GIT_PIN_NOT_TAG"), "stderr: {stderr}");
 }
 
 /// A `git` entry on PATH that exists but cannot execute fails as

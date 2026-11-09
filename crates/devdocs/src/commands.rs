@@ -396,9 +396,18 @@ fn run_add_git(
         GitPin::from(pin),
         &data_root,
     ));
-    // A run that hit the total cap can leave its in-flight segmentation
-    // blocking task running; do not wait for it when the runtime drops.
-    runtime.shutdown_background();
+    // A total-cap expiry drops the waiting future but the clone's
+    // spawn_blocking closure keeps running: ask the git runner to kill the
+    // in-flight child, then give the runtime a short grace so the clone
+    // dir cleanup can finish instead of waiting on the dropped task.
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| matches!(error, devdocs_ingest::IngestError::TotalTimeout { .. }))
+    {
+        devdocs_ingest::git::request_shutdown();
+    }
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
     let outcome = result.map_err(map_ingest_error)?;
     add_report(&outcome)
 }

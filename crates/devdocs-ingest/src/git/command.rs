@@ -5,6 +5,7 @@
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::IngestError;
@@ -55,6 +56,22 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 /// expires instead (a leaked reader thread is bounded by the process
 /// lifetime).
 const READER_GRACE: Duration = Duration::from_secs(2);
+
+/// Set by the CLI before it exits on the total-cap path: the pipeline's
+/// `timeout` drops the waiting future but the `spawn_blocking` closure
+/// keeps running with its own per-invocation deadline, which can outlive
+/// the total cap — the flag makes [`wait_until`] stop the in-flight git
+/// child so the clone-dir cleanup can proceed and the runtime shutdown
+/// grace stays short.
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Requests that every running [`run_child`] wait loop kill and reap its
+/// child at the next poll. The CLI sets this before exiting on the
+/// total-cap path so the in-flight git child is killed and the clone dir
+/// cleanup can proceed (docs/implementation/09 §Git subprocess safety).
+pub fn request_shutdown() {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+}
 
 /// Builds the command one `git` invocation runs: `git`, the per-command
 /// `-c` config (base plus extras), then `args`, from `cwd`. The child env
@@ -184,7 +201,10 @@ fn run_child(
 }
 
 /// Waits until the child exits or the deadline passes: `Ok(Some(status))`
-/// on exit, `Ok(None)` at expiry — the caller kills and reaps.
+/// on exit, `Ok(None)` at expiry or after [`request_shutdown`] — either
+/// way the caller kills and reaps. A shutdown expiry surfaces as the
+/// deadline-expiry `GitTimeout` outcome: the flag is only set on the
+/// total-cap path, so the run already ended in a timeout.
 fn wait_until(
     child: &mut Child,
     deadline: Instant,
@@ -193,7 +213,7 @@ fn wait_until(
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || SHUTDOWN.load(Ordering::SeqCst) {
             return Ok(None);
         }
         std::thread::sleep(WAIT_POLL);
@@ -341,6 +361,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_child_collects_a_child_that_finishes_before_the_deadline() {
+        // A process-global shutdown set by a concurrent test would kill
+        // this short-lived child; hold the shared test lock instead.
+        let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
         let mut child = Command::new("echo")
             .arg("done")
             .stdout(std::process::Stdio::piped())
@@ -424,5 +447,46 @@ mod tests {
         // Bounded: the deadline plus the reader grace, far below the
         // 30-second sleep fixtures an unbounded join would wait on.
         assert!(elapsed < Duration::from_secs(10));
+    }
+
+    /// A shutdown request stops the wait loop while the child still runs:
+    /// `run_child` kills and reaps it promptly instead of letting it run
+    /// to completion (unix-gated: the hanging fixture is `sleep`).
+    #[cfg(unix)]
+    #[test]
+    fn run_child_kills_a_child_after_a_shutdown_request() {
+        // The flag is process-global: take the shared test lock so no
+        // concurrent run_child test polls while it is set.
+        let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
+        // Clear any flag left by a prior run; restore it when done so
+        // this test cannot poison the process-global.
+        super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        super::request_shutdown();
+        let mut command = Command::new("sleep");
+        command
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+
+        let start = Instant::now();
+        let error = super::run_child(
+            &mut child,
+            "git clone slow".to_owned(),
+            Instant::now() + Duration::from_secs(20),
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+
+        // The child must be reaped long before its 30 s runtime or the
+        // 20 s deadline: the shutdown fires within one poll interval.
+        assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
+        assert!(child.try_wait().unwrap().is_some());
+        match error {
+            IngestError::GitTimeout { .. } => {}
+            other => panic!("expected GitTimeout, got {other:?}"),
+        }
+        super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

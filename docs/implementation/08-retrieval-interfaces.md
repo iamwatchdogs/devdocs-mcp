@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-08T13:41:42Z
+timestamp: 2026-11-09T16:11:38Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -139,7 +139,7 @@ Commands:
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
 
-`add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
+`add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; a non-SHA pin that names no tag fails as a `USAGE` error (exit 1, `GIT_PIN_NOT_TAG`) from the tag fetch; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
 
 Contract properties (research: architecture.md §L4, GEM §5 checklist):
 
@@ -203,6 +203,7 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 |---|---|---|
 | `USAGE` | 1 | Bad flags or config |
 | `CONFIG_INVALID` | 1 | Config file failed validation |
+| `GIT_PIN_NOT_TAG` | 1 | Non-SHA pin names no tag |
 | `NO_RESULT` | 2 | Valid query, nothing served |
 | `PKG_NOT_INDEXED` | 2 | Library or version absent from an explicitly named request. Hint names the add command. A lockfile- or mention-named absent library falls through to the fallback search instead |
 | `FETCH_BLOCKED` | 3 | Fetch guard or license gate refused |

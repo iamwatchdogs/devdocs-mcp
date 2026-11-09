@@ -303,7 +303,8 @@ fn add_git_with_an_option_shaped_pin_fails_usage() {
 /// A tag the fixture repository does not carry fails as `USAGE` (exit 1)
 /// with the `GIT_PIN_NOT_TAG` detail — the tag-only refspec fetch reports
 /// the missing remote ref as the pin-not-tag usage error
-/// (docs/implementation/07 §Git adapter).
+/// (docs/implementation/07 §Git adapter; exit code and detail per
+/// docs/implementation/08 §Error codes).
 #[test]
 fn add_git_with_a_missing_tag_fails_usage() {
     let env = Env::new();

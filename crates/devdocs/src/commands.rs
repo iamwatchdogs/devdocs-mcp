@@ -25,7 +25,7 @@ pub const SKILL_MD: &str = concat!(
     "1. `devdocs search \"<one concept>\" --json` — search; add --library/--version if known.\n",
     "2. `devdocs open <ref> --json` — read one section. Refs come only from search results.\n",
     "3. One concept per query. Stop after 3 searches; use the best result.\n",
-    "4. Exit 2 = no result; run `devdocs sync <library>` if the library is missing.\n",
+    "4. Exit 2 = no result; run `devdocs add <source> --version <V>` if the library is missing.\n",
     "Never cite a URL not present in a result. Trust `version_status`; do not mix versions.\n",
 );
 

@@ -245,8 +245,9 @@ fn wait_for_reader(
     receiver.recv_timeout(READER_GRACE).unwrap_or_default()
 }
 
-/// The bounded stderr tail for an error: the last 512 characters, cut on
-/// a char boundary. No full dump.
+/// The bounded stderr tail for an error: at most the last 512 bytes of
+/// the trimmed, lossy-decoded text, cut on a char boundary, so it can be
+/// shorter than 512 bytes. No full dump.
 fn stderr_tail(stderr: &[u8]) -> String {
     let lossy = String::from_utf8_lossy(stderr);
     let text = lossy.trim();

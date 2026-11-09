@@ -31,22 +31,17 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("docs.db")).unwrap();
 
-    let applied = migrate(&mut conn).unwrap();
+    let applied: Vec<_> = migrate(&mut conn)
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.version, m.name))
+        .collect();
     assert_eq!(
         applied,
         vec![
-            devdocs_store::AppliedMigration {
-                version: 1,
-                name: "0001_init".to_owned(),
-            },
-            devdocs_store::AppliedMigration {
-                version: 2,
-                name: "0002_symbols_symbol_nocase".to_owned(),
-            },
-            devdocs_store::AppliedMigration {
-                version: 3,
-                name: "0003_license_gate".to_owned(),
-            },
+            (1, "0001_init".to_owned()),
+            (2, "0002_symbols_symbol_nocase".to_owned()),
+            (3, "0003_license_gate".to_owned()),
         ]
     );
 

@@ -382,7 +382,7 @@ fn run_add_git(
 
     let store = open_store(config, false)?;
     // The clone directory lands under the configured data root — not the
-    // db's parent, which a custom `--db` path may point anywhere; the git
+    // db's parent, which a custom `--db` path can point anywhere; the git
     // temp dir stays inside DEVDOCS_HOME.
     let data_root = devdocs_model::config::data_root()?;
     let job = IngestJob::new(config, &guard, None);

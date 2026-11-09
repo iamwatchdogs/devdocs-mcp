@@ -843,7 +843,6 @@ pub fn versions(
 
 #[cfg(test)]
 mod tests {
-<<<<<<< HEAD
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::served_item;
@@ -884,6 +883,7 @@ mod tests {
             1.0,
         );
         assert_eq!(item.source_url, "https://example.test/next");
+    }
 
     use super::normalize_sha;
 

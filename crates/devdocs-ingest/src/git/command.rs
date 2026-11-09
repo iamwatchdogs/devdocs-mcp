@@ -163,7 +163,7 @@ fn run_child(
     // Read the pipes on threads while the wait loop polls: a child whose
     // output fills the pipe buffer must not block on a write while it is
     // never read. The joins are bounded (see [`wait_for_reader`]): a
-    // stalled transport helper may hold the pipe write end open even
+    // stalled transport helper can hold the pipe write end open even
     // after the direct child is dead, so an unbounded join would hang
     // past the deadline.
     let (stdout_reader, stdout_receiver) = read_pipe(child.stdout.take());
@@ -226,7 +226,7 @@ fn wait_until(
 
 /// Kills the direct child and reaps it so no git process outlives the
 /// deadline. git's transport helpers observe the closed pipe and exit on
-/// their next write, but a stalled helper may never write again and hold
+/// their next write, but a stalled helper never writes again and holds
 /// the pipes open — the reader joins are bounded, so the deadline path
 /// always returns `GIT_TIMEOUT` (docs/implementation/09 §Git subprocess
 /// safety).
@@ -316,7 +316,7 @@ mod tests {
     /// The builder `run_git` executes hardens the child env: every
     /// ambient `GIT_*` control and location variable is removed, the
     /// prompt, system, and user-global config pins are set, and the ssh
-    /// transport is pinned noninteractive — what an operator shell may
+    /// transport is pinned noninteractive — what an operator shell can
     /// carry into the process never reaches the git child
     /// (docs/implementation/09 §Git subprocess safety).
     #[test]
@@ -496,6 +496,17 @@ mod tests {
         }
     }
 
+    /// Clears the process-global shutdown flag on drop: a panic inside a
+    /// shutdown test must not leave the flag set and poison concurrent
+    /// `run_child` tests.
+    struct ShutdownGuard;
+
+    impl Drop for ShutdownGuard {
+        fn drop(&mut self) {
+            super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     /// A shutdown request stops the wait loop while the child still runs:
     /// `run_child` kills and reaps it promptly instead of letting it run
     /// to completion (unix-gated: the hanging fixture is `sleep`).
@@ -505,8 +516,9 @@ mod tests {
         // The flag is process-global: take the shared test lock so no
         // concurrent run_child test polls while it is set.
         let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
-        // Clear any flag left by a prior run; restore it when done so
-        // this test cannot poison the process-global.
+        // Clear any flag left by a prior run; the guard restores a clear
+        // flag on every exit path, panics included.
+        let _guard = ShutdownGuard;
         super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
         super::request_shutdown();
         let mut command = Command::new("sleep");
@@ -534,6 +546,5 @@ mod tests {
             IngestError::GitTimeout { .. } => {}
             other => panic!("expected GitTimeout, got {other:?}"),
         }
-        super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

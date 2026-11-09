@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-09T00:00:00Z
+timestamp: 2026-11-10T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -76,7 +76,7 @@ Clone and checkout shell out to the system `git` binary. This matches cargo, uv,
 
 - Never pass arguments through a shell. Build an argv vector. No string interpolation into a command line.
 - Set `GIT_TERMINAL_PROMPT=0` so private repos fail fast instead of hanging.
-- Set `GIT_CONFIG_NOSYSTEM=1`. Do not read the user's global git config for clones, except credential helpers, which the default config provides.
+- Set `GIT_CONFIG_NOSYSTEM=1`. Do not read the user's global git config for clones; this also suppresses credential helpers.
 - Tag pin: fetch the tag ref only — `git init <dir>`, `git fetch --depth 1 --filter=blob:none <url> +refs/tags/<tag>:refs/tags/<tag>`, `git checkout --detach refs/tags/<tag>^{commit}`. The tag-only refspec keeps a branch of the same spelling from winning the name collision. A non-SHA pin must name an exact tag; branch names are rejected — a mutable ref is not a reproducible pin.
 - Commit pin: shallow clone the default branch, then `git fetch --depth 1 origin <sha>` and `git checkout --detach <sha>`. If the server rejects a reachable-SHA fetch, fall back to a full clone. Record the fallback in the ingest event log.
 - Extract docs content with the `ignore` crate walk (respects `.gitignore`) filtered by an extension allowlist: `md, mdx, rst, adoc, txt, json, yaml, yml`. The config can extend the list.

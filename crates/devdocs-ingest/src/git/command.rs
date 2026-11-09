@@ -461,6 +461,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_child_keeps_the_full_stderr_beside_the_bounded_tail() {
+        // The shutdown flag is process-global; a concurrent shutdown test
+        // would turn this failing child into a `GitTimeout`.
+        let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
         let mut child = Command::new("sh")
             .arg("-c")
             .arg("echo refusal-line >&2; head -c 600 /dev/zero | tr '\\0' x >&2; exit 1")

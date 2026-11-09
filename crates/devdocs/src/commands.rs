@@ -381,12 +381,10 @@ fn run_add_git(
         })?;
 
     let store = open_store(config, false)?;
-    // The clone directory lands under the store's data root, the directory
-    // `open_store` already created with mode 0700.
-    let data_root = config.index.path.parent().map_or_else(
-        || std::path::PathBuf::from("."),
-        std::path::Path::to_path_buf,
-    );
+    // The clone directory lands under the configured data root — not the
+    // db's parent, which a custom `--db` path may point anywhere; the git
+    // temp dir stays inside DEVDOCS_HOME.
+    let data_root = devdocs_model::config::data_root()?;
     let job = IngestJob::new(config, &guard, None);
     let result = runtime.block_on(job.run_git(
         Arc::clone(&store),

@@ -402,8 +402,14 @@ fn add_git_refuses_an_unprivate_tmp_dir() {
     let db = env.root.join("docs.db");
 
     // The adapter verifies the tmp root is 0700 before it clones into it.
-    let tmp = env.root.join("tmp");
+    // DEVDOCS_HOME is `env.root/data`, so the checked tmp root resolves
+    // from the data root, not the `--db` path's parent.
+    let tmp = env.root.join("data").join("tmp");
     std::fs::create_dir_all(&tmp).expect("tmp dir");
+    // A stray clone-named dir next to the db sits outside the data-root
+    // tmp: the stale sweep must never touch it.
+    let stray = env.root.join("devdocs-git-stray");
+    std::fs::create_dir_all(&stray).expect("stray dir");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -427,6 +433,7 @@ fn add_git_refuses_an_unprivate_tmp_dir() {
             db.to_str().expect("db path"),
         ],
     );
+    assert!(stray.is_dir(), "the stray dir next to the db must survive");
     #[cfg(unix)]
     {
         assert_eq!(code, 3, "stderr: {stderr}");

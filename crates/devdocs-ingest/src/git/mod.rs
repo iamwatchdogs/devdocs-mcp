@@ -19,7 +19,9 @@ mod command;
 mod temp;
 mod walk;
 
+pub(crate) use clone::is_commit_sha;
 pub use clone::{GitFetch, GitPlan, PinKind, plan};
+pub use command::request_shutdown;
 pub use temp::{TempClone, install_signal_cleanup};
 
 /// Test-only helpers shared by the submodule test modules: the default

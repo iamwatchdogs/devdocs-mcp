@@ -58,14 +58,7 @@ pub(crate) fn walk_docs(
             continue;
         }
         let path = entry.path();
-        let allowed = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                let ext = ext.to_ascii_lowercase();
-                allowlist.contains(&ext)
-            });
-        if !allowed {
+        if !allowed_extension(path, &allowlist) {
             continue;
         }
         let relative = path.strip_prefix(dir).unwrap_or(path);
@@ -91,6 +84,17 @@ pub(crate) fn walk_docs(
         });
     }
     Ok((docs, skipped_non_utf8))
+}
+
+/// Returns true when the path's extension, compared case-insensitively,
+/// is in the allowlist.
+fn allowed_extension(path: &Path, allowlist: &[String]) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            allowlist.contains(&ext)
+        })
 }
 
 #[cfg(test)]

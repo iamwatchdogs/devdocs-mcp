@@ -438,12 +438,11 @@ fn run_add_git(
             detail: format!("cannot start the async runtime: {e}"),
         })?;
 
-    // The clone directory lands under the store's data root, the directory
-    // `open_store` already created with mode 0700.
-    let data_root = config.index.path.parent().map_or_else(
-        || std::path::PathBuf::from("."),
-        std::path::Path::to_path_buf,
-    );
+    // The clone directory lands under the configured data root — not the
+    // db's parent, which a custom `--db` path can point anywhere; the git
+    // temp dir stays inside DEVDOCS_HOME, a private directory the adapter
+    // creates with mode 0700 when missing.
+    let data_root = devdocs_model::config::data_root()?;
     let job = IngestJob::new(config, &guard, None);
     let result = runtime.block_on(job.run_git(
         Arc::clone(store),
@@ -453,9 +452,18 @@ fn run_add_git(
         GitPin::from(pin),
         &data_root,
     ));
-    // A run that hit the total cap can leave its in-flight segmentation
-    // blocking task running; do not wait for it when the runtime drops.
-    runtime.shutdown_background();
+    // A total-cap expiry drops the waiting future but the clone's
+    // spawn_blocking closure keeps running: ask the git runner to kill the
+    // in-flight child, then give the runtime a short grace so the clone
+    // dir cleanup can finish instead of waiting on the dropped task.
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| matches!(error, devdocs_ingest::IngestError::TotalTimeout { .. }))
+    {
+        devdocs_ingest::git::request_shutdown();
+    }
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
     let outcome = result.map_err(map_ingest_error)?;
     add_report(&outcome)
 }
@@ -814,7 +822,9 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
                 "GIT_URL_MISMATCH: fetch URL `{actual}` does not match the planned URL `{planned}`"
             ),
         },
-        E::GitCommand { command, stderr } => Error::Upstream {
+        E::GitCommand {
+            command, stderr, ..
+        } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_COMMAND_FAILED: `{command}` failed: {stderr}"),
         },
@@ -952,6 +962,7 @@ mod tests {
                 IngestError::GitCommand {
                     command: "git clone".to_owned(),
                     stderr: "boom".to_owned(),
+                    full_stderr: "boom".to_owned(),
                 },
                 "GIT_COMMAND_FAILED",
             ),

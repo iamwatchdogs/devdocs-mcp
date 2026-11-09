@@ -105,15 +105,19 @@ pub enum IngestError {
         /// The URL the caller passed to fetch.
         actual: String,
     },
-    /// A git invocation exited non-zero; the error carries a bounded
+    /// A git invocation exited non-zero; the display shows a bounded
     /// stderr tail, never a full dump (docs/implementation/07 §Git
-    /// adapter).
+    /// adapter), and the complete stderr rides on the error for the git
+    /// adapter's refusal classification.
     #[error("GIT_COMMAND_FAILED: `{command}` failed: {stderr}")]
     GitCommand {
         /// The argv of the failed invocation (without the config args).
         command: String,
-        /// The bounded stderr tail.
+        /// The bounded stderr tail shown in the display.
         stderr: String,
+        /// The complete stderr of the failed invocation, kept for error
+        /// classification; the display stays the bounded tail.
+        full_stderr: String,
     },
     /// Spawning git failed for a reason other than a missing binary.
     #[error("GIT_SPAWN_FAILED: {message}")]

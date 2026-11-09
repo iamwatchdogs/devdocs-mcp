@@ -5,14 +5,16 @@
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::IngestError;
 
 /// The `GIT_*` environment variables every invocation strips, so an
 /// ambient value cannot redirect the child to another repository or
-/// object store, inject config, or hijack prompting and SSH
-/// (docs/implementation/09 §Git subprocess safety). Removing
+/// object store, inject config, hijack prompting or SSH, or disable the
+/// HTTPS certificate check (docs/implementation/09 §Git subprocess
+/// safety). Removing
 /// `GIT_CONFIG_COUNT` disables the whole ambient
 /// `GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` config family, and removing
 /// `GIT_CONFIG_PARAMETERS` disables the legacy parameter-string channel
@@ -30,6 +32,7 @@ const STRIPPED_ENV: &[&str] = &[
     "GIT_ASKPASS",
     "GIT_SSH_COMMAND",
     "GIT_SSH_VARIANT",
+    "GIT_SSL_NO_VERIFY",
     "GIT_STDERR",
 ];
 
@@ -47,11 +50,34 @@ const BASE_CONFIG: &[&str] = &[
 /// The [`run_git`] wait-loop poll interval.
 const WAIT_POLL: Duration = Duration::from_millis(100);
 
+/// The grace a pipe reader gets after the deadline: the direct git child
+/// is dead by then, so a normal exit delivers its buffer within this
+/// window, while a stalled transport helper never closes the pipe and
+/// expires instead (a leaked reader thread is bounded by the process
+/// lifetime).
+const READER_GRACE: Duration = Duration::from_secs(2);
+
+/// Set by the CLI before it exits on the total-cap path: the pipeline's
+/// `timeout` drops the waiting future but the `spawn_blocking` closure
+/// keeps running with its own per-invocation deadline, which can outlive
+/// the total cap — the flag makes `wait_until` stop the in-flight git
+/// child so the clone-dir cleanup can proceed and the runtime shutdown
+/// grace stays short.
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Requests that every running `run_child` wait loop kill and reap its
+/// child at the next poll. The CLI sets this before exiting on the
+/// total-cap path so the in-flight git child is killed and the clone dir
+/// cleanup can proceed (docs/implementation/09 §Git subprocess safety).
+pub fn request_shutdown() {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+}
+
 /// Builds the command one `git` invocation runs: `git`, the per-command
 /// `-c` config (base plus extras), then `args`, from `cwd`. The child env
-/// is hardened here: the prompt and system config pins, then the removal
-/// of every [`STRIPPED_ENV`] variable so an ambient value cannot reach
-/// the git child (docs/implementation/09 §Git subprocess safety).
+/// is hardened here: the prompt, system config, and locale pins, then the
+/// removal of every [`STRIPPED_ENV`] variable so an ambient value cannot
+/// reach the git child (docs/implementation/09 §Git subprocess safety).
 /// Extracted so tests assert on the exact command `run_git` executes,
 /// not on a seam beside it.
 fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Command {
@@ -66,6 +92,12 @@ fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Comman
     command.args(args).current_dir(cwd);
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GIT_CONFIG_NOSYSTEM", "1");
+    // Pin the locale: error classification reads git's stderr text (the
+    // missing-tag and SHA-refusal paths), and a translated diagnostic
+    // would break the match. `LANGUAGE` overrides `LC_ALL` for gettext,
+    // so it must go too.
+    command.env("LC_ALL", "C");
+    command.env_remove("LANGUAGE");
     // Isolate the user's global git config too: a hostile repo's
     // `.gitattributes` could otherwise trigger an operator-defined global
     // smudge filter via `core.attributesFile` during checkout. Git's
@@ -130,25 +162,32 @@ fn run_child(
 ) -> Result<String, IngestError> {
     // Read the pipes on threads while the wait loop polls: a child whose
     // output fills the pipe buffer must not block on a write while it is
-    // never read.
-    let stdout_reader = read_pipe(child.stdout.take());
-    let stderr_reader = read_pipe(child.stderr.take());
+    // never read. The joins are bounded (see [`wait_for_reader`]): a
+    // stalled transport helper can hold the pipe write end open even
+    // after the direct child is dead, so an unbounded join would hang
+    // past the deadline.
+    let (stdout_reader, stdout_receiver) = read_pipe(child.stdout.take());
+    let (stderr_reader, stderr_receiver) = read_pipe(child.stderr.take());
     match wait_until(child, deadline) {
         Ok(Some(status)) => {
-            let stdout = join_reader(stdout_reader);
-            let stderr = join_reader(stderr_reader);
+            let stdout = wait_for_reader(stdout_reader, &stdout_receiver);
+            let stderr = wait_for_reader(stderr_reader, &stderr_receiver);
             if !status.success() {
                 return Err(IngestError::GitCommand {
                     command: command_text,
                     stderr: stderr_tail(&stderr),
+                    // The untruncated text, kept for the adapter's refusal
+                    // classification: a refusal line early in the stream
+                    // can fall out of the 512-byte display tail.
+                    full_stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 });
             }
             Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
         }
         Ok(None) => {
             kill_and_reap(child);
-            join_reader(stdout_reader);
-            join_reader(stderr_reader);
+            wait_for_reader(stdout_reader, &stdout_receiver);
+            wait_for_reader(stderr_reader, &stderr_receiver);
             Err(IngestError::GitTimeout {
                 command: command_text,
                 seconds: crate::pipeline::TOTAL_INGEST_CAP.as_secs(),
@@ -156,8 +195,8 @@ fn run_child(
         }
         Err(error) => {
             kill_and_reap(child);
-            join_reader(stdout_reader);
-            join_reader(stderr_reader);
+            wait_for_reader(stdout_reader, &stdout_receiver);
+            wait_for_reader(stderr_reader, &stderr_receiver);
             Err(IngestError::GitSpawn {
                 message: error.to_string(),
             })
@@ -166,7 +205,10 @@ fn run_child(
 }
 
 /// Waits until the child exits or the deadline passes: `Ok(Some(status))`
-/// on exit, `Ok(None)` at expiry — the caller kills and reaps.
+/// on exit, `Ok(None)` at expiry or after [`request_shutdown`] — either
+/// way the caller kills and reaps. A shutdown expiry surfaces as the
+/// deadline-expiry `GitTimeout` outcome: the flag is only set on the
+/// total-cap path, so the run already ended in a timeout.
 fn wait_until(
     child: &mut Child,
     deadline: Instant,
@@ -175,7 +217,7 @@ fn wait_until(
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || SHUTDOWN.load(Ordering::SeqCst) {
             return Ok(None);
         }
         std::thread::sleep(WAIT_POLL);
@@ -184,30 +226,52 @@ fn wait_until(
 
 /// Kills the direct child and reaps it so no git process outlives the
 /// deadline. git's transport helpers observe the closed pipe and exit on
-/// their next write (docs/implementation/09 §Git subprocess safety).
+/// their next write, but a stalled helper never writes again and holds
+/// the pipes open — the reader joins are bounded, so the deadline path
+/// always returns `GIT_TIMEOUT` (docs/implementation/09 §Git subprocess
+/// safety).
 fn kill_and_reap(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
-/// Reads one pipe to end on a worker thread.
-fn read_pipe<R: io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
+/// Reads one pipe to end on a worker thread and hands the buffer back
+/// through a channel, so the caller can wait a bounded time instead of
+/// joining unconditionally. The handle exists only to be dropped — it
+/// detaches the reader when the wait expires.
+fn read_pipe<R: io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
         let mut buffer = Vec::new();
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut buffer);
         }
-        buffer
-    })
+        let _ = sender.send(buffer);
+    });
+    (reader, receiver)
 }
 
-/// Joins a pipe reader; a panicked reader yields an empty buffer.
-fn join_reader(reader: std::thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
-    reader.join().unwrap_or_default()
+/// Waits a short grace for a pipe reader's buffer; a panicked reader
+/// yields an empty buffer too. On expiry the buffer is dropped, the
+/// receiver is released with the caller's scope, and the detached reader
+/// thread ends when the process does — the caller has already killed the
+/// direct child.
+fn wait_for_reader(
+    reader: std::thread::JoinHandle<()>,
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<u8> {
+    drop(reader);
+    receiver.recv_timeout(READER_GRACE).unwrap_or_default()
 }
 
-/// The bounded stderr tail for an error: the last 512 characters, cut on
-/// a char boundary. No full dump.
+/// The bounded stderr tail for an error: at most the last 512 bytes of
+/// the trimmed, lossy-decoded text, cut on a char boundary, so it can be
+/// shorter than 512 bytes. No full dump.
 fn stderr_tail(stderr: &[u8]) -> String {
     let lossy = String::from_utf8_lossy(stderr);
     let text = lossy.trim();
@@ -252,7 +316,7 @@ mod tests {
     /// The builder `run_git` executes hardens the child env: every
     /// ambient `GIT_*` control and location variable is removed, the
     /// prompt, system, and user-global config pins are set, and the ssh
-    /// transport is pinned noninteractive — what an operator shell may
+    /// transport is pinned noninteractive — what an operator shell can
     /// carry into the process never reaches the git child
     /// (docs/implementation/09 §Git subprocess safety).
     #[test]
@@ -271,7 +335,9 @@ mod tests {
             "GIT_CONFIG_PARAMETERS",
             "GIT_ASKPASS",
             "GIT_SSH_VARIANT",
+            "GIT_SSL_NO_VERIFY",
             "GIT_STDERR",
+            "LANGUAGE",
         ] {
             assert_eq!(
                 envs.get(std::ffi::OsStr::new(key)),
@@ -284,6 +350,7 @@ mod tests {
             "GIT_CONFIG_NOSYSTEM",
             "GIT_CONFIG_GLOBAL",
             "GIT_SSH_COMMAND",
+            "LC_ALL",
         ] {
             assert!(
                 envs.get(std::ffi::OsStr::new(key))
@@ -298,6 +365,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_child_collects_a_child_that_finishes_before_the_deadline() {
+        // A process-global shutdown set by a concurrent test would kill
+        // this short-lived child; hold the shared test lock instead.
+        let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
         let mut child = Command::new("echo")
             .arg("done")
             .stdout(std::process::Stdio::piped())
@@ -345,5 +415,136 @@ mod tests {
         }
         // The kill and reap happened before the error returned.
         assert!(child.try_wait().unwrap().is_some());
+    }
+
+    /// A child that outlives the deadline while grandchildren keep the
+    /// pipes open — like a stalled git transport helper — must still
+    /// surface `GIT_TIMEOUT` promptly: the reader joins are bounded, so
+    /// the deadline path never blocks on a pipe that never ends
+    /// (unix-gated: the fixture is `sh` + `sleep`).
+    #[cfg(unix)]
+    #[test]
+    fn run_child_times_out_when_grandchildren_hold_the_pipes_open() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30 & sleep 30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let start = Instant::now();
+        let error = super::run_child(
+            &mut child,
+            "git clone slow".to_owned(),
+            Instant::now() + Duration::from_millis(100),
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+
+        match &error {
+            IngestError::GitTimeout { command, .. } => {
+                assert_eq!(command, "git clone slow");
+            }
+            other => panic!("expected GitTimeout, got {other:?}"),
+        }
+        // Bounded: the deadline plus the reader grace, far below the
+        // 30-second sleep fixtures an unbounded join would wait on.
+        assert!(elapsed < Duration::from_secs(10));
+    }
+
+    /// A failing child's `GitCommand` error keeps the display tail bounded
+    /// while the classification field carries the complete stderr: an
+    /// early refusal line must survive the 512-byte tail cut
+    /// (docs/implementation/07 §Git adapter). Unix-gated: the fixture is
+    /// `sh`.
+    #[cfg(unix)]
+    #[test]
+    fn run_child_keeps_the_full_stderr_beside_the_bounded_tail() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("echo refusal-line >&2; head -c 600 /dev/zero | tr '\\0' x >&2; exit 1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let error = super::run_child(
+            &mut child,
+            "git fetch origin".to_owned(),
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        match error {
+            IngestError::GitCommand {
+                stderr,
+                full_stderr,
+                ..
+            } => {
+                assert!(stderr.len() <= 512);
+                // The fixture's refusal line sits before 600 bytes of
+                // padding, so the tail alone cannot classify it.
+                assert!(
+                    !stderr.contains("refusal-line"),
+                    "fixture broken: the tail must not carry the refusal"
+                );
+                assert!(full_stderr.starts_with("refusal-line\n"));
+                assert!(full_stderr.len() > 600);
+            }
+            other => panic!("expected GitCommand, got {other:?}"),
+        }
+    }
+
+    /// Clears the process-global shutdown flag on drop: a panic inside a
+    /// shutdown test must not leave the flag set and poison concurrent
+    /// `run_child` tests.
+    struct ShutdownGuard;
+
+    impl Drop for ShutdownGuard {
+        fn drop(&mut self) {
+            super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// A shutdown request stops the wait loop while the child still runs:
+    /// `run_child` kills and reaps it promptly instead of letting it run
+    /// to completion (unix-gated: the hanging fixture is `sleep`).
+    #[cfg(unix)]
+    #[test]
+    fn run_child_kills_a_child_after_a_shutdown_request() {
+        // The flag is process-global: take the shared test lock so no
+        // concurrent run_child test polls while it is set.
+        let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
+        // Clear any flag left by a prior run; the guard restores a clear
+        // flag on every exit path, panics included.
+        let _guard = ShutdownGuard;
+        super::SHUTDOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        super::request_shutdown();
+        let mut command = Command::new("sleep");
+        command
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+
+        let start = Instant::now();
+        let error = super::run_child(
+            &mut child,
+            "git clone slow".to_owned(),
+            Instant::now() + Duration::from_secs(20),
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+
+        // The child must be reaped long before its 30 s runtime or the
+        // 20 s deadline: the shutdown fires within one poll interval.
+        assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
+        assert!(child.try_wait().unwrap().is_some());
+        match error {
+            IngestError::GitTimeout { .. } => {}
+            other => panic!("expected GitTimeout, got {other:?}"),
+        }
     }
 }

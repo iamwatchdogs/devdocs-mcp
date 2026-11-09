@@ -261,7 +261,8 @@ pub fn symbol(
 /// active version's sources (the alias rule, docs/08 §Version policy), so
 /// a stale version's lower chunk ids never surface first. Returns the
 /// source ids and the served version, `Some` only for a pinned one — the
-/// pick-status input.
+/// normalized request label, so the item status compares against the
+/// stored version form.
 ///
 /// # Errors
 /// [`RetrieveError::Miss`] with [`MissReason::NotIndexed`] when the
@@ -281,24 +282,44 @@ fn symbol_target_sources(
     if available.is_empty() {
         return Err(MissReason::NotIndexed.into());
     }
-    let served = match version {
-        Some(version) => version.to_owned(),
-        None => {
-            // The unpinned request serves the highest active version; the
-            // returned served-version element stays `None` so the items
-            // keep the alias status.
+    // A pinned request serves the normalized label (a SHA lowercases), so
+    // `item_status` compares items against the stored form, not the raw
+    // request casing; the unpinned request serves the highest active
+    // version, and its served-version element stays `None` so the items
+    // keep the alias status.
+    let (served, served_version) = match version {
+        Some(version) => {
+            let normalized = normalize_sha(version);
+            let served_version = Some(normalized.clone());
+            (normalized, served_version)
+        }
+        None => (
             pick(&available, None)
                 .version
                 .ok_or(MissReason::NotIndexed)?
                 .as_str()
-                .to_owned()
-        }
+                .to_owned(),
+            None,
+        ),
     };
     let source_ids = store.find_sources(library, &served)?;
     if source_ids.is_empty() {
         return Err(MissReason::VersionAbsent.into());
     }
-    Ok((source_ids, version.map(str::to_owned)))
+    Ok((source_ids, served_version))
+}
+
+/// The stored label for a pinned lookup: a git commit SHA is stored
+/// lowercase, so an exactly-40-hex request matches case-insensitively
+/// (the same rule `version::pick` applies); a tag keeps its casing.
+#[must_use]
+fn normalize_sha(version: &str) -> String {
+    let is_sha = version.len() == 40 && version.bytes().all(|b| b.is_ascii_hexdigit());
+    if is_sha {
+        version.to_ascii_lowercase()
+    } else {
+        version.to_owned()
+    }
 }
 
 /// Walks the pinned symbol stream window by window. Window 0 runs the
@@ -931,5 +952,20 @@ mod tests {
             1.0,
         );
         assert_eq!(item.source_url, "https://example.test/next");
+    }
+
+    use super::normalize_sha;
+
+    /// A 40-hex request lowercases; tag casing and short or non-hex
+    /// inputs pass through untouched.
+    #[test]
+    fn normalize_sha_lowercases_only_full_hex_requests() {
+        assert_eq!(
+            normalize_sha("ABCDEF0123456789ABCDEF0123456789ABCDEF01"),
+            "abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert_eq!(normalize_sha("v1.0.0"), "v1.0.0");
+        assert_eq!(normalize_sha("CAFEBABE"), "CAFEBABE");
+        assert_eq!(normalize_sha("ghijkl"), "ghijkl");
     }
 }

@@ -191,10 +191,21 @@ fn verify_tag(dir: &Path, pin: &str, extra_config: &[&str]) -> Result<(), Ingest
     }
 }
 
+/// Whether git's stderr says the server refused the SHA fetch: protocol
+/// v0 prints `Server does not allow request for unadvertised object`,
+/// strict servers print `not our ref`
+/// (docs/implementation/07 §Git adapter).
+fn is_sha_fetch_refusal(stderr: &str) -> bool {
+    stderr.contains("Server does not allow request for unadvertised object")
+        || stderr.contains("not our ref")
+}
+
 /// Clones a commit pin and returns whether the full-clone fallback ran:
 /// a shallow clone first, then the SHA fetch; when the server refuses the
-/// SHA fetch, the clone dir is cleared and re-cloned in full
-/// (docs/implementation/07 §Git adapter).
+/// SHA fetch (no `allowReachableSHA1InWant`), the clone dir is cleared
+/// and re-cloned in full. Every other fetch error propagates: a timeout
+/// or transport failure must not start an unfiltered full clone with a
+/// fresh deadline (docs/implementation/07 §Git adapter).
 fn clone_commit(
     dir: &Path,
     tmp: &Path,
@@ -212,19 +223,20 @@ fn clone_commit(
     let Err(direct_error) = direct else {
         return Ok(false);
     };
-    tracing::warn!(
-        "the SHA fetch of {} failed; falling back to a full clone: {direct_error}",
-        pin
-    );
-    // The server rejected the SHA fetch (no allowReachableSHA1InWant):
-    // fall back to a full clone and report it
-    // (docs/implementation/07 §Git adapter).
-    std::fs::remove_dir_all(dir).map_err(|e| IngestError::GitTempDir {
-        message: format!("cannot clear {}: {e}", dir.display()),
-    })?;
-    create_private_dir(dir)?;
-    run_git(tmp, &["clone", url, &dir_arg], extra_config)?;
-    Ok(true)
+    match direct_error {
+        IngestError::GitCommand { full_stderr, .. } if is_sha_fetch_refusal(&full_stderr) => {
+            tracing::warn!(
+                "the server refused the SHA fetch of {pin}; falling back to a full clone"
+            );
+            std::fs::remove_dir_all(dir).map_err(|e| IngestError::GitTempDir {
+                message: format!("cannot clear {}: {e}", dir.display()),
+            })?;
+            create_private_dir(dir)?;
+            run_git(tmp, &["clone", url, &dir_arg], extra_config)?;
+            Ok(true)
+        }
+        error => Err(error),
+    }
 }
 
 /// What one git fetch produced.
@@ -311,7 +323,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::super::test_util::{TEMP_CLONE_ORDER, default_extensions, fixture_git};
-    use super::{GitPlan, PinKind, create_private_dir, is_commit_sha, plan};
+    use super::{GitPlan, PinKind, create_private_dir, is_commit_sha, is_sha_fetch_refusal, plan};
     use crate::error::IngestError;
 
     /// A path that already exists as a file refuses the private-dir
@@ -326,6 +338,23 @@ mod tests {
         let error = create_private_dir(&path).unwrap_err();
         assert!(matches!(error, IngestError::GitTempDir { .. }), "{error:?}");
         assert!(error.to_string().contains("occupied"));
+    }
+
+    /// Only a server-refusal stderr takes the full-clone fallback: a
+    /// transport failure must propagate instead
+    /// (docs/implementation/07 §Git adapter).
+    #[test]
+    fn is_sha_fetch_refusal_matches_only_the_refusal_texts() {
+        assert!(is_sha_fetch_refusal(
+            "fatal: Server does not allow request for unadvertised object abc123"
+        ));
+        assert!(is_sha_fetch_refusal(
+            "fatal: git upload-pack: not our ref abc123"
+        ));
+        assert!(!is_sha_fetch_refusal(
+            "fatal: unable to access 'https://example.invalid/repo.git/': \
+             Could not resolve host: example.invalid"
+        ));
     }
 
     /// A tag clone checks out the `v1.0.0` content and records the tag's

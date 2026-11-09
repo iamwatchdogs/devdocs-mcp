@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-09T16:11:38Z
+timestamp: 2026-11-10T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -205,7 +205,6 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 |---|---|---|
 | `USAGE` | 1 | Bad flags or config |
 | `CONFIG_INVALID` | 1 | Config file failed validation |
-| `GIT_PIN_NOT_TAG` | 1 | Non-SHA pin names no tag |
 | `NO_RESULT` | 2 | Valid query, nothing served |
 | `PKG_NOT_INDEXED` | 2 | Library or version absent from an explicitly named request. Hint names the add command. A lockfile- or mention-named absent library falls through to the fallback search instead |
 | `FETCH_BLOCKED` | 3 | Fetch guard or license gate refused |
@@ -213,3 +212,5 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 | `BUDGET_EXCEEDED` | 4 | Budget consumed with no deliverable content |
 | `HASH_MISMATCH` | 3 | Index drifted. Re-sync suggested |
 | `NOT_AVAILABLE` | 2 | The license gate refused the source: `expired`, `revoked`, or `denied`. Carries `miss_reason: license_blocked`; the hint names `run: devdocs source list` |
+
+A non-SHA pin that names no tag emits `error: USAGE` (exit 1); `GIT_PIN_NOT_TAG` appears only as the prefix of the `detail` string, not as an error code.

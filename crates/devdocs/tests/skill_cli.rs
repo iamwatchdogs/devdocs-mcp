@@ -109,6 +109,43 @@ fn skill_install_parent_file_refused_without_force_hint() {
     assert!(!stderr.contains("--force"), "stderr: {stderr}");
 }
 
+/// A file-create failure on the file itself — the parent directory exists
+/// but the process cannot write into it — maps to USAGE naming the target
+/// file, not the parent, and never offers `--force` (force cannot fix a
+/// permission refusal).
+#[cfg(unix)]
+#[test]
+fn skill_install_unwritable_dir_refusal_names_the_target_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    let sealed = env.root.join("sealed");
+    std::fs::create_dir_all(&sealed).expect("sealed dir");
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o500)).expect("mode set");
+
+    // A root process ignores the permission bits, so the seal cannot hold
+    // and the refusal never happens; skip loudly in that case.
+    if std::fs::create_dir(sealed.join("probe")).is_ok() {
+        std::fs::remove_dir(sealed.join("probe")).ok();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))
+            .expect("mode restored");
+        eprintln!("skipping: the process ignores directory permission bits");
+        return;
+    }
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["skill", "install", "--path", "sealed/SKILL.md"],
+    );
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))
+        .expect("mode restored");
+    assert_eq!(code, 1);
+    assert!(stdout.is_empty(), "stdout must stay clean: {stdout:?}");
+    assert!(stderr.contains("cannot write"), "stderr: {stderr}");
+    assert!(stderr.contains("sealed/SKILL.md"), "stderr: {stderr}");
+    assert!(!stderr.contains("--force"), "stderr: {stderr}");
+}
+
 /// The companion workflow the SKILL.md documents drives the live
 /// surfaces: a hit search feeds an open, and a miss exits 2
 /// (docs/implementation/08 §The skill companion, step 4).

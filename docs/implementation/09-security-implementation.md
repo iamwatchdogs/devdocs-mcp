@@ -3,7 +3,7 @@ type: guide
 title: Security Implementation
 description: The mapping from the research threat model to concrete controls in code, the fetch-guard invariants and tests, injection-filter operations, storage controls, and the security checklist.
 tags: [devdocs, security, ssrf, injection, licensing]
-timestamp: 2026-11-06T18:00:00Z
+timestamp: 2026-11-08T20:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -51,7 +51,8 @@ The blocklist has no config escape. The one exception is in test code: the guard
 ## Git subprocess safety
 
 - argv arrays only. No shell, no string concatenation into commands.
-- `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1` on every invocation.
+- `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, and `GIT_CONFIG_GLOBAL=/dev/null` on every invocation, and after the env strip the ssh transport is pinned noninteractive: `GIT_SSH_COMMAND=ssh -oBatchMode=yes`. BatchMode makes ssh fail promptly on any passphrase or host-key prompt instead of waiting on the controlling tty (ambient `SSH_ASKPASS`/`DISPLAY` do not survive the pin), while agent-backed keys keep working. The global-config pin stops a hostile repo's `.gitattributes` from reaching an operator-defined global smudge filter through `core.attributesFile` during checkout; git's compiled-in default credential helper does not come from `~/.gitconfig`, and the per-command `-c` overrides still win.
+- Every invocation is waited on with a bounded loop up to a per-invocation deadline set at the total-cap duration; at expiry the git child is killed and reaped, so the run cannot orphan a git process still doing network I/O after the timeout surfaces. The run-wide cap stays the pipeline timeout. The child is spawned as its own process group on unix. std exposes no process-group kill and the workspace forbids unsafe FFI, so the kill reaches the git process itself; its transport helpers observe the closed pipe and exit on their next write.
 - Clone with hooks and filters disabled: `git clone --config core.hooksPath=/dev/null --config filter.lfs.process= --filter=blob:none` where supported, and a docs-only sparse checkout for large repos (deferred; recorded in [07](07-ingest-pipeline.md) §Git adapter). A malicious repo cannot run checkout hooks through this path.
 - Remote URLs come from config or CLI, never from fetched content. A source URL that changes between plan and fetch aborts the run. Transport URLs are passed to git with the operator's own privilege and no scheme is restricted — `file://` stays allowed for fixtures and tests, so an `ext::` URL would run a command with operator privilege; the operator's own config and CLI are the trust boundary.
 - The temp clone directory sits under `DEVDOCS_HOME/tmp` with mode 0700 and is removed after the run.

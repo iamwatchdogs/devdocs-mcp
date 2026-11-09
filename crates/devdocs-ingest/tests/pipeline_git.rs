@@ -5,15 +5,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
 use devdocs_ingest::guard::FetchGuard;
 use devdocs_ingest::{GitPin, IngestJob, gate_fetch};
-use devdocs_model::config::{Config, FetchConfig, IndexConfig, SearchConfig, SourceConfig};
+use devdocs_model::config::{Config, SourceConfig};
 use devdocs_model::source::LicenseStatus;
+use devdocs_testkit::base_config;
 use devdocs_testkit::git_repo::{bare_mirror, docs_repo};
 use tempfile::tempdir;
 use url::Url;
@@ -42,15 +42,17 @@ fn fixture_git(dir: &Path, args: &[&str]) -> String {
 
 /// The `file://` URL of a local repository path — the exact string the
 /// gate matches against the registry entry and the adapter plans with.
+/// `Url::from_file_path` percent-encodes the path, so a fixture
+/// directory holding a literal `%XX` escape stays parseable.
 fn repo_url(path: &Path) -> Url {
-    Url::parse(&format!("file://{}", path.display())).unwrap()
+    Url::from_file_path(path).unwrap()
 }
 
 /// A config with the `acme` git source registered at the index stage for
 /// `repo_url`.
 fn config(repo_url: &Url) -> Config {
-    let mut sources = BTreeMap::new();
-    sources.insert(
+    let mut config = base_config();
+    config.sources.insert(
         String::from("acme"),
         SourceConfig {
             kind: Some(String::from("git")),
@@ -60,31 +62,7 @@ fn config(repo_url: &Url) -> Config {
             refresh_days: None,
         },
     );
-    Config {
-        fetch: FetchConfig {
-            concurrency: 4,
-            timeout_ms: 15_000,
-            max_bytes: 20 * 1024 * 1024,
-            max_redirects: 3,
-            user_agent: String::from("devdocs/0.2.0"),
-        },
-        index: IndexConfig {
-            path: std::path::PathBuf::from("/tmp/unused.db"),
-            embeddings: false,
-        },
-        search: SearchConfig {
-            max_tokens_default: 2000,
-            limit_default: 8,
-            rrf_k: 60,
-        },
-        ingest: devdocs_model::config::IngestConfig {
-            git_extensions: devdocs_model::config::DEFAULT_GIT_EXTENSIONS
-                .iter()
-                .map(|ext| (*ext).to_owned())
-                .collect(),
-        },
-        sources,
-    }
+    config
 }
 
 /// The fetch guard for a config. The git adapter never goes through it —
@@ -98,6 +76,56 @@ fn guard(config: &Config) -> FetchGuard {
 fn store() -> Arc<devdocs_store::Store> {
     let db = tempdir().unwrap();
     Arc::new(devdocs_testkit::open_migrated(&db.path().join("docs.db")).unwrap())
+}
+
+/// Asserts the published chunks carry the pinned commit and URL as
+/// provenance, and the store keeps exactly one active git source row.
+fn assert_commit_provenance(store: &devdocs_store::Store, url: &Url, sha: &str) {
+    let hits = store
+        .search_fts(&devdocs_store::build_match_query("guide"), 10)
+        .unwrap();
+    assert!(!hits.is_empty(), "the guide body is searchable");
+    assert!(
+        hits.iter()
+            .all(|hit| hit.source_commit.as_deref() == Some(sha)),
+        "provenance commit: {:?}",
+        hits.iter()
+            .map(|h| h.source_commit.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        hits.iter().all(|hit| hit.source_url == url.to_string()),
+        "provenance URL: {:?}",
+        hits.iter()
+            .map(|h| h.source_url.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let sources = store.list_sources().unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].kind, "git", "the source row is the git kind");
+    assert!(sources[0].active, "the generation is active");
+}
+
+/// Initializes a repository whose HEAD commit carries no allowlisted file,
+/// returning the HEAD SHA.
+fn commit_a_repo_without_docs(dir: &Path) -> String {
+    fixture_git(dir, &["init", "-b", "main"]);
+    fixture_git(dir, &["config", "--local", "user.name", "devdocs-test"]);
+    fixture_git(
+        dir,
+        &[
+            "config",
+            "--local",
+            "user.email",
+            "devdocs-test@example.test",
+        ],
+    );
+    fixture_git(dir, &["config", "--local", "commit.gpgsign", "false"]);
+    std::fs::write(dir.join("assets.bin"), "not docs\n").unwrap();
+    fixture_git(dir, &["add", "."]);
+    fixture_git(dir, &["commit", "-m", "no docs"]);
+    fixture_git(dir, &["rev-parse", "HEAD"])
 }
 
 /// A tag-pin run ingests both fixture docs, publishes them searchable, and
@@ -146,30 +174,7 @@ async fn git_run_publishes_chunks_with_commit_provenance() {
 
     // Every published chunk carries the tag's commit and the repo URL as
     // provenance.
-    let hits = store
-        .search_fts(&devdocs_store::build_match_query("guide"), 10)
-        .unwrap();
-    assert!(!hits.is_empty(), "the guide body is searchable");
-    assert!(
-        hits.iter()
-            .all(|hit| hit.source_commit.as_deref() == Some(repo.tag_sha.as_str())),
-        "provenance commit: {:?}",
-        hits.iter()
-            .map(|h| h.source_commit.clone())
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        hits.iter().all(|hit| hit.source_url == url.to_string()),
-        "provenance URL: {:?}",
-        hits.iter()
-            .map(|h| h.source_url.clone())
-            .collect::<Vec<_>>()
-    );
-
-    let sources = store.list_sources().unwrap();
-    assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].kind, "git", "the source row is the git kind");
-    assert!(sources[0].active, "the generation is active");
+    assert_commit_provenance(&store, &url, &repo.tag_sha);
 }
 
 /// A commit pin the bare mirror refuses to serve by SHA (protocol v0, no
@@ -227,28 +232,7 @@ async fn git_run_counts_the_sha_fetch_fallback_in_the_events() {
 #[tokio::test]
 async fn git_run_refuses_a_corpus_with_no_allowlisted_files() {
     let repo_dir = tempdir().unwrap();
-    fixture_git(repo_dir.path(), &["init", "-b", "main"]);
-    fixture_git(
-        repo_dir.path(),
-        &["config", "--local", "user.name", "devdocs-test"],
-    );
-    fixture_git(
-        repo_dir.path(),
-        &[
-            "config",
-            "--local",
-            "user.email",
-            "devdocs-test@example.test",
-        ],
-    );
-    fixture_git(
-        repo_dir.path(),
-        &["config", "--local", "commit.gpgsign", "false"],
-    );
-    std::fs::write(repo_dir.path().join("assets.bin"), "not docs\n").unwrap();
-    fixture_git(repo_dir.path(), &["add", "."]);
-    fixture_git(repo_dir.path(), &["commit", "-m", "no docs"]);
-    let head = fixture_git(repo_dir.path(), &["rev-parse", "HEAD"]);
+    let head = commit_a_repo_without_docs(repo_dir.path());
 
     let data = tempdir().unwrap();
     let url = repo_url(repo_dir.path());
@@ -285,6 +269,47 @@ async fn git_run_refuses_a_corpus_with_no_allowlisted_files() {
     assert!(
         devdocs_testkit::read_chunks(&db_path).unwrap().is_empty(),
         "a refused run must publish no chunks"
+    );
+}
+
+/// A run over a repo whose allowlisted file is not valid UTF-8 skips it
+/// with the count in the events and still publishes the rest
+/// (docs/implementation/07 §Git adapter).
+#[tokio::test]
+async fn git_run_counts_the_non_utf8_skips() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    // A non-UTF-8 allowlisted file joins the fixture repo in a new commit.
+    std::fs::write(repo.work_dir.join("broken.md"), [0xff, 0xfe, 0x00]).unwrap();
+    fixture_git(&repo.work_dir, &["add", "."]);
+    fixture_git(&repo.work_dir, &["commit", "-m", "broken"]);
+    let head = fixture_git(&repo.work_dir, &["rev-parse", "HEAD"]);
+
+    let data = tempdir().unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+    let store = store();
+    let guard = guard(&config);
+    let outcome = IngestJob::new(&config, &guard, None)
+        .run_git(
+            Arc::clone(&store),
+            &url,
+            "acme",
+            "1.0",
+            GitPin::from(head.as_str()),
+            data.path(),
+        )
+        .await
+        .unwrap();
+
+    // The non-UTF-8 file is skipped and counted in the warn log; the
+    // fixture pages still publish.
+    assert_eq!(outcome.pages, 2, "README and guide ingest: {outcome:?}");
+    assert!(outcome.chunks > 0);
+    assert_eq!(
+        outcome.commit_sha.as_deref(),
+        Some(head.as_str()),
+        "the run pins the broken-file commit"
     );
 }
 

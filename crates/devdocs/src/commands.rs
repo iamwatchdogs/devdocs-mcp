@@ -118,6 +118,63 @@ pub fn run_search(
     devdocs_retrieve::serve::search(&store, &query, &project, &plan).map_err(map_retrieve_error)
 }
 
+/// Splits a `devdocs symbol` target into its `(library, version)` pair:
+/// `library@version` pins the version, a bare `library` keeps the library
+/// scope, and a scoped `@scope/pkg` keeps its full name
+/// (docs/implementation/08 §CLI contract). The split reuses the resolver's
+/// `name@version` splitter so scoped pins keep the name.
+///
+/// # Errors
+/// [`Error::Usage`] for an empty or malformed target.
+fn split_symbol_target(target: &str) -> Result<(&str, Option<&str>), Error> {
+    if let Some((library, version)) = devdocs_retrieve::resolver::split_name_version(target) {
+        return Ok((library, Some(version)));
+    }
+    // An unpinned scoped name `@scope/pkg`: the splitter returns `None`
+    // for a missing version, but the full name is the library.
+    if let Some(rest) = target.strip_prefix('@')
+        && !rest.contains('@')
+        && rest.contains('/')
+    {
+        return Ok((target, None));
+    }
+    match target.split_once('@') {
+        Some(_) => Err(Error::Usage(format!(
+            "bad symbol target `{target}`: expected library@version"
+        ))),
+        None if !target.is_empty() => Ok((target, None)),
+        None => Err(Error::Usage("symbol target must not be empty".to_owned())),
+    }
+}
+
+/// Runs `devdocs symbol <target> <symbol>` (docs/implementation/08 §CLI
+/// contract): the exact symbol lookup over the resolved target. The limit
+/// is the documented search default — docs/08 defines no `--limit` flag
+/// for the symbol command; `--cursor` resumes a truncated page.
+///
+/// # Errors
+/// [`Error::NoResult`] on the miss paths (exit 2: `PKG_NOT_INDEXED` for an
+/// absent target, `NO_RESULT`/`symbol_absent` for an identifier the target
+/// does not carry), [`Error::Usage`] for a malformed target or cursor,
+/// [`Error::Upstream`] for store failures.
+pub fn run_symbol(
+    config: &Config,
+    target: &str,
+    symbol: &str,
+    cursor: Option<u64>,
+) -> Result<ResultEnvelope, Error> {
+    let (library, version) = split_symbol_target(target)?;
+    let store = open_store(config, false)?;
+    let plan = devdocs_retrieve::Plan {
+        limit: config.search.limit_default,
+        max_tokens: config.search.max_tokens_default,
+        rrf_k: config.search.rrf_k,
+        cursor,
+    };
+    devdocs_retrieve::serve::symbol(&store, library, version, symbol, &plan)
+        .map_err(map_retrieve_error)
+}
+
 /// Runs `devdocs open <ref>`.
 ///
 /// # Errors
@@ -243,6 +300,15 @@ pub fn run_add(
                 .and_then(|entry| entry.kind.as_deref())
         })
         .unwrap_or("llms_txt");
+
+    // The config entry's kind is a free-form string the CLI edge never
+    // validates, so an unknown kind would silently run the llms.txt
+    // adapter over that URL and publish wrong content.
+    if !matches!(effective_kind, "llms_txt" | "git") {
+        return Err(Error::Usage(format!(
+            "source kind {effective_kind} is not supported yet; this slice ingests llms_txt and git sources only"
+        )));
+    }
 
     if effective_kind == "git" {
         // `--fixture` replays recorded HTTP responses; the git adapter has
@@ -455,10 +521,15 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: "GIT_BINARY_MISSING: the git executable was not found on PATH".to_owned(),
         },
-        E::GitInvalidPin { pin } => Error::Upstream {
-            code: UpstreamCode::UpstreamError,
-            detail: format!("GIT_INVALID_PIN: pin `{pin}` starts with `-`"),
-        },
+        // A pin starting with `-` is a user-input mistake, not an upstream
+        // failure: nothing ran, so it maps onto USAGE like the sibling
+        // input checks in `run_add` (docs/implementation/05 §Error model).
+        E::GitInvalidPin { pin } => {
+            Error::Usage(format!("GIT_INVALID_PIN: pin `{pin}` starts with `-`"))
+        }
+        E::GitPinNotTag { pin } => Error::Usage(format!(
+            "GIT_PIN_NOT_TAG: pin `{pin}` is not a tag; use a tag name or a commit SHA"
+        )),
         E::GitUrlMismatch { planned, actual } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!(
@@ -473,6 +544,12 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_SPAWN_FAILED: {message}"),
         },
+        E::GitTimeout { command, seconds } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!(
+                "GIT_TIMEOUT: `{command}` exceeded the {seconds}s deadline and was killed"
+            ),
+        },
         E::GitTempDir { message } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_TEMP_DIR: {message}"),
@@ -485,5 +562,110 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: format!("GIT_COMMIT_SHA_INVALID: rev-parse returned `{sha}`"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::map_ingest_error;
+    use devdocs_ingest::IngestError;
+    use devdocs_model::error::{Error, UpstreamCode};
+
+    /// The git adapter error kinds and the stable code prefixes their
+    /// CLI mapping must keep (docs/implementation/05 §Error model).
+    fn git_error_cases() -> Vec<(IngestError, &'static str)> {
+        vec![
+            (
+                IngestError::GitUrlMismatch {
+                    planned: "file:///a".to_owned(),
+                    actual: "file:///b".to_owned(),
+                },
+                "GIT_URL_MISMATCH",
+            ),
+            (
+                IngestError::GitCommand {
+                    command: "git clone".to_owned(),
+                    stderr: "boom".to_owned(),
+                },
+                "GIT_COMMAND_FAILED",
+            ),
+            (
+                IngestError::GitSpawn {
+                    message: "no exec".to_owned(),
+                },
+                "GIT_SPAWN_FAILED",
+            ),
+            (
+                IngestError::GitTimeout {
+                    command: "git clone".to_owned(),
+                    seconds: 600,
+                },
+                "GIT_TIMEOUT",
+            ),
+            (
+                IngestError::GitTempDir {
+                    message: "cannot create /tmp/x: denied".to_owned(),
+                },
+                "GIT_TEMP_DIR",
+            ),
+            (
+                IngestError::GitWalk {
+                    message: "unreadable".to_owned(),
+                },
+                "GIT_WALK_FAILED",
+            ),
+            (
+                IngestError::GitCommitShaInvalid("not-a-sha".to_owned()),
+                "GIT_COMMIT_SHA_INVALID",
+            ),
+        ]
+    }
+
+    /// Every remaining git adapter error kind maps onto `UPSTREAM_ERROR`
+    /// with its stable code prefix intact (docs/implementation/05 §Error
+    /// model).
+    #[test]
+    fn git_errors_map_upstream_with_their_code_prefix() {
+        for (error, code) in git_error_cases() {
+            let Error::Upstream { code: got, detail } = map_ingest_error(error) else {
+                panic!("expected an upstream error for {code}");
+            };
+            assert_eq!(got, UpstreamCode::UpstreamError);
+            assert!(
+                detail.starts_with(&format!("{code}:")),
+                "detail `{detail}` lacks the {code} prefix"
+            );
+        }
+    }
+
+    /// A pin that is not a tag is a user-input mistake: it maps onto
+    /// `USAGE`, not `UPSTREAM_ERROR` (docs/implementation/05 §Error
+    /// model).
+    #[test]
+    fn a_pin_that_is_not_a_tag_maps_to_usage() {
+        let error = map_ingest_error(IngestError::GitPinNotTag {
+            pin: "main".to_owned(),
+        });
+        let Error::Usage(detail) = error else {
+            panic!("expected a usage error for a non-tag pin");
+        };
+        assert!(detail.starts_with("GIT_PIN_NOT_TAG:"), "detail: {detail}");
+        assert!(detail.contains("is not a tag"), "detail: {detail}");
+    }
+
+    /// An option-shaped pin is a user-input mistake: it maps onto
+    /// `USAGE`, not `UPSTREAM_ERROR`, with the `GIT_INVALID_PIN` detail
+    /// prefix kept (docs/implementation/05 §Error model).
+    #[test]
+    fn an_option_shaped_pin_maps_to_usage() {
+        let error = map_ingest_error(IngestError::GitInvalidPin {
+            pin: "-oProxyCommand=no".to_owned(),
+        });
+        let Error::Usage(detail) = error else {
+            panic!("expected a usage error for an option-shaped pin");
+        };
+        assert!(detail.starts_with("GIT_INVALID_PIN:"), "detail: {detail}");
     }
 }

@@ -132,7 +132,11 @@ fn concurrent_open_and_migrate_succeed() {
     let store_b = devdocs_store::Store::open(&path).unwrap();
 
     let applied_a = store_a.migrate().unwrap();
-    assert_eq!(applied_a.len(), 2, "the first migrator applies the schema");
+    assert_eq!(
+        applied_a.len(),
+        devdocs_store::MIGRATION_COUNT,
+        "the first migrator applies every shipped migration"
+    );
     let applied_b = store_b.migrate().unwrap();
     assert!(applied_b.is_empty(), "the second migrator must be a no-op");
 }

@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-06T21:00:00Z
+timestamp: 2026-11-09T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -58,7 +58,7 @@ Migration questions: when the query matches a migration pattern ("upgrade", "mig
 
 ## Rungs
 
-1. **Symbol exact.** `SELECT ... FROM symbols JOIN chunks` on the normalized identifier. Cheap, decisive for API names. Exact identifiers beat dense retrieval for API names (research: retrieval-design.md §3.1).
+1. **Symbol exact.** `SELECT ... FROM symbols JOIN chunks` on the normalized identifier. Cheap, decisive for API names. Exact identifiers beat dense retrieval for API names (research: retrieval-design.md §3.1). The rung normalizes the query first: trim it, then strip trailing balanced `(...)`, `[...]`, and `<...>` groups repeatedly (`useRouter()` becomes `useRouter`). Dots stay: `obj.method` keeps its path. The ladder tries, in order: exact, the last dot-segment of a dotted form as a second exact attempt, case-sensitive prefix, case-insensitive. The first non-empty list wins. The rung requests 4× the hit count for fusion headroom, the same shape the FTS rung applies. The case-insensitive rung folds ASCII only — SQLite's NOCASE/LIKE fold ASCII letters, so an identifier cased with non-ASCII letters must match its stored case. When the request resolves to a library (§Version resolution), the rung pins to that library's served version's sources; otherwise it scans the resolved scope.
 2. **FTS5 BM25.** Build the MATCH expression from the query: split on whitespace, drop operators, wrap each token as a quoted literal, append `*` to the last token of each run for prefix matching. Example: query `rewrite proxy request` becomes `"rewrite" "proxy" "request" *`. This construction is a property-tested invariant ([04](04-testing-strategy.md)). Ranking: `bm25(chunks_fts, 5.0, 1.0)` with `LIMIT` at 4× the requested hits for fusion headroom. Attach `snippet(chunks_fts, 1, '⟦', '⟧', '…', 12)` for highlight offsets.
 3. **Vector scan** (feature `embeddings`, phase 3). Embed the query with the same model that built the index, scan `chunks_vec` in-process by hamming distance, take the top 4× hits.
 
@@ -82,7 +82,7 @@ Entered only on low confidence or an explicit `miss_reason` match (research: ret
 
 A cold miss returns `not_indexed` with a sync hint. An abstention is a valid result (research: retrieval-design.md §3.7).
 
-`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`. The JSON error on exit 2 carries `miss_reason` and a `hint`; a cold miss — the library or the requested version absent — carries `error = "PKG_NOT_INDEXED"`, every other valid-query miss `error = "NO_RESULT"` (docs/implementation/05 §Error model).
+`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`, `symbol_absent` — the last one the exact symbol lookup's miss when the target resolved but no symbol matched (hint names `devdocs search <symbol>`). The JSON error on exit 2 carries `miss_reason` and a `hint`; a cold miss — the library or the requested version absent — carries `error = "PKG_NOT_INDEXED"`, every other valid-query miss `error = "NO_RESULT"` (docs/implementation/05 §Error model).
 
 ## Result envelope
 
@@ -126,7 +126,7 @@ Commands:
 | `devdocs sync [library]` | Refresh stale approved sources |
 | `devdocs list [--json]` | List indexed libraries and versions |
 | `devdocs search "query" [--library L] [--version V] [--limit N] [--cursor C] [--max-tokens T] [--json]` | Hybrid search |
-| `devdocs symbol <library@version> <symbol> [--json]` | Exact symbol lookup |
+| `devdocs symbol <library[@version]> <symbol> [--cursor C] [--json]` | Exact symbol lookup |
 | `devdocs open <ref> [--cursor C] [--max-tokens T] [--json]` | Read one section by ref |
 | `devdocs verify <ref> [--json]` | Re-derive and compare the content hash |
 | `devdocs versions <library> [--json]` | List the active versions a library serves |
@@ -139,7 +139,7 @@ Commands:
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
 
-`add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused before any git invocation; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
+`add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
 
 Contract properties (research: architecture.md §L4, GEM §5 checklist):
 
@@ -149,6 +149,8 @@ Contract properties (research: architecture.md §L4, GEM §5 checklist):
 - Deterministic ordering: fusion order, ties by chunk id. Identical DB state gives byte-identical `--json` output. Byte-identity excludes the `served_at` wall-clock field (the comparison rule for the CLI, the MCP (#12), and the embeddings (#20) tickets).
 - Pagination: `--cursor C` resumes a truncated page — for `search` the cursor is the last served chunk id, for `open` the character offset into the chunk.
 - Exit codes 0/1/2/3/4 per [05](05-architecture.md) (usage errors remap clap's default 2 to 1).
+
+`devdocs symbol <library[@version]> <symbol>` resolves the target first. A library the index lacks is `PKG_NOT_INDEXED` (`not_indexed`), a version it lacks is `PKG_NOT_INDEXED` (`version_absent`) — both exit 2. An unpinned target pins to the highest active version under the alias rule (§Version resolution), and the match ladder applies across the pinned target's origins with ladder precedence holding over source order. The target resolved, the symbol rung runs alone through the same fusion-and-pack path as `search`. An empty fusion is the `symbol_absent` miss with the `devdocs search <symbol>` hint. `--cursor C` resumes after the last served chunk id of a truncated page, the same chunk-id cursor `search` uses; pagination walks headroom-sized windows past the cursor, so matches beyond the retrieval head stay reachable and `truncated` stays accurate. The command defines no `--limit` flag; the limit is the search default (8). A malformed or empty target is a usage error, exit 1.
 - Progressive disclosure: `devdocs list --json` is the ~20-token discovery surface. `devdocs versions <lib> --json` the per-library surface. `search` and `open` the full read. No prose man page. `--help` stays short.
 - No secrets in argv or stdout. The tool holds no credentials in v1 (public sources only). A future private-source feature will read tokens from the environment or an OS keystore, never from config files.
 - One static binary. No daemon. `devdocs mcp` reuses the same process.

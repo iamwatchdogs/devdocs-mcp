@@ -5,7 +5,7 @@
 use devdocs_store::migrate;
 use rusqlite::Connection;
 
-/// Names of every schema object schema 0001 must create.
+/// Names of every schema object the shipped migrations must create.
 const SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("table", "meta"),
     ("table", "sources"),
@@ -21,12 +21,13 @@ const SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("index", "idx_chunks_symbol"),
     ("index", "idx_chunks_hash"),
     ("index", "idx_symbols_chunk"),
+    ("index", "idx_symbols_symbol_nocase"),
 ];
 
 /// Applies every shipped migration to a fresh temp file and checks every
-/// schema 0001 object.
+/// object.
 #[test]
-fn fresh_database_reaches_the_latest_version_with_all_objects() {
+fn fresh_database_reaches_the_current_version_with_all_objects() {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("docs.db")).unwrap();
 
@@ -40,7 +41,11 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
             },
             devdocs_store::AppliedMigration {
                 version: 2,
-                name: "0002_page_url".to_owned(),
+                name: "0002_symbols_symbol_nocase".to_owned(),
+            },
+            devdocs_store::AppliedMigration {
+                version: 3,
+                name: "0003_page_url".to_owned(),
             },
         ]
     );
@@ -59,7 +64,7 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 
 /// A second run applies nothing, leaves `user_version` alone, and keeps the
@@ -87,7 +92,7 @@ fn re_migrating_an_up_to_date_database_applies_nothing() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     let created_after: String = conn
         .query_row(
             "SELECT value FROM meta WHERE key = 'schema_created_at'",

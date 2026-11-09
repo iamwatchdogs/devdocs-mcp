@@ -190,13 +190,31 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
 
 /// The chunk and source column list every serving query shares, in the
 /// fixed order the row readers ([`base_columns`]) index: `chunk_id`,
-/// `source_id`, `library`, `version`, `section_path`, `symbol`, `text`,
-/// `token_count`, `content_hash`, `origin_url`, `commit_sha`,
+/// `source_id`, `library`, `version`, `section_path`, the symbol slot,
+/// `text`, `token_count`, `content_hash`, `origin_url`, `commit_sha`,
 /// `license_status`, `page_url` at indices 0..13. Each query appends its
-/// query-specific suffix columns behind them.
-const BASE_COLUMNS: &str = "c.chunk_id, c.source_id, s.library, s.version, c.section_path, \
-     c.symbol, c.text, c.token_count, c.content_hash, s.origin_url, s.commit_sha, \
-     s.license_status, c.page_url";
+/// query-specific suffix columns behind them. The `$symbol` slot is the
+/// only difference between [`BASE_COLUMNS`] and [`SYMBOL_BASE_COLUMNS`],
+/// so a column added to one list cannot silently miss the other.
+macro_rules! base_columns {
+    ($symbol:literal) => {
+        concat!(
+            "c.chunk_id, c.source_id, s.library, s.version, c.section_path, ",
+            $symbol,
+            "c.text, c.token_count, c.content_hash, s.origin_url, s.commit_sha, \
+             s.license_status, c.page_url"
+        )
+    };
+}
+
+/// The chunk and source column list, naming the chunk's primary symbol.
+const BASE_COLUMNS: &str = base_columns!("c.symbol, ");
+
+/// [`BASE_COLUMNS`] with `sym.symbol` in the `c.symbol` slot, for the
+/// queries that drive off the `symbols` table: the hit then names the
+/// matched symbol, not the chunk's primary symbol, so `Hit::symbol` and
+/// `Hit::symbol_kind` describe the same row.
+const SYMBOL_BASE_COLUMNS: &str = base_columns!("sym.symbol, ");
 
 /// The FTS suffix columns behind [`BASE_COLUMNS`]: the `snippet()` fragment
 /// at index 13 and the bm25 rank at index 14, with the documented weights.
@@ -235,14 +253,173 @@ const FTS_SOURCE_PREDICATE: &str = " AND s.source_id = ?3";
 
 /// The FROM/JOIN of the symbol lookup: the symbol table driving the chunk
 /// and source joins.
+/// The FROM/JOIN of the symbol lookup: the symbol table driving the chunk
+/// and source joins. CROSS JOIN pins the loop order sym-first (SQLite
+/// §Query planner, manual control of join order): every mode constrains
+/// `sym.symbol` indexably, and the free reorder would otherwise drive from
+/// `sources` and filter the symbol predicate per row instead of through
+/// the symbol indexes.
 const SYMBOL_FROM: &str = "symbols sym \
-     JOIN chunks c ON c.chunk_id = sym.chunk_id \
-     JOIN sources s ON s.source_id = c.source_id";
+     CROSS JOIN chunks c ON c.chunk_id = sym.chunk_id \
+     CROSS JOIN sources s ON s.source_id = c.source_id";
 
 /// The symbol-lookup WHERE clause: the exact symbol of one source, active
 /// only, with the terminal-license placeholder.
 const SYMBOL_CLAUSE: &str =
     "sym.symbol = ?1 AND c.source_id = ?2 AND s.active = 1 {license_clause}";
+
+/// How a symbol query matches the stored `symbols.symbol` values, from the
+/// strongest shape down (docs/implementation/08 §Retrieval ladder, the
+/// symbol exact step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolMatch {
+    /// The whole identifier, byte-exact.
+    Exact,
+    /// The identifier starts with the query, case-sensitively — the
+    /// completion shape (`useR` matches `useRouter`).
+    CaseSensitivePrefix,
+    /// The identifier equals the query or starts with it,
+    /// case-insensitively; exact matches rank before prefixes.
+    CaseInsensitive,
+}
+
+/// The source narrowing of a symbol query, the
+/// [`Store::search_fts_library`]/[`Store::search_fts_source`] shapes
+/// carried as one argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolScope {
+    /// Every active source.
+    All,
+    /// Active sources of one library, case-insensitive on the name.
+    Library(String),
+    /// One exact source id.
+    Source(i64),
+}
+
+/// Escapes `prefix` for a SQLite `GLOB` pattern head, so the identifier
+/// characters `[`, `*`, and `?` match themselves.
+fn glob_escape(prefix: &str) -> String {
+    prefix
+        .replace('[', "[[]")
+        .replace('*', "[*]")
+        .replace('?', "[?]")
+}
+
+/// Escapes `prefix` for a SQLite `LIKE` pattern head under the `\` escape,
+/// so `%` and `_` in an identifier match themselves.
+fn like_escape(prefix: &str) -> String {
+    prefix
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The WHERE predicate, the match-quality expression, and the escaped
+/// match pattern of one symbol-match mode. `?1` binds the raw identifier
+/// (equality and match quality); the complete pattern sits at `?3` in the
+/// prefix modes (bound whole, not concatenated in SQL, so LIKE and GLOB
+/// can use a prefix index) and Exact carries none. The quality expression
+/// orders exact matches before prefixes, inside the per-chunk pick and
+/// across chunks.
+fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<String>) {
+    match mode {
+        SymbolMatch::Exact => (
+            String::from("sym.symbol = ?1"),
+            String::from("(sym.symbol = ?1)"),
+            None,
+        ),
+        SymbolMatch::CaseSensitivePrefix => (
+            String::from("sym.symbol GLOB ?3"),
+            String::from("(sym.symbol = ?1)"),
+            Some(format!("{}*", glob_escape(symbol))),
+        ),
+        SymbolMatch::CaseInsensitive => (
+            // The prefix pattern already covers the exact match, so the
+            // predicate is the LIKE alone — one indexable term. The
+            // quality expression keeps exact matches ahead of prefixes.
+            String::from("sym.symbol LIKE ?3 ESCAPE '\\'"),
+            String::from("(sym.symbol = ?1 COLLATE NOCASE)"),
+            Some(format!("{}%", like_escape(symbol))),
+        ),
+    }
+}
+
+/// The scope WHERE clause and its bind value at `?idx`.
+fn scope_filter(scope: SymbolScope, idx: usize) -> (String, Option<rusqlite::types::Value>) {
+    match scope {
+        SymbolScope::All => (String::new(), None),
+        SymbolScope::Library(library) => (
+            format!(" AND s.library = ?{idx} COLLATE NOCASE"),
+            Some(rusqlite::types::Value::from(library)),
+        ),
+        SymbolScope::Source(source_id) => (
+            format!(" AND s.source_id = ?{idx}"),
+            Some(rusqlite::types::Value::from(source_id)),
+        ),
+    }
+}
+
+impl Store {
+    /// The symbol-lookup ladder over active sources: matches `symbol` per
+    /// `mode`, narrowed to `scope`, best match quality first with ties in
+    /// the lower chunk id. One hit per chunk — the per-chunk pick keeps the
+    /// best-quality row (exact before prefix, then lowest symbol) — so the
+    /// limit counts chunks, not symbol rows. `offset` skips that many
+    /// ranked chunks — the pagination window past the retrieval head; the
+    /// ordering stays deterministic in the mode and scope. The
+    /// terminal-license clause drops refused sources at query time
+    /// (docs/implementation/09 §License gate enforcement points, point 3).
+    pub fn search_symbols(
+        &self,
+        symbol: &str,
+        mode: SymbolMatch,
+        scope: SymbolScope,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Hit>, StoreError> {
+        // `?1` is always the raw identifier (equality and match quality),
+        // `?2` the limit; the escaped match pattern sits at `?3` in the
+        // prefix modes, the scope value takes the next index when the
+        // scope narrows, and the offset follows the last used index.
+        let (predicate, quality, pattern) = match_shape(mode, symbol);
+        let scope_idx = if pattern.is_some() { 4 } else { 3 };
+        let (scope_clause, scope_value) = scope_filter(scope, scope_idx);
+        let offset_idx = 3 + usize::from(pattern.is_some()) + usize::from(scope_value.is_some());
+        let mut bind = vec![
+            rusqlite::types::Value::from(symbol.to_owned()),
+            rusqlite::types::Value::from(i64::from(limit)),
+        ];
+        if let Some(pattern) = pattern {
+            bind.push(rusqlite::types::Value::from(pattern));
+        }
+        // Deterministic in the mode and scope only, so `prepare_cached`
+        // keeps one entry per mode and scope variant.
+        let sql = format!(
+            "SELECT * FROM (\
+                 SELECT {SYMBOL_BASE_COLUMNS}, sym.kind, {quality} AS quality, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY c.chunk_id \
+                            ORDER BY {quality} DESC, sym.symbol, sym.kind\
+                        ) AS rn \
+                 FROM {SYMBOL_FROM} \
+                 WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}{scope_clause}\
+             ) \
+             WHERE rn = 1 \
+             ORDER BY quality DESC, chunk_id \
+             LIMIT ?2 OFFSET ?{offset_idx}"
+        )
+        .replace(LICENSE_PLACEHOLDER, TERMINAL_LICENSE_CLAUSE);
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
+        if let Some(value) = scope_value {
+            bind.push(value);
+        }
+        bind.push(rusqlite::types::Value::from(i64::from(offset)));
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind), plain_hit)?;
+        rows.collect::<Result<Vec<Hit>, _>>()
+            .map_err(StoreError::Sql)
+    }
+}
 
 /// The FROM/JOIN of the full-chunk read: chunk and source, no symbol table.
 const SOURCE_CHUNKS_FROM: &str = "chunks c \
@@ -285,13 +462,13 @@ fn fts_source_set_clause(count: usize) -> String {
 }
 
 /// Composes one ordinal-ordered query (symbol lookups, full-chunk reads):
-/// the shared projection, one query-specific suffix column at index 13,
-/// the FROM/JOIN, and the clause. Deterministic in its arguments, so the
-/// same shape yields the same SQL string on every call and
+/// one projection column list, one query-specific suffix column at index
+/// 13, the FROM/JOIN, and the clause. Deterministic in its arguments, so
+/// the same shape yields the same SQL string on every call and
 /// `prepare_cached` stays effective.
-fn plain_sql(from_clause: &str, where_clause: &str, suffix_column: &str) -> String {
+fn plain_sql(columns: &str, from_clause: &str, where_clause: &str, suffix_column: &str) -> String {
     format!(
-        "SELECT {BASE_COLUMNS}, {suffix_column} \
+        "SELECT {columns}, {suffix_column} \
          FROM {from_clause} \
          WHERE {where_clause} \
          ORDER BY c.ordinal"
@@ -366,7 +543,7 @@ impl Store {
         src: devdocs_model::SourceId,
     ) -> Result<Vec<Hit>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        let sql = plain_sql(SYMBOL_FROM, SYMBOL_CLAUSE, "sym.kind");
+        let sql = plain_sql(SYMBOL_BASE_COLUMNS, SYMBOL_FROM, SYMBOL_CLAUSE, "sym.kind");
         let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![symbol, src.0], plain_hit)?;
         rows.collect::<Result<Vec<Hit>, _>>()
@@ -439,7 +616,12 @@ impl Store {
     /// Every chunk of one source in ordinal order — the `open` read path.
     pub fn source_chunks(&self, source_id: i64) -> Result<Vec<Hit>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        let sql = plain_sql(SOURCE_CHUNKS_FROM, SOURCE_CHUNKS_CLAUSE, "NULL");
+        let sql = plain_sql(
+            BASE_COLUMNS,
+            SOURCE_CHUNKS_FROM,
+            SOURCE_CHUNKS_CLAUSE,
+            "NULL",
+        );
         let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![source_id], plain_hit)?;
         rows.collect::<Result<Vec<Hit>, _>>()

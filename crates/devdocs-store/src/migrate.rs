@@ -33,14 +33,26 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
     },
     EmbeddedMigration {
         version: 2,
-        name: "0002_page_url",
+        name: "0002_symbols_symbol_nocase",
         sql: include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0002_page_url.sql"
+            "/migrations/0002_symbols_symbol_nocase.sql"
+        )),
+        destructive: false,
+    },
+    EmbeddedMigration {
+        version: 3,
+        name: "0003_page_url",
+        sql: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0003_page_url.sql"
         )),
         destructive: false,
     },
 ];
+
+/// How many migrations ship with the store, in application order.
+pub const MIGRATION_COUNT: usize = MIGRATIONS.len();
 
 /// Options for the migration runner.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -213,7 +225,7 @@ mod tests {
         let mut first = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
         let mut second = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
 
-        // Another connection wins the race and applies the migration.
+        // Another connection wins the race and applies every migration.
         let applied = apply_all(&mut first, super::MIGRATIONS, MigrateOptions::default()).unwrap();
         assert_eq!(applied.len(), super::MIGRATIONS.len());
 
@@ -269,7 +281,7 @@ mod tests {
         assert_eq!(applied.len(), 1);
     }
 
-    /// The shipped run ends at `user_version` 2, adds the `chunks.page_url`
+    /// The shipped run ends at `user_version` 3, adds the `chunks.page_url`
     /// column, and re-running on the migrated database applies nothing.
     #[test]
     fn shipped_migrations_land_the_page_url_column() {
@@ -282,7 +294,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
 
         let page_url: i64 = conn
             .query_row(

@@ -49,6 +49,13 @@ const BASE_CONFIG: &[&str] = &[
 /// The [`run_git`] wait-loop poll interval.
 const WAIT_POLL: Duration = Duration::from_millis(100);
 
+/// The grace a pipe reader gets after the deadline: the direct git child
+/// is dead by then, so a normal exit delivers its buffer within this
+/// window, while a stalled transport helper never closes the pipe and
+/// expires instead (a leaked reader thread is bounded by the process
+/// lifetime).
+const READER_GRACE: Duration = Duration::from_secs(2);
+
 /// Builds the command one `git` invocation runs: `git`, the per-command
 /// `-c` config (base plus extras), then `args`, from `cwd`. The child env
 /// is hardened here: the prompt, system config, and locale pins, then the
@@ -138,13 +145,16 @@ fn run_child(
 ) -> Result<String, IngestError> {
     // Read the pipes on threads while the wait loop polls: a child whose
     // output fills the pipe buffer must not block on a write while it is
-    // never read.
-    let stdout_reader = read_pipe(child.stdout.take());
-    let stderr_reader = read_pipe(child.stderr.take());
+    // never read. The joins are bounded (see [`wait_for_reader`]): a
+    // stalled transport helper may hold the pipe write end open even
+    // after the direct child is dead, so an unbounded join would hang
+    // past the deadline.
+    let (stdout_reader, stdout_receiver) = read_pipe(child.stdout.take());
+    let (stderr_reader, stderr_receiver) = read_pipe(child.stderr.take());
     match wait_until(child, deadline) {
         Ok(Some(status)) => {
-            let stdout = join_reader(stdout_reader);
-            let stderr = join_reader(stderr_reader);
+            let stdout = wait_for_reader(stdout_reader, &stdout_receiver);
+            let stderr = wait_for_reader(stderr_reader, &stderr_receiver);
             if !status.success() {
                 return Err(IngestError::GitCommand {
                     command: command_text,
@@ -155,8 +165,8 @@ fn run_child(
         }
         Ok(None) => {
             kill_and_reap(child);
-            join_reader(stdout_reader);
-            join_reader(stderr_reader);
+            wait_for_reader(stdout_reader, &stdout_receiver);
+            wait_for_reader(stderr_reader, &stderr_receiver);
             Err(IngestError::GitTimeout {
                 command: command_text,
                 seconds: crate::pipeline::TOTAL_INGEST_CAP.as_secs(),
@@ -164,8 +174,8 @@ fn run_child(
         }
         Err(error) => {
             kill_and_reap(child);
-            join_reader(stdout_reader);
-            join_reader(stderr_reader);
+            wait_for_reader(stdout_reader, &stdout_receiver);
+            wait_for_reader(stderr_reader, &stderr_receiver);
             Err(IngestError::GitSpawn {
                 message: error.to_string(),
             })
@@ -192,26 +202,47 @@ fn wait_until(
 
 /// Kills the direct child and reaps it so no git process outlives the
 /// deadline. git's transport helpers observe the closed pipe and exit on
-/// their next write (docs/implementation/09 §Git subprocess safety).
+/// their next write, but a stalled helper may never write again and hold
+/// the pipes open — the reader joins are bounded, so the deadline path
+/// always returns `GIT_TIMEOUT` (docs/implementation/09 §Git subprocess
+/// safety).
 fn kill_and_reap(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
-/// Reads one pipe to end on a worker thread.
-fn read_pipe<R: io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
+/// Reads one pipe to end on a worker thread and hands the buffer back
+/// through a channel, so the caller can wait a bounded time instead of
+/// joining unconditionally. The handle exists only to be dropped — it
+/// detaches the reader when the wait expires.
+fn read_pipe<R: io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
         let mut buffer = Vec::new();
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut buffer);
         }
-        buffer
-    })
+        let _ = sender.send(buffer);
+    });
+    (reader, receiver)
 }
 
-/// Joins a pipe reader; a panicked reader yields an empty buffer.
-fn join_reader(reader: std::thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
-    reader.join().unwrap_or_default()
+/// Waits a short grace for a pipe reader's buffer; a panicked reader
+/// yields an empty buffer too. On expiry the buffer is dropped, the
+/// receiver is released with the caller's scope, and the detached reader
+/// thread ends when the process does — the caller has already killed the
+/// direct child.
+fn wait_for_reader(
+    reader: std::thread::JoinHandle<()>,
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<u8> {
+    drop(reader);
+    receiver.recv_timeout(READER_GRACE).unwrap_or_default()
 }
 
 /// The bounded stderr tail for an error: the last 512 characters, cut on
@@ -356,5 +387,41 @@ mod tests {
         }
         // The kill and reap happened before the error returned.
         assert!(child.try_wait().unwrap().is_some());
+    }
+
+    /// A child that outlives the deadline while grandchildren keep the
+    /// pipes open — like a stalled git transport helper — must still
+    /// surface `GIT_TIMEOUT` promptly: the reader joins are bounded, so
+    /// the deadline path never blocks on a pipe that never ends
+    /// (unix-gated: the fixture is `sh` + `sleep`).
+    #[cfg(unix)]
+    #[test]
+    fn run_child_times_out_when_grandchildren_hold_the_pipes_open() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30 & sleep 30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let start = Instant::now();
+        let error = super::run_child(
+            &mut child,
+            "git clone slow".to_owned(),
+            Instant::now() + Duration::from_millis(100),
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+
+        match &error {
+            IngestError::GitTimeout { command, .. } => {
+                assert_eq!(command, "git clone slow");
+            }
+            other => panic!("expected GitTimeout, got {other:?}"),
+        }
+        // Bounded: the deadline plus the reader grace, far below the
+        // 30-second sleep fixtures an unbounded join would wait on.
+        assert!(elapsed < Duration::from_secs(10));
     }
 }

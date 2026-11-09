@@ -256,7 +256,8 @@ pub fn symbol(
 /// active version's sources (the alias rule, docs/08 §Version policy), so
 /// a stale version's lower chunk ids never surface first. Returns the
 /// source ids and the served version, `Some` only for a pinned one — the
-/// pick-status input.
+/// normalized request label, so the item status compares against the
+/// stored version form.
 ///
 /// # Errors
 /// [`RetrieveError::Miss`] with [`MissReason::NotIndexed`] when the
@@ -276,24 +277,31 @@ fn symbol_target_sources(
     if available.is_empty() {
         return Err(MissReason::NotIndexed.into());
     }
-    let served = match version {
-        Some(version) => normalize_sha(version),
-        None => {
-            // The unpinned request serves the highest active version; the
-            // returned served-version element stays `None` so the items
-            // keep the alias status.
+    // A pinned request serves the normalized label (a SHA lowercases), so
+    // `item_status` compares items against the stored form, not the raw
+    // request casing; the unpinned request serves the highest active
+    // version, and its served-version element stays `None` so the items
+    // keep the alias status.
+    let (served, served_version) = match version {
+        Some(version) => {
+            let normalized = normalize_sha(version);
+            let served_version = Some(normalized.clone());
+            (normalized, served_version)
+        }
+        None => (
             pick(&available, None)
                 .version
                 .ok_or(MissReason::NotIndexed)?
                 .as_str()
-                .to_owned()
-        }
+                .to_owned(),
+            None,
+        ),
     };
     let source_ids = store.find_sources(library, &served)?;
     if source_ids.is_empty() {
         return Err(MissReason::VersionAbsent.into());
     }
-    Ok((source_ids, version.map(str::to_owned)))
+    Ok((source_ids, served_version))
 }
 
 /// The stored label for a pinned lookup: a git commit SHA is stored

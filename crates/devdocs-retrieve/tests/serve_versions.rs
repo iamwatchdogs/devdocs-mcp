@@ -762,3 +762,70 @@ fn the_symbol_ladder_applies_across_the_pinned_target() {
         envelope.results
     );
 }
+
+/// A pinned symbol lookup on an uppercase SHA serves the normalized
+/// lowercase SHA with Verified status: the sources resolve through the
+/// stored lowercase form, so the served-version label must be that form
+/// too — the raw request casing would fail the `item_status` comparison
+/// and report Fallback (docs/implementation/08 §Version policy).
+#[test]
+fn a_pinned_sha_symbol_lookup_serves_the_normalized_version() {
+    let sha = "abcdef0123456789abcdef0123456789abcdef01";
+    let (_dir, store) = {
+        let dir = tempdir().unwrap();
+        let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+            let source = devdocs_testkit::seed_source(conn, "acme", true)?;
+            conn.execute(
+                "UPDATE sources SET version = ?1 WHERE source_id = ?2",
+                rusqlite::params![sha, source],
+            )?;
+            let chunk = devdocs_testkit::seed_chunk(
+                conn,
+                source,
+                0,
+                "[\"Widgets\"]",
+                None,
+                "The widget factory builds one widget.",
+            )?;
+            conn.execute(
+                "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidget', ?1, 'function')",
+                [chunk],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        (dir, store)
+    };
+    let envelope = symbol(
+        &store,
+        "acme",
+        Some(&sha.to_ascii_uppercase()),
+        "makeWidget",
+        &Plan::defaults(),
+    )
+    .unwrap();
+    assert!(
+        envelope
+            .results
+            .iter()
+            .all(|item| item.served_version == sha),
+        "the lookup must serve the normalized SHA, got {:?}",
+        envelope
+            .results
+            .iter()
+            .map(|item| &item.served_version)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        envelope
+            .results
+            .iter()
+            .all(|item| item.version_status == VersionStatus::Verified),
+        "an uppercase-SHA pin must verify, got {:?}",
+        envelope
+            .results
+            .iter()
+            .map(|item| item.version_status)
+            .collect::<Vec<_>>()
+    );
+}

@@ -86,40 +86,58 @@ fn migration_0002_applies_once() {
     assert!(reapplied.is_empty(), "re-run must be a no-op");
 }
 
+/// Asserts one audit line carries the docs/07 fields: the audit prefix,
+/// the library, the from/to pair, the operator, and the note exactly
+/// when one was given.
+fn assert_audit_line(line: &str, from: LicenseStatus, to: LicenseStatus, noted: bool) {
+    assert!(line.starts_with("(audit:"), "line: {line}");
+    assert!(line.contains(", acme, "), "line: {line}");
+    assert!(
+        line.contains(&format!(", {}, {}, ", from.as_str(), to.as_str())),
+        "line: {line}"
+    );
+    assert!(line.contains(", op"), "line: {line}");
+    assert!(line.ends_with(')'), "line: {line}");
+    assert_eq!(
+        line.contains(", robots allowlist re-checked"),
+        noted,
+        "line: {line}"
+    );
+}
+
 /// Every legal transition moves the row and appends exactly one audit
 /// line carrying the docs/07 fields: timestamp, library, from, to,
 /// operator.
 #[test]
 fn every_legal_transition_moves_and_audits() {
-    let non_terminal = [
+    let all = [
         PendingReview,
         ApprovedFetch,
         ApprovedIndex,
         ApprovedEmbed,
         ApprovedCache,
         ApprovedSnippet,
+        Denied,
+        Expired,
+        Revoked,
     ];
-    let mut legal: Vec<(LicenseStatus, LicenseStatus)> = Vec::new();
-    for from in non_terminal {
-        for to in [Denied, Expired, Revoked] {
-            legal.push((from, to));
+    // Derive the legal pairs from the model's own transition table; the
+    // table keeps its separate exhaustive test in devdocs-model.
+    let mut legal = Vec::new();
+    for from in all {
+        for to in all {
+            if from.can_transition_to(to) {
+                legal.push((from, to));
+            }
         }
     }
-    legal.extend([
-        (PendingReview, ApprovedFetch),
-        (ApprovedFetch, ApprovedIndex),
-        (ApprovedIndex, ApprovedEmbed),
-        (ApprovedEmbed, ApprovedCache),
-        (ApprovedCache, ApprovedSnippet),
-        // The re-opening move needs its note.
-        (Denied, PendingReview),
-    ]);
-    assert_eq!(legal.len(), 24);
+    assert_eq!(legal.len(), 24, "the documented table has 24 legal moves");
 
     for (from, to) in legal {
         let (store, _dir) = store();
         insert_source(&store, "acme", "1.0", from, None);
-        let note = if (from, to) == (Denied, PendingReview) {
+        let noted = (from, to) == (Denied, PendingReview);
+        let note = if noted {
             Some("robots allowlist re-checked")
         } else {
             None
@@ -132,22 +150,7 @@ fn every_legal_transition_moves_and_audits() {
 
         let lines = audit_lines(&store);
         assert_eq!(lines.len(), 1, "{from:?} → {to:?}");
-        let line = &lines[0];
-        assert!(line.starts_with("(audit:"), "line: {line}");
-        assert!(line.contains(", acme, "), "line: {line}");
-        assert!(
-            line.contains(&format!(", {}, {}, ", from.as_str(), to.as_str())),
-            "line: {line}"
-        );
-        assert!(line.contains(", op"), "line: {line}");
-        assert!(line.ends_with(')'), "line: {line}");
-        // The re-opening move is the only one that arrives with a note
-        // here; every other audit line ends at the operator.
-        assert_eq!(
-            line.contains(", robots allowlist re-checked"),
-            (from, to) == (Denied, PendingReview),
-            "line: {line}"
-        );
+        assert_audit_line(&lines[0], from, to, noted);
     }
 }
 
@@ -166,27 +169,11 @@ fn every_illegal_transition_refuses_without_a_trace() {
         Expired,
         Revoked,
     ];
-    let non_terminal = [
-        PendingReview,
-        ApprovedFetch,
-        ApprovedIndex,
-        ApprovedEmbed,
-        ApprovedCache,
-        ApprovedSnippet,
-    ];
     for from in all {
         for to in all {
-            let legal = (from, to) == (Denied, PendingReview)
-                || (matches!(to, Denied | Expired | Revoked) && non_terminal.contains(&from))
-                || matches!(
-                    (from, to),
-                    (PendingReview, ApprovedFetch)
-                        | (ApprovedFetch, ApprovedIndex)
-                        | (ApprovedIndex, ApprovedEmbed)
-                        | (ApprovedEmbed, ApprovedCache)
-                        | (ApprovedCache, ApprovedSnippet)
-                );
-            if legal {
+            // The store under test calls the same predicate; the model
+            // table keeps its own exhaustive test.
+            if from.can_transition_to(to) {
                 continue;
             }
             let (store, _dir) = store();
@@ -194,16 +181,15 @@ fn every_illegal_transition_refuses_without_a_trace() {
             let error = store
                 .transition_license("acme", to, "op", Some("note"), None)
                 .unwrap_err();
-            match error {
-                crate::error::StoreError::InvalidTransition {
-                    from: error_from,
-                    to: error_to,
-                } => {
-                    assert_eq!(error_from, from, "{from:?} → {to:?}");
-                    assert_eq!(error_to, to);
-                }
-                other => panic!("{from:?} → {to:?}: expected InvalidTransition, got {other:?}"),
-            }
+            let crate::error::StoreError::InvalidTransition {
+                from: error_from,
+                to: error_to,
+            } = error
+            else {
+                panic!("{from:?} → {to:?}: expected InvalidTransition, got {error:?}");
+            };
+            assert_eq!(error_from, from, "{from:?} → {to:?}");
+            assert_eq!(error_to, to);
             assert_eq!(state_of(&store, "acme"), from, "{from:?} → {to:?}");
             assert!(
                 audit_lines(&store).is_empty(),
@@ -337,49 +323,34 @@ fn sweep_flips_only_passed_non_terminal_expiries() {
     insert_source(&store, "past", "1.0", ApprovedIndex, Some("2026-01-01"));
     insert_source(&store, "future", "1.0", ApprovedIndex, Some("2999-01-01"));
     insert_source(&store, "no-expiry", "1.0", ApprovedIndex, None);
-    insert_source(
-        &store,
-        "already-expired",
-        "1.0",
-        ApprovedIndex,
-        Some("2026-01-01"),
-    );
-    store
-        .transition_license("already-expired", Expired, "op", None, None)
-        .unwrap();
-    insert_source(
-        &store,
-        "already-denied",
-        "1.0",
-        ApprovedIndex,
-        Some("2026-01-01"),
-    );
-    store
-        .transition_license("already-denied", Denied, "op", None, None)
-        .unwrap();
-    insert_source(
-        &store,
-        "already-revoked",
-        "1.0",
-        ApprovedIndex,
-        Some("2026-01-01"),
-    );
-    store
-        .transition_license("already-revoked", Revoked, "op", None, None)
-        .unwrap();
+    // Rows already in a terminal refusal: set each up through its own
+    // operator transition, with a past expiry recorded underneath.
+    let already_terminal = [
+        ("already-expired", Expired),
+        ("already-denied", Denied),
+        ("already-revoked", Revoked),
+    ];
+    for (library, terminal) in already_terminal {
+        insert_source(&store, library, "1.0", ApprovedIndex, Some("2026-01-01"));
+        store
+            .transition_license(library, terminal, "op", None, None)
+            .unwrap();
+    }
 
     let flipped = store.sweep_expired("2026-11-06T12:00:00Z").unwrap();
     assert_eq!(flipped, 1, "only the past-expiry row flips");
-    assert_eq!(state_of(&store, "past"), Expired);
-    assert_eq!(state_of(&store, "future"), ApprovedIndex);
-    assert_eq!(state_of(&store, "no-expiry"), ApprovedIndex);
-    assert_eq!(state_of(&store, "already-expired"), Expired);
-    assert_eq!(state_of(&store, "already-denied"), Denied);
-    assert_eq!(state_of(&store, "already-revoked"), Revoked);
+    for (library, expected) in [
+        ("past", Expired),
+        ("future", ApprovedIndex),
+        ("no-expiry", ApprovedIndex),
+    ]
+    .into_iter()
+    .chain(already_terminal)
+    {
+        assert_eq!(state_of(&store, library), expected, "{library}");
+    }
 
     let lines = audit_lines(&store);
-    // One operator transition line per already-terminal setup (3) plus
-    // exactly one auto:expiry line.
     let auto: Vec<_> = lines
         .iter()
         .filter(|l| l.contains(AUTO_EXPIRY_OPERATOR))

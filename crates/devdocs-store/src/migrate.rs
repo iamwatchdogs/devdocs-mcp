@@ -40,6 +40,15 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         )),
         destructive: false,
     },
+    EmbeddedMigration {
+        version: 3,
+        name: "0003_page_url",
+        sql: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0003_page_url.sql"
+        )),
+        destructive: false,
+    },
 ];
 
 /// How many migrations ship with the store, in application order.
@@ -270,5 +279,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(applied.len(), 1);
+    }
+
+    /// The shipped run ends at `user_version` 3, adds the `chunks.page_url`
+    /// column, and re-running on the migrated database applies nothing.
+    #[test]
+    fn shipped_migrations_land_the_page_url_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
+
+        let applied = apply_all(&mut conn, super::MIGRATIONS, MigrateOptions::default()).unwrap();
+        assert_eq!(applied.len(), super::MIGRATIONS.len());
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+
+        let page_url: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('chunks') WHERE name = 'page_url'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(page_url, 1, "chunks.page_url must exist after 0002");
+
+        let rerun = apply_all(&mut conn, super::MIGRATIONS, MigrateOptions::default()).unwrap();
+        assert!(
+            rerun.is_empty(),
+            "an up-to-date database must apply nothing: {rerun:?}"
+        );
     }
 }

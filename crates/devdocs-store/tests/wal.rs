@@ -122,7 +122,7 @@ fn a_second_writer_reports_busy() {
 }
 
 /// Two stores can open the same file at once and both migrate: the first
-/// applies schema 0001, the second applies nothing.
+/// applies the schema, the second applies nothing.
 #[test]
 fn concurrent_open_and_migrate_succeed() {
     let dir = tempdir().unwrap();

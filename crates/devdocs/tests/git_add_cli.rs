@@ -24,6 +24,8 @@ fn repo_url(path: &Path) -> String {
 }
 
 /// Writes a config with the `acme` git source approved at the index stage.
+/// The url goes into a TOML literal string: a Windows temp path carries
+/// backslashes that a basic string would read as escape sequences.
 fn write_git_config(env: &Env, url: &str) -> std::path::PathBuf {
     let config = env.root.join("devdocs.toml");
     std::fs::write(
@@ -31,7 +33,7 @@ fn write_git_config(env: &Env, url: &str) -> std::path::PathBuf {
         format!(
             "[sources.acme]\n\
              kind = \"git\"\n\
-             url = \"{url}\"\n\
+             url = '{url}'\n\
              license = \"MIT\"\n\
              status = \"approved_index\"\n"
         ),

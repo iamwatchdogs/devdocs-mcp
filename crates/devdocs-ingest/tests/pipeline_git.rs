@@ -6,7 +6,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use devdocs_ingest::guard::FetchGuard;
@@ -18,18 +17,10 @@ use devdocs_testkit::git_repo::{bare_mirror, docs_repo};
 use tempfile::tempdir;
 use url::Url;
 
-/// Runs `git` against a fixture with the same argv-only, pinned-env
-/// discipline the testkit uses, returning trimmed stdout.
+/// Fixture git runner through the testkit helper, so the argv-only and
+/// isolation-env discipline stays in one place.
 fn fixture_git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?} failed");
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    devdocs_testkit::git_repo::git(dir, args).unwrap()
 }
 
 /// The `file://` URL of a local repository path — the exact string the

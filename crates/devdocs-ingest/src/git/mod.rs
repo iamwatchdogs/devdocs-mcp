@@ -30,7 +30,6 @@ pub(crate) mod test_util {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::path::Path;
-    use std::process::Command as StdCommand;
     use std::sync::Mutex;
 
     use devdocs_model::config::DEFAULT_GIT_EXTENSIONS;
@@ -50,17 +49,9 @@ pub(crate) mod test_util {
             .collect()
     }
 
-    /// Runs `git` against a fixture with the same argv-only, pinned-env
-    /// discipline the testkit uses, returning trimmed stdout.
+    /// Runs `git` against a fixture through the testkit runner, so the
+    /// argv-only and isolation-env discipline stays in one place.
     pub(crate) fn fixture_git(dir: &Path, args: &[&str]) -> String {
-        let output = StdCommand::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {args:?} failed");
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        devdocs_testkit::git_repo::git(dir, args).unwrap()
     }
 }

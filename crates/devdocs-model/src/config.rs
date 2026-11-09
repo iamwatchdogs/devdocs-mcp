@@ -366,8 +366,7 @@ impl PartialConfig {
     fn from_env_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<Self, Error> {
         use env_vars::{
             FETCH_CONCURRENCY, FETCH_MAX_BYTES, FETCH_MAX_REDIRECTS, FETCH_TIMEOUT_MS,
-            FETCH_USER_AGENT, INDEX_EMBEDDINGS, INDEX_PATH, INGEST_GIT_EXTENSIONS, SEARCH_LIMIT,
-            SEARCH_MAX_TOKENS, SEARCH_RRF_K,
+            FETCH_USER_AGENT, INDEX_EMBEDDINGS, INDEX_PATH, INGEST_GIT_EXTENSIONS,
         };
         let mut layer = Self::default();
         let mut fetch = PartialFetch::default();
@@ -398,16 +397,7 @@ impl PartialConfig {
                 reason: format!("expected `true` or `false`, got `{embeddings}`"),
             })?);
         }
-        for (var, target) in [
-            (
-                SEARCH_MAX_TOKENS,
-                EnvTarget::U64(&mut search.max_tokens_default),
-            ),
-            (SEARCH_LIMIT, EnvTarget::U32(&mut search.limit_default)),
-            (SEARCH_RRF_K, EnvTarget::U32(&mut search.rrf_k)),
-        ] {
-            apply_num(var, target)?;
-        }
+        apply_search_nums(&mut search)?;
 
         if let Some(exts) =
             git_extensions_from_raw(INGEST_GIT_EXTENSIONS, env(INGEST_GIT_EXTENSIONS))?
@@ -453,6 +443,26 @@ fn apply_num(var: &str, target: EnvTarget<'_>) -> Result<(), Error> {
         key_path: var.to_owned(),
         reason: reason.to_string(),
     })
+}
+
+/// Apply the numeric `DEVDOCS_SEARCH_*` variables to the search layer.
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when a set variable does not parse.
+fn apply_search_nums(search: &mut PartialSearch) -> Result<(), Error> {
+    use env_vars::{SEARCH_LIMIT, SEARCH_MAX_TOKENS, SEARCH_RRF_K};
+
+    for (var, target) in [
+        (
+            SEARCH_MAX_TOKENS,
+            EnvTarget::U64(&mut search.max_tokens_default),
+        ),
+        (SEARCH_LIMIT, EnvTarget::U32(&mut search.limit_default)),
+        (SEARCH_RRF_K, EnvTarget::U32(&mut search.rrf_k)),
+    ] {
+        apply_num(var, target)?;
+    }
+    Ok(())
 }
 
 /// Read one environment variable. A set but non-UTF-8 value is a config

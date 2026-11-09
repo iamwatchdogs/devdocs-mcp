@@ -763,6 +763,34 @@ fn the_symbol_ladder_applies_across_the_pinned_target() {
     );
 }
 
+/// Seeds one `acme` source whose version is the lowercase SHA, carrying
+/// one widget chunk and the `makeWidget` symbol.
+fn seeded_sha_symbol_store(sha: &str) -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        let source = devdocs_testkit::seed_source(conn, "acme", true)?;
+        conn.execute(
+            "UPDATE sources SET version = ?1 WHERE source_id = ?2",
+            rusqlite::params![sha, source],
+        )?;
+        let chunk = devdocs_testkit::seed_chunk(
+            conn,
+            source,
+            0,
+            "[\"Widgets\"]",
+            None,
+            "The widget factory builds one widget.",
+        )?;
+        conn.execute(
+            "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidget', ?1, 'function')",
+            [chunk],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
 /// A pinned symbol lookup on an uppercase SHA serves the normalized
 /// lowercase SHA with Verified status: the sources resolve through the
 /// stored lowercase form, so the served-version label must be that form
@@ -771,31 +799,7 @@ fn the_symbol_ladder_applies_across_the_pinned_target() {
 #[test]
 fn a_pinned_sha_symbol_lookup_serves_the_normalized_version() {
     let sha = "abcdef0123456789abcdef0123456789abcdef01";
-    let (_dir, store) = {
-        let dir = tempdir().unwrap();
-        let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
-            let source = devdocs_testkit::seed_source(conn, "acme", true)?;
-            conn.execute(
-                "UPDATE sources SET version = ?1 WHERE source_id = ?2",
-                rusqlite::params![sha, source],
-            )?;
-            let chunk = devdocs_testkit::seed_chunk(
-                conn,
-                source,
-                0,
-                "[\"Widgets\"]",
-                None,
-                "The widget factory builds one widget.",
-            )?;
-            conn.execute(
-                "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('makeWidget', ?1, 'function')",
-                [chunk],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-        (dir, store)
-    };
+    let (_dir, store) = seeded_sha_symbol_store(sha);
     let envelope = symbol(
         &store,
         "acme",

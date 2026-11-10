@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::chrome::PageDocument;
 use crate::error::IngestError;
 
-use super::command::run_git;
+use super::command::{ensure_git_version, run_git};
 use super::temp::TempClone;
 use super::walk::walk_docs;
 
@@ -261,10 +261,13 @@ pub struct GitFetch {
 /// safety).
 ///
 /// # Errors
-/// [`IngestError::GitInvalidPin`] for an option-shaped pin,
+/// [`IngestError::GitTooOld`] when the system git is older than the
+/// enforced 2.32 minimum, [`IngestError::GitInvalidPin`] for an
+/// option-shaped pin,
 /// [`IngestError::GitTempDir`] when the private directory cannot be
 /// created or verified.
 pub fn plan(url: &str, pin: &str, data_root: &Path) -> Result<GitPlan, IngestError> {
+    ensure_git_version()?;
     if pin.starts_with('-') {
         return Err(IngestError::GitInvalidPin {
             pin: pin.to_owned(),

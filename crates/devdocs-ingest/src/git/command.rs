@@ -5,6 +5,7 @@
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,65 @@ const BASE_CONFIG: &[&str] = &[
 
 /// The [`run_git`] wait-loop poll interval.
 const WAIT_POLL: Duration = Duration::from_millis(100);
+
+/// The minimum git version the adapter accepts: `GIT_CONFIG_GLOBAL`,
+/// which the child-env pin relies on, was introduced in Git 2.32 — older
+/// versions ignore the variable and read `~/.gitconfig` normally, so the
+/// pin no-ops and a hostile repo's `.gitattributes` can reach an
+/// operator-defined global smudge filter
+/// (docs/implementation/09 §Git subprocess safety).
+const MIN_GIT_VERSION: (u32, u32) = (2, 32);
+
+/// The cached outcome of the one-time [`ensure_git_version`] gate: `true`
+/// only when a probe of the system binary met [`MIN_GIT_VERSION`]. A
+/// `false` here never blocks a passing re-probe — the gate re-probes on
+/// the failure path to surface the real error.
+static GIT_VERSION_OK: OnceLock<bool> = OnceLock::new();
+
+/// Checks the system git meets [`MIN_GIT_VERSION`] and fails with
+/// `GitTooOld` (or the probe's own spawn error) otherwise. The probe runs
+/// at most once per process through the same [`run_git`] machinery as
+/// every other invocation, so the child-env pinning applies; the failing
+/// path re-probes so the error carries its real cause — a spawn failure,
+/// an unparseable `git --version`, or the found version — and that path
+/// ends the run, so the second spawn costs nothing.
+pub(crate) fn ensure_git_version() -> Result<(), IngestError> {
+    if *GIT_VERSION_OK
+        .get_or_init(|| probe_git_version().is_ok_and(|output| version_meets_min(&output)))
+    {
+        return Ok(());
+    }
+    let output = probe_git_version()?;
+    if !version_meets_min(&output) {
+        return Err(IngestError::GitTooOld { found: output });
+    }
+    Ok(())
+}
+
+/// Runs `git --version` through [`run_git`] so the probe carries the same
+/// hardened child env as every other invocation.
+fn probe_git_version() -> Result<String, IngestError> {
+    run_git(Path::new("."), &["--version"], &[])
+}
+
+/// Whether the `git --version` output states a version at or after
+/// [`MIN_GIT_VERSION`]. Unparseable output fails closed.
+fn version_meets_min(output: &str) -> bool {
+    parse_git_version(output).is_some_and(|version| version >= MIN_GIT_VERSION)
+}
+
+/// Parses `git version X.Y[.Z...][ suffix]` into `(major, minor)`: the
+/// Apple Git builds carry a parenthesized suffix after the numbers, the
+/// patch component is optional, and later dot components after minor are
+/// ignored. `None` when the text does not name a major.minor pair.
+fn parse_git_version(output: &str) -> Option<(u32, u32)> {
+    let rest = output.trim().strip_prefix("git version ")?.trim();
+    let numbers = rest.split_whitespace().next()?;
+    let mut parts = numbers.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
 
 /// The grace a pipe reader gets after the deadline: the direct git child
 /// is dead by then, so a normal exit delivers its buffer within this
@@ -99,7 +159,7 @@ fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Comman
     command.env("LC_ALL", "C");
     command.env_remove("LANGUAGE");
     // Isolate the user's global git config too: a hostile repo's
-    // `.gitattributes` could otherwise trigger an operator-defined global
+    // `.gitattributes` can otherwise trigger an operator-defined global
     // smudge filter via `core.attributesFile` during checkout. Git's
     // compiled-in default credential helper does not come from
     // ~/.gitconfig, and the per-command `-c` overrides still win.
@@ -461,6 +521,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_child_keeps_the_full_stderr_beside_the_bounded_tail() {
+        // The shutdown flag is process-global; a concurrent shutdown test
+        // would turn this failing child into a `GitTimeout`.
+        let _lock = crate::git::test_util::TEMP_CLONE_ORDER.lock().unwrap();
         let mut child = Command::new("sh")
             .arg("-c")
             .arg("echo refusal-line >&2; head -c 600 /dev/zero | tr '\\0' x >&2; exit 1")
@@ -494,6 +557,71 @@ mod tests {
             }
             other => panic!("expected GitCommand, got {other:?}"),
         }
+    }
+
+    /// The version parser reads major and minor from the exact
+    /// `git version` output, with or without the patch component.
+    #[test]
+    fn the_version_parser_reads_major_and_minor_from_git_version_output() {
+        assert_eq!(
+            super::parse_git_version("git version 2.39.5"),
+            Some((2, 39))
+        );
+        assert_eq!(super::parse_git_version("git version 2.32"), Some((2, 32)));
+        assert_eq!(
+            super::parse_git_version("  git version 2.39.5 \n"),
+            Some((2, 39))
+        );
+    }
+
+    /// The Apple Git builds carry a parenthesized suffix after the
+    /// version numbers; the parser reads the numbers and drops the rest.
+    #[test]
+    fn the_version_parser_ignores_the_apple_git_suffix() {
+        assert_eq!(
+            super::parse_git_version("git version 2.39.5 (Apple Git-155)"),
+            Some((2, 39))
+        );
+    }
+
+    /// The minimum compare is numeric, never a string compare: the 2.32
+    /// boundary passes, 2.31 and 2.9 fail, and a newer major passes.
+    #[test]
+    fn versions_at_the_minimum_meet_it_and_older_ones_do_not() {
+        assert!(super::version_meets_min("git version 2.32.0"));
+        assert!(super::version_meets_min("git version 2.32"));
+        assert!(super::version_meets_min("git version 3.0.0"));
+        assert!(!super::version_meets_min("git version 2.31.7"));
+        assert!(!super::version_meets_min("git version 2.9.3"));
+    }
+
+    /// Output the parser cannot read fails closed: no panic, no pass.
+    #[test]
+    fn garbage_git_version_output_fails_closed_without_panicking() {
+        for garbage in [
+            "",
+            "git version",
+            "git version abc",
+            "GIT version 2.39.5",
+            "git 2.39.5",
+            "git version -1.2",
+            "git version 2..3",
+            "hello world 2.3",
+        ] {
+            assert_eq!(
+                super::parse_git_version(garbage),
+                None,
+                "{garbage:?} must not parse"
+            );
+            assert!(!super::version_meets_min(garbage));
+        }
+    }
+
+    /// The one-time gate passes on the real toolchain: a modern git
+    /// meets the 2.32 minimum, so every ingest run proceeds.
+    #[test]
+    fn the_version_gate_passes_on_the_real_toolchain() {
+        super::ensure_git_version().unwrap();
     }
 
     /// Clears the process-global shutdown flag on drop: a panic inside a

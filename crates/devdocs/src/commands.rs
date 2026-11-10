@@ -528,6 +528,13 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
             code: UpstreamCode::UpstreamError,
             detail: "GIT_BINARY_MISSING: the git executable was not found on PATH".to_owned(),
         },
+        // An unusable git version is not a user-argument problem: the
+        // adapter refuses the run the same way as a missing binary
+        // (docs/implementation/09 §Git subprocess safety).
+        E::GitTooOld { found } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("GIT_TOO_OLD: {found} does not meet the required git 2.32"),
+        },
         // A pin starting with `-` is a user-input mistake, not an upstream
         // failure: nothing ran, so it maps onto USAGE like the sibling
         // input checks in `run_add` (docs/implementation/05 §Error model).
@@ -629,6 +636,12 @@ mod tests {
             (
                 IngestError::GitCommitShaInvalid("not-a-sha".to_owned()),
                 "GIT_COMMIT_SHA_INVALID",
+            ),
+            (
+                IngestError::GitTooOld {
+                    found: "git version 2.31.7".to_owned(),
+                },
+                "GIT_TOO_OLD",
             ),
         ]
     }

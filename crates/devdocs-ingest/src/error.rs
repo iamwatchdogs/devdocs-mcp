@@ -80,6 +80,16 @@ pub enum IngestError {
     /// (docs/implementation/07 §Git adapter).
     #[error("GIT_BINARY_MISSING: the git executable was not found on PATH")]
     GitBinaryMissing,
+    /// The system git is older than the adapter's enforced minimum
+    /// (2.32): `GIT_CONFIG_GLOBAL` is ignored before 2.32, so the
+    /// global-config pin would no-op and a hostile repo's
+    /// `.gitattributes` could reach an operator-defined global smudge
+    /// filter (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_TOO_OLD: {found} does not meet the required git 2.32")]
+    GitTooOld {
+        /// The `git --version` output that failed the gate.
+        found: String,
+    },
     /// A git pin starts with `-`, which would read as a git option on the
     /// argv vector (docs/implementation/09 §Git subprocess safety).
     #[error("GIT_INVALID_PIN: pin `{pin}` starts with `-`")]
@@ -183,6 +193,13 @@ mod tests {
         assert_eq!(
             IngestError::GitWalk { message }.to_string(),
             "GIT_WALK_FAILED: boom"
+        );
+        assert_eq!(
+            IngestError::GitTooOld {
+                found: "git version 2.31.7".to_owned()
+            }
+            .to_string(),
+            "GIT_TOO_OLD: git version 2.31.7 does not meet the required git 2.32"
         );
     }
 }

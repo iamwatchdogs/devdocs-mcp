@@ -585,20 +585,18 @@ fn empty_fusion_miss(
     })
 }
 
-/// Whether the library's stored license state refuses retrieval: the least
-/// privileged of its rows' states sits in the terminal refusal set
-/// (`expired`, `revoked`, `denied`). The sweep has already run at the
-/// entry point, so a passed expiry reads back as `expired`.
+/// Whether the library's stored license state refuses retrieval: any row
+/// sitting in the terminal refusal set (`expired`, `revoked`, `denied`)
+/// blocks the library — a terminal state on any row deactivates every row
+/// (docs/implementation/09 §License gate enforcement points, point 2).
+/// The sweep has already run at the entry point, so a passed expiry reads
+/// back as `expired`.
 ///
 /// # Errors
 /// [`RetrieveError::Store`] when the state read fails.
 fn license_blocked(store: &Store, library: &str) -> Result<bool, RetrieveError> {
     let states = store.license_states(library)?;
-    Ok(states
-        .iter()
-        .copied()
-        .min_by_key(|state| state.rank())
-        .is_some_and(LicenseStatus::is_terminal))
+    Ok(states.iter().copied().any(LicenseStatus::is_terminal))
 }
 
 /// Cursor resume: continue after the last served chunk id in the same
@@ -967,5 +965,19 @@ mod tests {
         assert_eq!(normalize_sha("v1.0.0"), "v1.0.0");
         assert_eq!(normalize_sha("CAFEBABE"), "CAFEBABE");
         assert_eq!(normalize_sha("ghijkl"), "ghijkl");
+    }
+
+    /// A terminal row blocks the library even when a non-terminal
+    /// rank-zero state ties it: any terminal state on any row deactivates
+    /// every row (docs/implementation/09 §License gate enforcement points,
+    /// point 2).
+    #[test]
+    fn a_terminal_row_blocks_retrieval_when_a_rank_zero_state_ties_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("docs.db");
+        let store = devdocs_testkit::seed_source_status(&db, "acme", "1.0", "pending_review", None)
+            .unwrap();
+        devdocs_testkit::seed_source_status(&db, "acme", "2.0", "revoked", None).unwrap();
+        assert!(super::license_blocked(&store, "acme").unwrap());
     }
 }

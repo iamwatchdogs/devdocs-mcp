@@ -644,10 +644,11 @@ pub fn run_source_list(config: &Config) -> Result<SourceListEnvelope, Error> {
                         active: row.active,
                     })
                     .collect();
-                let status = versions
+                let parsed: Vec<LicenseStatus> = versions
                     .iter()
                     .filter_map(|version| LicenseStatus::parse(&version.status))
-                    .min_by_key(|state| state.rank())
+                    .collect();
+                let status = effective_state(&parsed)
                     .map_or_else(|| String::from("pending_review"), |state| state.to_string());
                 SourceListEntry {
                     name: name.clone(),
@@ -689,18 +690,28 @@ fn parse_expires(expires: Option<&str>) -> Result<Option<String>, Error> {
         .transpose()
 }
 
+/// The library's effective stored state: a terminal refusal wins when one
+/// exists — a mixed row set reports the actual refusal, not a rank-zero
+/// tie (docs/implementation/09 §License gate enforcement points) — and the
+/// rank minimum applies otherwise.
+fn effective_state(states: &[LicenseStatus]) -> Option<LicenseStatus> {
+    states
+        .iter()
+        .copied()
+        .find(|state| state.is_terminal())
+        .or_else(|| states.iter().copied().min_by_key(|state| state.rank()))
+}
+
 /// The library's least privileged stored state, for the report's `from`.
 fn least_privileged_state(store: &Store, name: &str) -> Result<LicenseStatus, Error> {
-    store
+    let states = store
         .license_states(name)
-        .map_err(|e| map_store_error(&e))?
-        .into_iter()
-        .min_by_key(|state| state.rank())
-        .ok_or_else(|| {
-            Error::Usage(format!(
-                "no indexed source for library {name:?}; run: devdocs source list"
-            ))
-        })
+        .map_err(|e| map_store_error(&e))?;
+    effective_state(&states).ok_or_else(|| {
+        Error::Usage(format!(
+            "no indexed source for library {name:?}; run: devdocs source list"
+        ))
+    })
 }
 
 /// Maps the typed license-transition refusals onto `Usage` exit 1; every

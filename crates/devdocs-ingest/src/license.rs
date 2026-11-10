@@ -132,11 +132,17 @@ pub fn refused_status(
     Ok(least_privileged(&states))
 }
 
-/// The least privileged of the library's stored states: the minimum rank,
-/// so a disagreement between rows can only ever refuse or keep the lower
-/// grant.
+/// The least privileged of the library's stored states: a terminal refusal
+/// wins when one exists, so the reported refusal is the actual terminal
+/// state and the mandatory withdrawal runs (docs/implementation/09 §License
+/// gate enforcement points, point 3); otherwise the minimum rank, so a
+/// disagreement between rows can only ever refuse or keep the lower grant.
 fn least_privileged(states: &[LicenseStatus]) -> Option<LicenseStatus> {
-    states.iter().copied().min_by_key(|state| state.rank())
+    states
+        .iter()
+        .copied()
+        .find(|state| state.is_terminal())
+        .or_else(|| states.iter().copied().min_by_key(|state| state.rank()))
 }
 
 /// Maps a store failure onto the upstream code: the gate cannot decide
@@ -401,6 +407,28 @@ mod tests {
         let error =
             gate_fetch(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap_err();
         assert_fetch_blocked(error, "denied");
+    }
+
+    /// A terminal row refuses even when a non-terminal rank-zero state ties
+    /// it: `{pending_review, revoked}` reports `revoked` — the actual
+    /// terminal refusal — so `withdraw_on_terminal_refusal` runs the
+    /// mandatory withdrawal (docs/implementation/09 §License gate
+    /// enforcement points, point 3).
+    #[test]
+    fn a_terminal_row_refuses_when_a_rank_zero_state_ties_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("docs.db");
+        let store = seed_source_status(&db, "acme", "1.0", "pending_review", None).unwrap();
+        seed_source_status(&db, "acme", "2.0", "revoked", None).unwrap();
+        let config = config_with("acme", "https://docs.acme.test/llms.txt");
+        let target = url("https://docs.acme.test/llms.txt");
+        let error = gate_fetch(&store, &config, &target).unwrap_err();
+        assert_fetch_blocked(error, "revoked");
+        // The refusal carries the terminal state, so the withdrawal runs.
+        assert_eq!(
+            refused_status(&store, &config, &target).unwrap(),
+            Some(LicenseStatus::Revoked)
+        );
     }
 
     /// The standalone deny-by-default refusal matches the gate's.

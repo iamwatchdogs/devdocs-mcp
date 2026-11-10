@@ -3,6 +3,7 @@
 //! Contract: docs/implementation/07 §Atomic publish. On any error the
 //! transaction rolls back and the previous generation stays queryable.
 
+use rusqlite::OptionalExtension;
 use rusqlite::TransactionBehavior;
 use rusqlite::params;
 use time::format_description::well_known::Rfc3339;
@@ -70,8 +71,9 @@ impl Store {
     /// overwritten or reactivated: the rows deactivate inside the committed
     /// transaction and the same typed refusal returns. A stored `pending_review`
     /// refuses too, with no writes at all: the operator's reopen decision
-    /// stands. A stored state below the record's non-terminal state keeps the
-    /// record's state, as before.
+    /// stands, and so does a stored below-index state on the published row
+    /// itself — a stale record must not lift an operator's lower-tier grant.
+    /// Other stored non-terminal states keep the record's state, as before.
     pub fn publish_generation(
         &self,
         src: &devdocs_model::SourceRecord,
@@ -116,6 +118,12 @@ impl Store {
             return Err(StoreError::LicenseNotApproved {
                 status: devdocs_model::LicenseStatus::PendingReview,
             });
+        }
+
+        // A stale record must not lift an operator's below-index grant on
+        // the upsert target row itself.
+        if let Some(status) = stored_below_index_state(&tx, src)? {
+            return Err(StoreError::LicenseNotApproved { status });
         }
 
         let result = publish_inside(&tx, src, chunks);
@@ -232,6 +240,35 @@ fn withdraw_rows(
         }
     }
     Ok(rows.len())
+}
+
+/// The row-scoped TOCTOU check: reads the upsert target row's stored
+/// license state — keyed exactly like the publish upsert — and returns it
+/// when it sits below the index stage. A record that was in flight while
+/// the operator walked the row below the index stage must not overwrite
+/// that lower-tier grant on publish.
+fn stored_below_index_state(
+    tx: &rusqlite::Transaction<'_>,
+    src: &devdocs_model::SourceRecord,
+) -> Result<Option<devdocs_model::LicenseStatus>, StoreError> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT license_status FROM sources \
+             WHERE library = ?1 COLLATE NOCASE AND version = ?2 AND kind = ?3 \
+             AND origin_url = ?4",
+            params![
+                src.library,
+                src.version,
+                src.kind.as_str(),
+                src.origin_url.as_str(),
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::Sql)?;
+    Ok(raw
+        .and_then(|raw| devdocs_model::LicenseStatus::parse(&raw))
+        .filter(|state| state.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank()))
 }
 
 /// Runs the whole publish sequence inside `tx`.

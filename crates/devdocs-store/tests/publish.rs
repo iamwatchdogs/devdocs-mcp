@@ -569,6 +569,69 @@ fn publish_refuses_when_the_stored_state_turned_pending_review() {
     );
 }
 
+/// An operator walk below the index stage while a re-sync is in flight:
+/// deny, reopen, then grant only the fetch stage. The stale index-stage
+/// record must not lift that lower-tier grant on the published row
+/// itself. The refusal writes nothing at all — the stored status, the
+/// active flag, the chunk set, and the audit trail stay as they were
+/// (docs/implementation/09 §License gate enforcement points).
+#[test]
+fn publish_refuses_when_the_stored_state_turned_below_index() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the generation the operator walks down.")],
+        )
+        .unwrap();
+
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+    rig.store
+        .transition_license("next.js", LicenseStatus::ApprovedFetch, "op", None, None)
+        .unwrap();
+
+    let (status_before, active_before, chunks_before, audit_before) = gate_snapshot(&rig.conn);
+
+    // The stale re-sync still carries the index-stage record.
+    let error = rig
+        .store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a stale republication that never lands.")],
+        )
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::ApprovedFetch);
+
+    let (status, active, chunks, audit_after) = gate_snapshot(&rig.conn);
+    assert_eq!(
+        status, status_before,
+        "the operator's lower-tier grant must stay"
+    );
+    assert_eq!(active, active_before, "the refusal must write nothing");
+    assert_eq!(chunks, chunks_before, "the stale chunk set must not land");
+    assert_eq!(
+        audit_after, audit_before,
+        "the refusal must write no audit line"
+    );
+}
+
 /// The inverse order: with the stored state non-terminal, the publish
 /// keeps its existing behavior — the record's state wins — and a deny
 /// that lands afterward still transitions on top of it.

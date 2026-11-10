@@ -69,10 +69,137 @@ pub enum IngestError {
     /// A blocking task failed to join.
     #[error("blocking task failed: {0}")]
     Join(String),
-    /// The index carried links but none was an ingestable markdown page.
-    #[error("no ingestable markdown pages linked from {index}")]
+    /// The source produced no ingestable pages: an index with no markdown
+    /// links, or a git tree with no allowlisted file.
+    #[error("no ingestable pages for {index}")]
     NoIngestablePages {
         /// The index URL.
         index: String,
     },
+    /// The `git` executable is not on `PATH`; git sources cannot ingest
+    /// (docs/implementation/07 §Git adapter).
+    #[error("GIT_BINARY_MISSING: the git executable was not found on PATH")]
+    GitBinaryMissing,
+    /// The system git is older than the adapter's enforced minimum
+    /// (2.32): `GIT_CONFIG_GLOBAL` is ignored before 2.32, so the
+    /// global-config pin would no-op and a hostile repo's
+    /// `.gitattributes` can reach an operator-defined global smudge
+    /// filter (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_TOO_OLD: {found} does not meet the required git 2.32")]
+    GitTooOld {
+        /// The `git --version` output that failed the gate.
+        found: String,
+    },
+    /// A git pin starts with `-`, which would read as a git option on the
+    /// argv vector (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_INVALID_PIN: pin `{pin}` starts with `-`")]
+    GitInvalidPin {
+        /// The rejected pin.
+        pin: String,
+    },
+    /// A non-SHA pin the tag clone resolved is not an exact tag:
+    /// `git clone --branch` also accepts branch names, and a branch pin
+    /// would publish a mutable, non-reproducible ref
+    /// (docs/implementation/07 §Git adapter).
+    #[error("GIT_PIN_NOT_TAG: pin `{pin}` is not a tag; use a tag name or a commit SHA")]
+    GitPinNotTag {
+        /// The rejected pin.
+        pin: String,
+    },
+    /// The URL at fetch differs from the planned URL; a changed URL aborts
+    /// the run (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_URL_MISMATCH: fetch URL `{actual}` does not match the planned URL `{planned}`")]
+    GitUrlMismatch {
+        /// The URL the plan pinned.
+        planned: String,
+        /// The URL the caller passed to fetch.
+        actual: String,
+    },
+    /// A git invocation exited non-zero; the display shows a bounded
+    /// stderr tail, never a full dump (docs/implementation/07 §Git
+    /// adapter), and the complete stderr rides on the error for the git
+    /// adapter's refusal classification.
+    #[error("GIT_COMMAND_FAILED: `{command}` failed: {stderr}")]
+    GitCommand {
+        /// The argv of the failed invocation (without the config args).
+        command: String,
+        /// The bounded stderr tail shown in the display.
+        stderr: String,
+        /// The complete stderr of the failed invocation, kept for error
+        /// classification; the display stays the bounded tail.
+        full_stderr: String,
+    },
+    /// Spawning git failed for a reason other than a missing binary.
+    #[error("GIT_SPAWN_FAILED: {message}")]
+    GitSpawn {
+        /// What failed.
+        message: String,
+    },
+    /// A git invocation ran past its per-invocation deadline (set at the
+    /// total-cap duration) and was killed and reaped instead of orphaning
+    /// the clone's network I/O
+    /// (docs/implementation/09 §Git subprocess safety).
+    #[error("GIT_TIMEOUT: `{command}` exceeded the {seconds}s deadline and was killed")]
+    GitTimeout {
+        /// The argv of the killed invocation (without the config args).
+        command: String,
+        /// The deadline in seconds.
+        seconds: u64,
+    },
+    /// The private temp clone directory could not be created or does not
+    /// carry mode 0700 (docs/implementation/09 §Local storage controls).
+    #[error("GIT_TEMP_DIR: {message}")]
+    GitTempDir {
+        /// What failed.
+        message: String,
+    },
+    /// The docs walk over the clone failed.
+    #[error("GIT_WALK_FAILED: {message}")]
+    GitWalk {
+        /// What failed.
+        message: String,
+    },
+    /// `git rev-parse HEAD` did not return a 40-hex commit SHA.
+    #[error("GIT_COMMIT_SHA_INVALID: rev-parse returned `{0}`")]
+    GitCommitShaInvalid(String),
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::IngestError;
+
+    /// Every git error kind renders its documented `GIT_*` code prefix, so
+    /// the CLI edge cannot surface a bare message
+    /// (docs/implementation/08 §Error codes).
+    #[test]
+    fn git_errors_carry_their_code_prefix() {
+        let message = "boom".to_owned();
+        assert_eq!(
+            IngestError::GitSpawn {
+                message: message.clone()
+            }
+            .to_string(),
+            "GIT_SPAWN_FAILED: boom"
+        );
+        assert_eq!(
+            IngestError::GitTempDir {
+                message: message.clone()
+            }
+            .to_string(),
+            "GIT_TEMP_DIR: boom"
+        );
+        assert_eq!(
+            IngestError::GitWalk { message }.to_string(),
+            "GIT_WALK_FAILED: boom"
+        );
+        assert_eq!(
+            IngestError::GitTooOld {
+                found: "git version 2.31.7".to_owned()
+            }
+            .to_string(),
+            "GIT_TOO_OLD: git version 2.31.7 does not meet the required git 2.32"
+        );
+    }
 }

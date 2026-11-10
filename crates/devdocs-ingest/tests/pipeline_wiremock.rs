@@ -10,7 +10,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use wiremock::matchers::path;
@@ -18,7 +17,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use devdocs_ingest::guard::FetchGuard;
 use devdocs_ingest::{IngestError, IngestJob};
-use devdocs_model::config::{Config, FetchConfig, IndexConfig, SearchConfig, SourceConfig};
+use devdocs_model::config::{Config, SourceConfig};
+use devdocs_testkit::base_config;
 
 /// The index body: one markdown page. The link is relative, so it joins
 /// against the wiremock base URL the index actually came from.
@@ -48,8 +48,8 @@ const INTRO_WITH_CODE: &str = concat!(
 
 /// A config with the acme source registered at the wiremock index URL.
 fn config(index_url: &str) -> Config {
-    let mut sources = BTreeMap::new();
-    sources.insert(
+    let mut config = base_config();
+    config.sources.insert(
         String::from("acme"),
         SourceConfig {
             kind: Some(String::from("llms_txt")),
@@ -59,25 +59,7 @@ fn config(index_url: &str) -> Config {
             refresh_days: None,
         },
     );
-    Config {
-        fetch: FetchConfig {
-            concurrency: 4,
-            timeout_ms: 15_000,
-            max_bytes: 20 * 1024 * 1024,
-            max_redirects: 3,
-            user_agent: String::from("devdocs/0.2.0"),
-        },
-        index: IndexConfig {
-            path: std::path::PathBuf::from("/tmp/unused.db"),
-            embeddings: false,
-        },
-        search: SearchConfig {
-            max_tokens_default: 2000,
-            limit_default: 8,
-            rrf_k: 60,
-        },
-        sources,
-    }
+    config
 }
 
 /// A guard for the config with the test-double exception on: the wiremock
@@ -143,6 +125,46 @@ async fn wire_ingest_fetches_the_index_and_pages_over_the_network() {
         .search_fts(&devdocs_store::build_match_query("installer"), 10)
         .unwrap();
     assert!(!hits.is_empty(), "the wire-fetched page is searchable");
+}
+
+/// The wire-fetched page publishes chunks whose `page_url` is the linked
+/// page's URL while `source_url` stays the index URL
+/// (docs/implementation/07 §llms.txt adapter).
+#[tokio::test]
+async fn wire_ingest_publishes_the_page_url_on_chunks() {
+    let server = MockServer::start().await;
+    mount_ok(&server, "/llms.txt", INDEX).await;
+    mount_ok(&server, "/intro.md", INTRO).await;
+    let page_url = format!("{}/intro.md", server.uri());
+
+    let index_url = format!("{}/llms.txt", server.uri());
+    let config = config(&index_url);
+    let guard = test_guard(&config);
+    let (_db, store) = store();
+
+    let index_url = url::Url::parse(&index_url).unwrap();
+    let job = IngestJob::new(&config, &guard, None);
+    job.run(Arc::clone(&store), &index_url, "acme", "1.0")
+        .await
+        .unwrap();
+
+    let hits = store
+        .search_fts(&devdocs_store::build_match_query("installer"), 10)
+        .unwrap();
+    assert!(!hits.is_empty(), "the page is searchable");
+    assert!(
+        hits.iter()
+            .all(|hit| hit.page_url.as_deref() == Some(page_url.as_str())),
+        "page URL: {:?}",
+        hits.iter().map(|h| h.page_url.clone()).collect::<Vec<_>>()
+    );
+    assert!(
+        hits.iter().all(|hit| hit.source_url == index_url.as_str()),
+        "source URL: {:?}",
+        hits.iter()
+            .map(|h| h.source_url.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// The llms-full probe on the wire: when the export exists next to the

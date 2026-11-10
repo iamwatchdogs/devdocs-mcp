@@ -86,7 +86,7 @@ A cold miss returns `not_indexed` with a sync hint. An abstention is a valid res
 
 ## Result envelope
 
-The unified shape for CLI JSON and MCP structured output (research: retrieval-design.md §3.8):
+The unified shape for CLI JSON and MCP structured output (research: retrieval-design.md §3.8). `source_url` is the chunk's page URL when the chunk carries one, else the source origin URL (docs/implementation/07 §llms.txt adapter):
 
 ```json
 {
@@ -138,6 +138,8 @@ Commands:
 | `devdocs eval run <suite> [--json]` | Run a golden-set suite (see [14](14-benchmark-eval.md)) |
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
+
+`add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; a non-SHA pin that names no tag fails as a `USAGE` error (exit 1, `GIT_PIN_NOT_TAG`) from the tag fetch; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
 
 Contract properties (research: architecture.md §L4, GEM §5 checklist):
 
@@ -210,3 +212,5 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 | `BUDGET_EXCEEDED` | 4 | Budget consumed with no deliverable content |
 | `HASH_MISMATCH` | 3 | Index drifted. Re-sync suggested |
 | `NOT_AVAILABLE` | 2 | Source expired or revoked |
+
+A non-SHA pin that names no tag emits `error: USAGE` (exit 1); `GIT_PIN_NOT_TAG` appears only as the prefix of the `detail` string, not as an error code.

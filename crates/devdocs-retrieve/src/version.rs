@@ -145,6 +145,16 @@ pub fn pick(available: &[Version], requested: Option<&str>) -> Served {
             status: VersionStatus::Alias,
         };
     }
+    // A commit-SHA version is published lowercase (docs/implementation/07
+    // §Git adapter), so a 40-hex request matches case-insensitively; tag
+    // names stay case-sensitive.
+    let sha;
+    let requested = if is_commit_sha(requested) {
+        sha = requested.to_ascii_lowercase();
+        sha.as_str()
+    } else {
+        requested
+    };
     if available.iter().any(|v| v.as_str() == requested) {
         return Served {
             version: Some(Version::from(requested)),
@@ -171,6 +181,12 @@ pub fn pick(available: &[Version], requested: Option<&str>) -> Served {
         version: nearest(available, &Version::from(requested)),
         status: VersionStatus::Fallback,
     }
+}
+
+/// Whether `value` is exactly 40 ASCII hex characters — a full commit SHA
+/// as the git source adapter publishes it.
+fn is_commit_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The highest version by [`Version::cmp_version`].
@@ -311,6 +327,35 @@ mod tests {
             Served {
                 version: Some(Version::from("16.2.9")),
                 status: VersionStatus::Verified,
+            }
+        );
+    }
+
+    /// A 40-hex request matches the lowercase-published commit version
+    /// case-insensitively and serves the lowercase label as `verified`.
+    #[test]
+    fn commit_sha_requests_match_case_insensitively() {
+        let sha = "a1b2c3d4".repeat(5);
+        let available = versions(&[&sha]);
+        assert_eq!(
+            pick(&available, Some(&sha.to_ascii_uppercase())),
+            Served {
+                version: Some(Version::from(sha.as_str())),
+                status: VersionStatus::Verified,
+            }
+        );
+    }
+
+    /// A tag-name request stays case-sensitive: an uppercase tag does not
+    /// exact-match the lowercase-published tag.
+    #[test]
+    fn tag_requests_stay_case_sensitive() {
+        let available = versions(&["v1.0.0"]);
+        assert_eq!(
+            pick(&available, Some("V1.0.0")),
+            Served {
+                version: Some(Version::from("v1.0.0")),
+                status: VersionStatus::Fallback,
             }
         );
     }

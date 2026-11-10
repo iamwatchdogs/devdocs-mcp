@@ -5,12 +5,48 @@
 //! calling test files unwrap into their own local allowance.
 
 pub mod fixtures;
+pub mod git_repo;
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use devdocs_store::{Store, StoreError};
+
+/// The shared base test config: the fetch, index, search, and ingest
+/// values every pipeline test starts from, with no sources — the caller
+/// registers its own `[sources.<name>]` entry, so no test writes a
+/// `Config` literal inline. The search section is inert here: the
+/// pipeline never reads it, and the retrieve path overrides what it
+/// needs.
+#[must_use]
+pub fn base_config() -> devdocs_model::config::Config {
+    use devdocs_model::config::{
+        Config, DEFAULT_GIT_EXTENSIONS, FetchConfig, IndexConfig, IngestConfig, SearchConfig,
+    };
+
+    Config {
+        fetch: FetchConfig {
+            concurrency: 4,
+            timeout_ms: 15_000,
+            max_bytes: 20 * 1024 * 1024,
+            max_redirects: 3,
+            user_agent: String::from("devdocs/0.2.0"),
+        },
+        index: IndexConfig {
+            path: std::path::PathBuf::from("/tmp/unused.db"),
+            embeddings: false,
+        },
+        search: SearchConfig::default(),
+        ingest: IngestConfig {
+            git_extensions: DEFAULT_GIT_EXTENSIONS
+                .iter()
+                .map(|ext| (*ext).to_owned())
+                .collect(),
+        },
+        sources: std::collections::BTreeMap::new(),
+    }
+}
 
 /// Opens a store at `path` and applies every pending migration.
 pub fn open_migrated(path: &Path) -> Result<Store, StoreError> {
@@ -77,6 +113,7 @@ pub fn sample_hit(chunk_id: i64, token_count: u32) -> devdocs_store::Hit {
         rank: None,
         content_hash: [0u8; 32],
         source_url: String::new(),
+        page_url: None,
         source_commit: None,
         license_status: "approved_index".to_owned(),
     }

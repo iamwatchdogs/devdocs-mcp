@@ -59,7 +59,13 @@ pub mod env_vars {
     pub const SEARCH_LIMIT: &str = "DEVDOCS_SEARCH_LIMIT_DEFAULT";
     /// Maps to `search.rrf_k`.
     pub const SEARCH_RRF_K: &str = "DEVDOCS_SEARCH_RRF_K";
+    /// Maps to `ingest.git_extensions` as a comma-separated list.
+    pub const INGEST_GIT_EXTENSIONS: &str = "DEVDOCS_INGEST_GIT_EXTENSIONS";
 }
+
+/// The built-in default for `ingest.git_extensions`.
+pub const DEFAULT_GIT_EXTENSIONS: &[&str] =
+    &["md", "mdx", "rst", "adoc", "txt", "json", "yaml", "yml"];
 
 /// The resolved paths [`Config::load`] reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -84,6 +90,8 @@ pub struct Config {
     pub index: IndexConfig,
     /// Search behavior.
     pub search: SearchConfig,
+    /// Ingest behavior.
+    pub ingest: IngestConfig,
     /// The license registry.
     pub sources: BTreeMap<String, SourceConfig>,
 }
@@ -113,7 +121,11 @@ pub struct IndexConfig {
 }
 
 /// Search behavior.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// `Default` is inert zeros: the production values live in `Config`
+/// resolution, not here, so a default-constructed `SearchConfig` never
+/// masquerades as a valid configuration.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SearchConfig {
     /// Default `--max-tokens` for read paths. Default 2000.
     pub max_tokens_default: u64,
@@ -121,6 +133,22 @@ pub struct SearchConfig {
     pub limit_default: u32,
     /// The RRF fusion constant. Default 60.
     pub rrf_k: u32,
+}
+
+/// Ingest behavior.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IngestConfig {
+    /// The file extensions the git adapter may ingest. Default
+    /// [`DEFAULT_GIT_EXTENSIONS`].
+    pub git_extensions: Vec<String>,
+}
+
+/// Partial `[ingest]`.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PartialIngest {
+    /// The file extensions the git adapter may ingest.
+    pub git_extensions: Option<Vec<String>>,
 }
 
 /// One license-registry entry under `[sources.<name>]`.
@@ -168,6 +196,8 @@ pub struct PartialConfig {
     pub index: PartialIndex,
     /// Search section.
     pub search: PartialSearch,
+    /// Ingest section.
+    pub ingest: PartialIngest,
     /// License-registry entries.
     pub sources: BTreeMap<String, SourceConfig>,
 }
@@ -251,6 +281,14 @@ impl PartialSearch {
     }
 }
 
+impl PartialIngest {
+    /// Fold a higher-precedence layer over this one.
+    fn merge(&mut self, over: Self) {
+        let Self { git_extensions } = over;
+        self.git_extensions = git_extensions.or(self.git_extensions.take());
+    }
+}
+
 impl PartialConfig {
     /// Fold a higher-precedence layer over this one. Source entries merge
     /// per name: the higher layer wins whole entries.
@@ -259,11 +297,13 @@ impl PartialConfig {
             fetch,
             index,
             search,
+            ingest,
             sources,
         } = over;
         self.fetch.merge(fetch);
         self.index.merge(index);
         self.search.merge(search);
+        self.ingest.merge(ingest);
         self.sources.extend(sources);
     }
 
@@ -284,6 +324,7 @@ impl PartialConfig {
                 "fetch" => partial.fetch = parse_section("fetch", value)?,
                 "index" => partial.index = parse_section("index", value)?,
                 "search" => partial.search = parse_section("search", value)?,
+                "ingest" => partial.ingest = parse_section("ingest", value)?,
                 "sources" => {
                     let toml::Value::Table(entries) = value else {
                         return Err(leaf_error(
@@ -300,7 +341,7 @@ impl PartialConfig {
                     return Err(Error::ConfigInvalid {
                         key_path: other.to_owned(),
                         reason: format!(
-                            "unknown section `{other}`; expected fetch, index, search, or sources"
+                            "unknown section `{other}`; expected fetch, index, search, ingest, or sources"
                         ),
                     });
                 }
@@ -315,15 +356,23 @@ impl PartialConfig {
     /// [`Error::ConfigInvalid`] when a set variable does not parse into its
     /// target type; the error names the variable.
     pub fn from_env() -> Result<Self, Error> {
+        Self::from_env_with(|var| std::env::var_os(var))
+    }
+
+    /// `from_env` with the `DEVDOCS_INGEST_GIT_EXTENSIONS` lookup
+    /// injectable, so tests can cover the layering without the
+    /// process-global env mutation this crate's `unsafe_code` ban
+    /// forbids.
+    fn from_env_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<Self, Error> {
         use env_vars::{
             FETCH_CONCURRENCY, FETCH_MAX_BYTES, FETCH_MAX_REDIRECTS, FETCH_TIMEOUT_MS,
-            FETCH_USER_AGENT, INDEX_EMBEDDINGS, INDEX_PATH, SEARCH_LIMIT, SEARCH_MAX_TOKENS,
-            SEARCH_RRF_K,
+            FETCH_USER_AGENT, INDEX_EMBEDDINGS, INDEX_PATH, INGEST_GIT_EXTENSIONS,
         };
         let mut layer = Self::default();
         let mut fetch = PartialFetch::default();
         let mut index = PartialIndex::default();
         let mut search = PartialSearch::default();
+        let mut ingest = PartialIngest::default();
 
         for (var, target) in [
             (FETCH_CONCURRENCY, EnvTarget::U32(&mut fetch.concurrency)),
@@ -348,20 +397,18 @@ impl PartialConfig {
                 reason: format!("expected `true` or `false`, got `{embeddings}`"),
             })?);
         }
-        for (var, target) in [
-            (
-                SEARCH_MAX_TOKENS,
-                EnvTarget::U64(&mut search.max_tokens_default),
-            ),
-            (SEARCH_LIMIT, EnvTarget::U32(&mut search.limit_default)),
-            (SEARCH_RRF_K, EnvTarget::U32(&mut search.rrf_k)),
-        ] {
-            apply_num(var, target)?;
+        apply_search_nums(&mut search)?;
+
+        if let Some(exts) =
+            git_extensions_from_raw(INGEST_GIT_EXTENSIONS, env(INGEST_GIT_EXTENSIONS))?
+        {
+            ingest.git_extensions = Some(exts);
         }
 
         layer.fetch = fetch;
         layer.index = index;
         layer.search = search;
+        layer.ingest = ingest;
         Ok(layer)
     }
 
@@ -398,6 +445,26 @@ fn apply_num(var: &str, target: EnvTarget<'_>) -> Result<(), Error> {
     })
 }
 
+/// Apply the numeric `DEVDOCS_SEARCH_*` variables to the search layer.
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when a set variable does not parse.
+fn apply_search_nums(search: &mut PartialSearch) -> Result<(), Error> {
+    use env_vars::{SEARCH_LIMIT, SEARCH_MAX_TOKENS, SEARCH_RRF_K};
+
+    for (var, target) in [
+        (
+            SEARCH_MAX_TOKENS,
+            EnvTarget::U64(&mut search.max_tokens_default),
+        ),
+        (SEARCH_LIMIT, EnvTarget::U32(&mut search.limit_default)),
+        (SEARCH_RRF_K, EnvTarget::U32(&mut search.rrf_k)),
+    ] {
+        apply_num(var, target)?;
+    }
+    Ok(())
+}
+
 /// Read one environment variable. A set but non-UTF-8 value is a config
 /// error, not silence: a dropped `DEVDOCS_INDEX_PATH` would make the CLI
 /// report the wrong database.
@@ -409,6 +476,38 @@ fn env_string(var: &str) -> Result<Option<String>, Error> {
         None => Ok(None),
         Some(raw) => coerce_utf8(var, raw),
     }
+}
+
+/// Turn a `DEVDOCS_INGEST_GIT_EXTENSIONS` value into the env layer's
+/// contribution. Unlike the other variables an empty value counts as
+/// set: it yields an empty list so the merge overrides a config-file
+/// list and `normalize_git_extensions` falls back to the defaults
+/// (docs/implementation/07 §Git adapter).
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when the value is not valid UTF-8.
+fn git_extensions_from_raw(
+    var: &str,
+    raw: Option<std::ffi::OsString>,
+) -> Result<Option<Vec<String>>, Error> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let raw = raw.into_string().map_err(|_| Error::ConfigInvalid {
+        key_path: var.to_owned(),
+        reason: "expected a valid UTF-8 value".to_owned(),
+    })?;
+    Ok(Some(parse_git_extensions(&raw)))
+}
+
+/// Split a raw `DEVDOCS_INGEST_GIT_EXTENSIONS` value into entries:
+/// comma-separated, trimmed, empty entries dropped.
+fn parse_git_extensions(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Convert a set value to UTF-8; empty values count as unset.
@@ -460,6 +559,29 @@ fn leaf_error(section: &str, message: String) -> Error {
     Error::ConfigInvalid {
         key_path,
         reason: message,
+    }
+}
+
+/// Normalizes the extension allowlist: a leading `.` on an entry is
+/// dropped (`.md` names the same extension as `md`, which is what the
+/// walk matches against), blank entries go, and an empty result — an
+/// empty `DEVDOCS_INGEST_GIT_EXTENSIONS` value or config array — falls
+/// back to the defaults instead of a silent zero-document ingest
+/// (docs/implementation/07 §Git adapter).
+fn normalize_git_extensions(provided: Option<Vec<String>>) -> Vec<String> {
+    let trimmed: Vec<String> = provided
+        .unwrap_or_default()
+        .into_iter()
+        .map(|ext| ext.trim().trim_start_matches('.').to_owned())
+        .filter(|ext| !ext.is_empty())
+        .collect();
+    if trimmed.is_empty() {
+        DEFAULT_GIT_EXTENSIONS
+            .iter()
+            .map(|ext| (*ext).to_owned())
+            .collect()
+    } else {
+        trimmed
     }
 }
 
@@ -656,6 +778,9 @@ impl Config {
                 limit_default: partial.search.limit_default.unwrap_or(8),
                 rrf_k: partial.search.rrf_k.unwrap_or(60),
             },
+            ingest: IngestConfig {
+                git_extensions: normalize_git_extensions(partial.ingest.git_extensions.clone()),
+            },
             sources,
         })
     }
@@ -700,6 +825,18 @@ mod tests {
         assert_eq!(partial, PartialConfig::default());
     }
 
+    /// The env value of `DEVDOCS_INGEST_GIT_EXTENSIONS` parses as a
+    /// comma-separated list: entries trim, empty entries drop
+    /// (docs/implementation/07 §Git adapter).
+    #[test]
+    fn the_env_value_parses_the_git_extension_list() {
+        assert_eq!(
+            super::parse_git_extensions(" md , ,rst "),
+            vec!["md".to_owned(), "rst".to_owned()]
+        );
+        assert_eq!(super::parse_git_extensions(","), Vec::<String>::new());
+    }
+
     /// A full file parses every section of the docs/05 schema.
     #[test]
     fn full_schema_parses() {
@@ -720,6 +857,9 @@ max_tokens_default = 2000
 limit_default = 8
 rrf_k = 60
 
+[ingest]
+git_extensions = ["md", "adoc"]
+
 [sources.nextjs]
 kind = "llms_txt"
 url = "https://nextjs.org/docs/llms.txt"
@@ -730,6 +870,10 @@ refresh_days = 2
         let partial = PartialConfig::parse(text).unwrap();
         assert_eq!(partial.fetch.concurrency, Some(4));
         assert_eq!(partial.search.rrf_k, Some(60));
+        assert_eq!(
+            partial.ingest.git_extensions,
+            Some(vec!["md".to_owned(), "adoc".to_owned()])
+        );
         assert_eq!(partial.sources["nextjs"].license.as_deref(), Some("MIT"));
         partial.sources["nextjs"]
             .parsed_url("sources.nextjs")
@@ -852,6 +996,91 @@ refresh_days = 2
         assert!(!config.index.embeddings);
         assert!(config.index.path.ends_with("docs.db"));
         assert!(config.fetch.user_agent.contains("devdocs/"));
+        assert_eq!(config.ingest.git_extensions, super::DEFAULT_GIT_EXTENSIONS);
+    }
+
+    /// A `[ingest]` section in a config file overrides the default
+    /// extensions and leaves every other section on its default.
+    #[test]
+    fn ingest_file_layer_overrides_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ingest.toml");
+        std::fs::write(&file, "[ingest]\ngit_extensions = [\"md\"]\n").unwrap();
+        let over = Overrides {
+            config_path: Some(file),
+            ..Overrides::default()
+        };
+        let config = Config::load(&over).unwrap();
+        assert_eq!(config.ingest.git_extensions, ["md"]);
+        assert_eq!(config.fetch.concurrency, 4);
+    }
+
+    /// An empty `DEVDOCS_INGEST_GIT_EXTENSIONS` counts as set: the env
+    /// layer it produces overrides a config-file list, so the resolution
+    /// falls back to the defaults; an unset variable leaves the
+    /// config-file list in place (docs/implementation/07 §Git adapter).
+    /// The env lookup is injected because process env mutation needs
+    /// `unsafe`, which this crate forbids.
+    #[test]
+    fn empty_git_extensions_env_overrides_the_file_layer() {
+        use super::env_vars::INGEST_GIT_EXTENSIONS;
+        use std::ffi::OsString;
+
+        let file_layer = PartialConfig::parse("[ingest]\ngit_extensions = [\"md\"]\n").unwrap();
+
+        // Unset: the config-file list wins.
+        let env_layer = PartialConfig::from_env_with(|_| None).unwrap();
+        let mut merged = PartialConfig::default();
+        merged.merge(file_layer.clone());
+        merged.merge(env_layer);
+        assert_eq!(
+            super::normalize_git_extensions(merged.ingest.git_extensions.clone()),
+            ["md".to_owned()]
+        );
+
+        // Set to empty: the env layer contributes `Some(vec![])`, which
+        // overrides the file list and resolves to the defaults.
+        let env_layer =
+            PartialConfig::from_env_with(|var| (var == INGEST_GIT_EXTENSIONS).then(OsString::new))
+                .unwrap();
+        let mut merged = PartialConfig::default();
+        merged.merge(file_layer);
+        merged.merge(env_layer);
+        assert_eq!(
+            super::normalize_git_extensions(merged.ingest.git_extensions.clone()),
+            super::DEFAULT_GIT_EXTENSIONS
+        );
+    }
+
+    /// A set but non-UTF-8 `DEVDOCS_INGEST_GIT_EXTENSIONS` value stays a
+    /// config error, not silence. Unix-only: Windows environment values
+    /// are always UTF-16.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_git_extensions_env_is_a_config_error() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let var = env_vars::INGEST_GIT_EXTENSIONS;
+        let raw = std::ffi::OsString::from_vec(vec![0xff, 0xfe]);
+        let error = super::git_extensions_from_raw(var, Some(raw)).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, var);
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    /// An unknown key under `[ingest]` fails validation and names the key.
+    #[test]
+    fn unknown_ingest_key_fails_with_a_key_path() {
+        let error = PartialConfig::parse("[ingest]\ngit_extensionz = [\"md\"]\n").unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "ingest.git_extensionz");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     /// The `--db` flag layer wins over every file layer.
@@ -952,9 +1181,40 @@ refresh_days = 2
             env_vars::SEARCH_MAX_TOKENS,
             env_vars::SEARCH_LIMIT,
             env_vars::SEARCH_RRF_K,
+            env_vars::INGEST_GIT_EXTENSIONS,
         ] {
             assert!(name.starts_with("DEVDOCS_"), "{name}");
         }
+    }
+
+    /// The extension allowlist normalizes: a leading `.` drops (`.md`
+    /// names the same extension the walk matches against), blank entries
+    /// go, and an empty value — e.g. `DEVDOCS_INGEST_GIT_EXTENSIONS=""` —
+    /// resolves to the defaults, never to a silent zero-document
+    /// allowlist (docs/implementation/07 §Git adapter).
+    #[test]
+    fn git_extensions_normalize_to_a_usable_allowlist() {
+        let defaults: Vec<String> = super::DEFAULT_GIT_EXTENSIONS
+            .iter()
+            .map(|ext| (*ext).to_owned())
+            .collect();
+        // Unset and empty resolve to the defaults.
+        assert_eq!(super::normalize_git_extensions(None), defaults);
+        assert_eq!(
+            super::normalize_git_extensions(Some(vec![])),
+            defaults,
+            "an empty value counts as unset"
+        );
+        assert_eq!(
+            super::normalize_git_extensions(Some(vec![String::new(), "  ".to_owned()])),
+            defaults,
+            "blank entries never survive"
+        );
+        // A leading `.` drops; real entries pass through.
+        assert_eq!(
+            super::normalize_git_extensions(Some(vec![".md".to_owned(), "rst".to_owned(),])),
+            ["md".to_owned(), "rst".to_owned()]
+        );
     }
 
     /// The paths struct serializes with the resolved locations.

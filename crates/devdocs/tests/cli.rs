@@ -607,7 +607,8 @@ fn add_without_a_registry_entry_refuses_fetch_blocked() {
 }
 
 /// An unsupported `--kind` is a usage error, never a silent flag drop: the
-/// llms.txt pipeline must not run for a registered URL with `--kind git`.
+/// llms.txt pipeline must not run for a registered URL with an unknown
+/// kind (`openapi` has no adapter yet).
 #[test]
 fn add_rejects_an_unsupported_kind() {
     let env = Env::new();
@@ -621,7 +622,7 @@ fn add_rejects_an_unsupported_kind() {
             "add",
             "https://docs.acme.test/llms.txt",
             "--kind",
-            "git",
+            "openapi",
             "--fixture",
             fixture.to_str().expect("fixture path"),
             "--json",
@@ -948,10 +949,7 @@ fn add_maps_no_ingestable_pages() {
 
     let (code, _stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
     assert_eq!(code, 3, "stderr: {stderr}");
-    assert!(
-        stderr.contains("no ingestable markdown pages"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("no ingestable pages"), "stderr: {stderr}");
 }
 
 /// A fixture directory without a manifest fails with the fixture error.
@@ -1076,7 +1074,7 @@ fn db_migrate_runs_and_is_idempotent() {
     );
     assert_eq!(code, 0, "stderr: {stderr}");
     let result: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(result["schema_version"], 2);
+    assert_eq!(result["schema_version"], 3);
 
     let (code, stdout, stderr) = output(
         env.cmd(),
@@ -1084,7 +1082,7 @@ fn db_migrate_runs_and_is_idempotent() {
     );
     assert_eq!(code, 0, "stderr: {stderr}");
     let result: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(result["schema_version"], 2);
+    assert_eq!(result["schema_version"], 3);
 }
 
 /// `list` on an empty store prints the empty envelope under `--json`.

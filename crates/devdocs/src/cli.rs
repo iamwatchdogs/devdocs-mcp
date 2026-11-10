@@ -333,17 +333,18 @@ fn run_add_command(
     kind: Option<&str>,
     fixture: Option<&std::path::Path>,
 ) -> Result<(), Error> {
-    // Only the llms.txt adapter exists in this slice; a silent flag
-    // drop would run the wrong pipeline with no error.
+    // Only the llms.txt and git adapters exist in this slice; a silent
+    // flag drop would run the wrong pipeline with no error.
     if let Some(kind) = kind
         && kind != "llms_txt"
+        && kind != "git"
     {
         return Err(Error::Usage(format!(
-            "--kind {kind} is not supported yet; this slice ingests llms_txt sources only"
+            "--kind {kind} is not supported yet; this slice ingests llms_txt and git sources only"
         )));
     }
     let config = Config::load(&overrides(cli))?;
-    let result = crate::commands::run_add(&config, source, version, fixture)?;
+    let result = crate::commands::run_add(&config, source, version, kind, fixture)?;
     if cli.json {
         print_line(&result)
     } else {

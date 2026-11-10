@@ -67,7 +67,7 @@ pub fn gate_fetch(store: &Store, config: &Config, url: &Url) -> Result<LicenseGr
     let states = store
         .license_states(&name)
         .map_err(|error| store_error(&error))?;
-    let grant_status = least_privileged(&states).unwrap_or(FIRST_SYNC_STAGE);
+    let grant_status = LicenseStatus::least_privileged(states).unwrap_or(FIRST_SYNC_STAGE);
     if !grant_status.allows_fetch() {
         return Err(Error::Upstream {
             code: UpstreamCode::FetchBlocked,
@@ -129,20 +129,7 @@ pub fn refused_status(
     let states = store
         .license_states(&name)
         .map_err(|error| store_error(&error))?;
-    Ok(least_privileged(&states))
-}
-
-/// The least privileged of the library's stored states: a terminal refusal
-/// wins when one exists, so the reported refusal is the actual terminal
-/// state and the mandatory withdrawal runs (docs/implementation/09 §License
-/// gate enforcement points, point 3); otherwise the minimum rank, so a
-/// disagreement between rows can only ever refuse or keep the lower grant.
-fn least_privileged(states: &[LicenseStatus]) -> Option<LicenseStatus> {
-    states
-        .iter()
-        .copied()
-        .find(|state| state.is_terminal())
-        .or_else(|| states.iter().copied().min_by_key(|state| state.rank()))
+    Ok(LicenseStatus::least_privileged(states))
 }
 
 /// Maps a store failure onto the upstream code: the gate cannot decide

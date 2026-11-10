@@ -205,6 +205,24 @@ impl LicenseStatus {
                 )
         )
     }
+
+    /// The least privileged of a set of stored states: the first terminal
+    /// refusal in iteration order wins when one exists, so the reported
+    /// refusal is the actual terminal state and the mandatory withdrawal
+    /// runs (docs/implementation/09 §License gate enforcement points,
+    /// point 3); otherwise the minimum rank, so a disagreement between
+    /// states can only ever refuse or keep the lower grant.
+    #[must_use]
+    pub fn least_privileged(
+        states: impl IntoIterator<Item = LicenseStatus>,
+    ) -> Option<LicenseStatus> {
+        let states: Vec<_> = states.into_iter().collect();
+        states
+            .iter()
+            .copied()
+            .find(|state| state.is_terminal())
+            .or_else(|| states.iter().copied().min_by_key(|state| state.rank()))
+    }
 }
 
 impl fmt::Display for LicenseStatus {
@@ -373,6 +391,33 @@ mod tests {
         assert!(Denied.is_terminal());
         assert!(Expired.is_terminal());
         assert!(Revoked.is_terminal());
+    }
+
+    /// The least privileged pick: a terminal refusal wins over a rank-zero
+    /// tie, the rank minimum applies otherwise, a uniform set reports that
+    /// state, and the empty set has none.
+    #[test]
+    fn least_privileged_picks_terminal_first_then_the_rank_minimum() {
+        assert_eq!(
+            LicenseStatus::least_privileged([LicenseStatus::PendingReview, LicenseStatus::Revoked]),
+            Some(LicenseStatus::Revoked)
+        );
+        assert_eq!(
+            LicenseStatus::least_privileged([LicenseStatus::Revoked, LicenseStatus::Expired]),
+            Some(LicenseStatus::Revoked)
+        );
+        assert_eq!(
+            LicenseStatus::least_privileged([
+                LicenseStatus::ApprovedIndex,
+                LicenseStatus::ApprovedFetch,
+            ]),
+            Some(LicenseStatus::ApprovedFetch)
+        );
+        assert_eq!(
+            LicenseStatus::least_privileged([LicenseStatus::ApprovedSnippet; 2]),
+            Some(LicenseStatus::ApprovedSnippet)
+        );
+        assert_eq!(LicenseStatus::least_privileged([]), None);
     }
 
     /// Source ids render as plain integers for logs and envelopes.

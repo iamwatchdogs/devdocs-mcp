@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-10T04:00:00Z
+timestamp: 2026-11-10T21:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -142,7 +142,7 @@ terminal: denied | expired | revoked
 | any → expired / revoked | Takedown contact fires, or the recorded expiry passes |
 | denied → pending_review | Operator-only decision. The sole exit from a refusal. Requires a non-empty note |
 
-`expired` and `revoked` are absorbing: no transition leaves them. The store runs the state check, the state update, and the audit line in one transaction, so an illegal move leaves no trace.
+`expired` and `revoked` are absorbing: no transition leaves them. The store runs the state check, the state update, and the audit line in one transaction, so an illegal move leaves no trace. A withdrawal (docs/implementation/09 §License gate enforcement points) runs in one transaction too, and it appends one audit line with the operator `auto:withdraw` for each row whose status actually changes.
 
 Runtime consequences per state:
 

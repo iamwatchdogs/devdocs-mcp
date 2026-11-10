@@ -18,6 +18,10 @@ use crate::store::Store;
 /// The operator recorded on audit lines the sweep writes itself.
 const AUTO_EXPIRY_OPERATOR: &str = "auto:expiry";
 
+/// The operator recorded on audit lines the withdrawals write themselves
+/// (docs/implementation/09 §License gate enforcement points).
+pub(crate) const AUTO_WITHDRAW_OPERATOR: &str = "auto:withdraw";
+
 impl Store {
     /// Moves every source row of `library` to the license state `to` and
     /// appends one audit line to `meta`. One transaction: load the current
@@ -243,7 +247,7 @@ fn joined_states(states: &[LicenseStatus]) -> String {
 /// timestamp formats with a fixed 9-digit subsecond field, so the audit
 /// key shape never depends on the nanosecond value
 /// (docs/implementation/06 §Migrations).
-fn append_audit(
+pub(crate) fn append_audit(
     tx: &rusqlite::Transaction<'_>,
     library: &str,
     from: &str,

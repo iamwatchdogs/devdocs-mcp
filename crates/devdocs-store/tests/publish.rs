@@ -341,6 +341,113 @@ fn a_terminal_license_state_withdraws_the_source() {
     );
 }
 
+/// A withdrawal records every status change it makes: two rows share one
+/// `origin_url`, the expiry sweep already flipped one to `expired` (its
+/// `auto:expiry` line), and the withdrawal with `expired` appends exactly
+/// one new audit line — for the row that actually changed — while both
+/// rows deactivate (docs/implementation/07 §License gate).
+#[test]
+fn withdrawal_audits_only_the_rows_whose_status_changes() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.1.0".to_owned();
+    // Same origin_url as the younger row: the sweep gives the two rows
+    // mixed stored states on one origin_url.
+    for src in [&source(LicenseStatus::ApprovedIndex), &older] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    rig.conn
+        .execute(
+            "UPDATE sources SET license_expires_at = '2026-01-01' WHERE version = '16.1.0'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(rig.store.sweep_expired("2027-01-01T00:00:00Z").unwrap(), 1);
+    assert_eq!(audit_count(&rig.conn), 1, "the sweep wrote its one line");
+
+    let withdrawn = rig
+        .store
+        .withdraw_source_by_origin_url("https://example.test/next/llms.txt", LicenseStatus::Expired)
+        .unwrap();
+    assert_eq!(withdrawn, 2, "every row of the origin_url withdraws");
+    assert_eq!(audit_count(&rig.conn), 2, "exactly one new line");
+
+    let values: Vec<String> = rig
+        .conn
+        .prepare("SELECT value FROM meta WHERE key LIKE 'audit:%' ORDER BY key")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let withdraw_lines: Vec<&String> = values
+        .iter()
+        .filter(|value| value.contains("auto:withdraw"))
+        .collect();
+    assert_eq!(withdraw_lines.len(), 1, "one auto:withdraw line expected");
+    let line = withdraw_lines[0].as_str();
+    assert!(
+        line.ends_with(", next.js, approved_index, expired, auto:withdraw)"),
+        "the changed row carries one auto:withdraw line: {line}"
+    );
+
+    let rows: Vec<(String, String, i64)> = rig
+        .conn
+        .prepare("SELECT version, license_status, active FROM sources ORDER BY version")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("16.1.0".to_owned(), "expired".to_owned(), 0),
+            ("16.2.9".to_owned(), "expired".to_owned(), 0),
+        ],
+        "both rows deactivate and carry the terminal state"
+    );
+}
+
+/// A withdrawal of a row whose status already equals the target writes no
+/// audit line but still deactivates the row.
+#[test]
+fn withdrawal_without_a_status_change_deactivates_silently() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a generation the operator already denied.")],
+        )
+        .unwrap();
+    set_row_status(&rig.conn, "16.2.9", "denied");
+    let audit_before = audit_count(&rig.conn);
+
+    let withdrawn = rig
+        .store
+        .withdraw_source_by_origin_url("https://example.test/next/llms.txt", LicenseStatus::Denied)
+        .unwrap();
+    assert_eq!(withdrawn, 1, "the matched row withdraws even unchanged");
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "a no-change withdrawal writes no audit line"
+    );
+
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "denied");
+    assert_eq!(active, 0, "the unchanged row still deactivates");
+}
+
 /// Deny while a re-sync is in flight: a publish carrying the stale
 /// pre-deny approved record must not overwrite the terminal stored state
 /// or reactivate the rows, and the refusal writes no audit line

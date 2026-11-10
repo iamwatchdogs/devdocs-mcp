@@ -134,41 +134,104 @@ impl Store {
     /// add path calls this when the gate refuses a previously indexed
     /// source: the refusal fires before any publish, so the publish-time
     /// withdrawal cannot run. A source that was never published matches no
-    /// row. Returns the number of rows withdrawn.
+    /// row. One transaction: every matched row flips to `status` and
+    /// `active = 0`, and each row whose status actually changes appends one
+    /// `auto:withdraw` audit line (docs/implementation/07 §License gate).
+    /// Returns the number of rows withdrawn — every match, changed or not.
+    ///
+    /// # Errors
+    /// [`StoreError::LockPoisoned`] or [`StoreError::Sql`] on failures.
     pub fn withdraw_source_by_origin_url(
         &self,
         origin_url: &str,
         status: devdocs_model::LicenseStatus,
     ) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        let n = conn
-            .execute(
-                "UPDATE sources SET license_status = ?1, active = 0 WHERE origin_url = ?2",
-                params![status.as_str(), origin_url],
-            )
-            .map_err(StoreError::Sql)?;
-        Ok(n)
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = select_withdrawal_rows(&tx, "WHERE origin_url = ?1", params![origin_url])?;
+        let withdrawn = withdraw_rows(&tx, &rows, status)?;
+        tx.commit().map_err(StoreError::Sql)?;
+        Ok(withdrawn)
     }
 
     /// Records the terminal license state and deactivates the matching
-    /// source row. A source that was never published matches no row, and
-    /// the single UPDATE is its own transaction.
+    /// source row. A source that was never published matches no row. One
+    /// transaction: the row flips to the terminal state and `active = 0`,
+    /// and it appends one `auto:withdraw` audit line only when its status
+    /// actually changes (docs/implementation/07 §License gate).
+    ///
+    /// # Errors
+    /// [`StoreError::LockPoisoned`] or [`StoreError::Sql`] on failures.
     fn withdraw_source(&self, src: &devdocs_model::SourceRecord) -> Result<(), StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        conn.execute(
-            "UPDATE sources SET license_status = ?1, active = 0 \
-             WHERE library = ?2 AND version = ?3 AND kind = ?4 AND origin_url = ?5",
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = select_withdrawal_rows(
+            &tx,
+            "WHERE library = ?1 COLLATE NOCASE AND version = ?2 AND kind = ?3 \
+             AND origin_url = ?4",
             params![
-                src.license_status.as_str(),
                 src.library,
                 src.version,
                 src.kind.as_str(),
                 src.origin_url.as_str(),
             ],
-        )
-        .map_err(StoreError::Sql)?;
+        )?;
+        withdraw_rows(&tx, &rows, src.license_status)?;
+        tx.commit().map_err(StoreError::Sql)?;
         Ok(())
     }
+}
+
+/// Loads the rows a withdrawal matches: `(source_id, library,
+/// license_status)` per row, selected with the given `WHERE` clause.
+fn select_withdrawal_rows(
+    tx: &rusqlite::Transaction<'_>,
+    where_clause: &str,
+    where_params: impl rusqlite::Params,
+) -> Result<Vec<(i64, String, String)>, StoreError> {
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT source_id, library, license_status FROM sources {where_clause}"
+        ))
+        .map_err(StoreError::Sql)?;
+    let rows = statement
+        .query_map(where_params, |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(StoreError::Sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::Sql)?;
+    Ok(rows)
+}
+
+/// Flips the loaded rows to `status` and `active = 0`, appending one
+/// `auto:withdraw` audit line per row whose stored status actually
+/// changes — a row already in `status` deactivates silently
+/// (docs/implementation/07 §License gate). Returns the number of rows
+/// withdrawn: every loaded row, changed or not.
+fn withdraw_rows(
+    tx: &rusqlite::Transaction<'_>,
+    rows: &[(i64, String, String)],
+    status: devdocs_model::LicenseStatus,
+) -> Result<usize, StoreError> {
+    for (source_id, library, from) in rows {
+        tx.execute(
+            "UPDATE sources SET license_status = ?1, active = 0 WHERE source_id = ?2",
+            params![status.as_str(), source_id],
+        )
+        .map_err(StoreError::Sql)?;
+        if from.as_str() != status.as_str() {
+            crate::license::append_audit(
+                tx,
+                library,
+                from,
+                status.as_str(),
+                crate::license::AUTO_WITHDRAW_OPERATOR,
+                None,
+            )?;
+        }
+    }
+    Ok(rows.len())
 }
 
 /// Runs the whole publish sequence inside `tx`.

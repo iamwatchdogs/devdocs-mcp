@@ -1,4 +1,4 @@
--- Schema 0002 for the devdocs store: the linked-page URL on chunks.
+-- Schema 0003 for the devdocs store: the linked-page URL on chunks.
 --
 -- Source of truth: docs/implementation/06-data-model.md §Schema. Applied
 -- migrations never change: a schema change is a new migration file

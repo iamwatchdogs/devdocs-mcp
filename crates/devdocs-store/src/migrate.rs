@@ -303,7 +303,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(page_url, 1, "chunks.page_url must exist after 0002");
+        assert_eq!(page_url, 1, "chunks.page_url must exist after 0003");
 
         let rerun = apply_all(&mut conn, super::MIGRATIONS, MigrateOptions::default()).unwrap();
         assert!(

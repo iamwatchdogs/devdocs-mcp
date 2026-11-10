@@ -438,6 +438,40 @@ mod tests {
         assert_fetch_blocked(gate, "pending_review");
     }
 
+    /// A store read failure fails the gate closed: the fetch refuses with
+    /// the upstream mapping instead of deciding on partial state
+    /// (docs/implementation/09 §License gate enforcement points, point 3).
+    #[test]
+    fn a_store_read_failure_refuses_the_fetch_closed() {
+        // A hand-corrupted `license_status` — only possible outside the
+        // store's own writers, past the column's CHECK constraint — makes
+        // the state read fail.
+        let dir = tempfile::tempdir().unwrap();
+        let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+            devdocs_testkit::seed_source(conn, "acme", true)?;
+            conn.execute_batch(
+                "PRAGMA ignore_check_constraints = 1;
+                 UPDATE sources SET license_status = 'bogus';
+                 PRAGMA ignore_check_constraints = 0;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let config = config_with("acme", "https://docs.acme.test/llms.txt");
+        let error =
+            gate_fetch(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap_err();
+        match error {
+            Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                detail,
+            } => assert!(
+                detail.contains("bogus") && detail.contains("unknown license status"),
+                "detail: {detail}"
+            ),
+            other => panic!("expected the store-error mapping, got {other:?}"),
+        }
+    }
+
     /// A registry entry without a URL is skipped, not an error.
     #[test]
     fn entry_without_a_url_is_skipped() {

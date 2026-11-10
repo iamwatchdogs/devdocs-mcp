@@ -974,6 +974,37 @@ mod tests {
         }
     }
 
+    /// A store failure inside a license transition keeps the upstream
+    /// mapping: only the typed refusals (illegal move, missing note,
+    /// unknown library) read as usage errors — the rest is the store's
+    /// failure, not the operator's (docs/implementation/05 §Error model).
+    #[test]
+    fn a_store_failure_in_a_transition_keeps_the_upstream_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("docs.db");
+        devdocs_testkit::seed_source_status(&db, "acme", "1.0", "approved_index", None).unwrap();
+        let raw = rusqlite::Connection::open(&db).unwrap();
+        raw.execute(
+            "CREATE TRIGGER block_transition BEFORE UPDATE OF license_status ON sources \
+             BEGIN SELECT RAISE(ABORT, 'test blocked'); END;",
+            [],
+        )
+        .unwrap();
+        drop(raw);
+
+        let mut config = config_with_acme();
+        config.index.path = db;
+        let error = super::run_source_deny(&config, "acme", Some("robots disallow"), Some("test"))
+            .unwrap_err();
+        match error {
+            Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                detail,
+            } => assert!(detail.contains("test blocked"), "detail: {detail}"),
+            other => panic!("expected the upstream mapping, got {other:?}"),
+        }
+    }
+
     /// The git adapter error kinds and the stable code prefixes their
     /// CLI mapping must keep (docs/implementation/05 §Error model).
     fn git_error_cases() -> Vec<(IngestError, &'static str)> {

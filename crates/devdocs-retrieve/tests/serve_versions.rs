@@ -484,6 +484,28 @@ fn open_resumes_a_multibyte_chunk_without_panic() {
     assert_eq!(served.concat(), full_text);
 }
 
+/// Below the snippet stage `open` serves the empty page with the
+/// metadata intact: the render gate keeps the verbatim text off, but the
+/// item still serves — the twin of the search-path gate
+/// (docs/09 enforcement point 4).
+#[test]
+fn open_serves_an_empty_page_below_the_snippet_stage() {
+    // `seed_source` boots at the publish floor (`approved_index`), which
+    // gates verbatim text.
+    let (_dir, store) = seeded_three_chunks();
+    let envelope = open(&store, "docs://acme/v1.0.0/routing", &Plan::defaults()).unwrap();
+    assert!(!envelope.truncated);
+    assert_eq!(envelope.next_cursor, None);
+    let served = envelope.results.first().unwrap();
+    assert_eq!(served.snippet, "");
+    assert_eq!(served.license_status, "approved_index");
+    assert_eq!(served.section, "Routing");
+    assert_eq!(served.title, "Routing");
+    // No page was rendered, so the item reports no token cost either.
+    assert_eq!(served.token_count, 0);
+    assert_eq!(served.content_hash, "07".repeat(32));
+}
+
 /// A symbol-rung store failure surfaces as a store failure through both
 /// the search pipeline and the exact lookup — a corrupted index must not
 /// masquerade as a miss.

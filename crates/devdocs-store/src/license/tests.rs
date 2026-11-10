@@ -540,3 +540,96 @@ fn transition_license_matches_the_library_case_insensitively() {
         lines[0]
     );
 }
+
+/// A `license_status` string no writer can produce — only possible
+/// through a hand-corrupted database — surfaces as a
+/// `FromSqlConversionFailure` on the state read instead of panicking.
+#[test]
+fn a_corrupt_status_row_fails_the_state_read() {
+    let (store, _dir) = store();
+    insert_source(&store, "acme", "1.0", ApprovedIndex, None);
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints = 1;
+             UPDATE sources SET license_status = 'bogus';
+             PRAGMA ignore_check_constraints = 0;",
+        )
+        .unwrap();
+    }
+    let error = store.license_states("acme").unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::error::StoreError::Sql(rusqlite::Error::FromSqlConversionFailure(..))
+        ),
+        "error: {error:?}"
+    );
+}
+
+/// A due row with a corrupt status surfaces the conversion failure from
+/// the sweep: the due probe filters on columns, so the transaction body
+/// runs and the state parse refuses instead of silently skipping the row.
+#[test]
+fn a_due_corrupt_status_row_fails_the_sweep() {
+    let (store, _dir) = store();
+    insert_source(&store, "acme", "1.0", ApprovedIndex, Some("2026-01-01"));
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints = 1;
+             UPDATE sources SET license_status = 'bogus';
+             PRAGMA ignore_check_constraints = 0;",
+        )
+        .unwrap();
+    }
+    let error = store.sweep_expired("2026-11-06T12:00:00Z").unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::error::StoreError::Sql(rusqlite::Error::FromSqlConversionFailure(..))
+        ),
+        "error: {error:?}"
+    );
+    // The transaction rolled back: the corrupt row keeps its state, and
+    // the sweep wrote no audit line.
+    assert_eq!(audit_lines(&store), Vec::<String>::new());
+}
+
+/// A failed audit append fails the sweep with the SQL error instead of
+/// reporting rows as flipped that were never recorded — the withdrawal
+/// and audit trail stay consistent (docs/implementation/07 §License gate).
+#[test]
+fn a_failed_audit_append_fails_the_sweep() {
+    let (store, _dir) = store();
+    insert_source(&store, "acme", "1.0", ApprovedIndex, Some("2026-01-01"));
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute("DROP TABLE meta", []).unwrap();
+    }
+    let error = store.sweep_expired("2026-11-06T12:00:00Z").unwrap_err();
+    assert!(
+        matches!(error, crate::error::StoreError::Sql(_)),
+        "error: {error:?}"
+    );
+    // The transaction rolled back: the row did not flip.
+    assert_eq!(state_of(&store, "acme"), ApprovedIndex);
+}
+
+/// A failed prepare on the state read surfaces as the SQL error: the
+/// store refuses to report states it cannot query instead of answering
+/// with an empty list.
+#[test]
+fn a_failed_state_read_prepare_surfaces_the_sql_error() {
+    let (store, _dir) = store();
+    insert_source(&store, "acme", "1.0", ApprovedIndex, None);
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute("DROP TABLE sources", []).unwrap();
+    }
+    let error = store.license_states("acme").unwrap_err();
+    assert!(
+        matches!(error, crate::error::StoreError::Sql(_)),
+        "error: {error:?}"
+    );
+}

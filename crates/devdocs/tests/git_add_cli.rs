@@ -440,3 +440,78 @@ fn add_git_refuses_an_unprivate_tmp_dir() {
         assert!(stderr.contains("GIT_TEMP_DIR"), "stderr: {stderr}");
     }
 }
+
+/// A gate refusal on a terminal state withdraws the published git
+/// generation before the refusal returns: `add` after `source deny`
+/// exits 3 with `FETCH_BLOCKED` and the store rows go inactive
+/// (docs/implementation/09 §License gate enforcement points, point 3).
+#[test]
+fn add_git_on_a_denied_source_withdraws_the_published_generation() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+    let add_args = [
+        "add",
+        url.as_str(),
+        "--version",
+        "v1.0.0",
+        "--kind",
+        "git",
+        "--json",
+        "--config",
+        config.to_str().expect("config path"),
+        "--db",
+        db.to_str().expect("db path"),
+    ];
+
+    // The first sync publishes at the bootstrap floor.
+    let (code, _stdout, stderr) = output(env.cmd(), &add_args);
+    assert_eq!(code, 0, "first sync: {stderr}");
+
+    // The operator denies the library.
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "deny",
+            "acme",
+            "--note",
+            "license yanked",
+            "--operator",
+            "test",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 0, "deny: {stderr}");
+
+    // The re-sync refuses at the gate and withdraws on the way out; no
+    // fixture or network is involved, because nothing is ever fetched.
+    let (code, _stdout, stderr) = output(env.cmd(), &add_args);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+
+    let conn = rusqlite::Connection::open(&db).expect("db opens");
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE library = 'acme'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count query");
+    let active: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE library = 'acme' AND active = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("active query");
+    assert!(total > 0, "the published rows stay in the store");
+    assert_eq!(active, 0, "every row went inactive on the withdrawal");
+}

@@ -79,3 +79,51 @@ fn published_sources_list_in_order() {
     assert_eq!(sources[1].library, "beta");
     assert!(sources[1].active);
 }
+
+/// A `sources.license_status` that is not a known state — only possible
+/// through a hand-corrupted database, past the column's CHECK constraint
+/// — surfaces as a `FromSqlConversionFailure` on the listing instead of
+/// panicking or listing a fabricated state.
+#[test]
+fn a_corrupt_license_status_fails_the_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated(&dir.path().join("docs.db")).unwrap();
+    store
+        .publish_generation(
+            &record(
+                "acme",
+                "1.0",
+                "https://a.test/llms.txt",
+                LicenseStatus::ApprovedIndex,
+            ),
+            &[NewChunk {
+                section_path: vec![String::from("Guide")],
+                symbols: Vec::new(),
+                symbol: None,
+                text: String::from("[a 1] hello"),
+                token_count: 4,
+                content_hash: devdocs_store::content_hash("hello"),
+                ordinal: 0,
+                page_url: None,
+            }],
+        )
+        .unwrap();
+
+    let conn = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
+    conn.execute_batch(
+        "PRAGMA ignore_check_constraints = 1;
+         UPDATE sources SET license_status = 'bogus';
+         PRAGMA ignore_check_constraints = 0;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = store.list_sources().unwrap_err();
+    assert!(
+        matches!(
+            error,
+            devdocs_store::StoreError::Sql(rusqlite::Error::FromSqlConversionFailure(..))
+        ),
+        "error: {error:?}"
+    );
+}

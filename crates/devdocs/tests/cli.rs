@@ -1238,6 +1238,69 @@ fn source_list_hides_a_config_expiry_the_store_never_stamped() {
     assert!(list["results"][0]["expires"].is_null(), "stdout: {stdout}");
 }
 
+/// The human `source list` output without `--json`: one line per
+/// configured source joining the config with the store state. The CR-3
+/// semantics hold on the human path too: an indexed library shows the
+/// store-stamped expiry, a library without store rows shows the
+/// declarative config value (docs/implementation/07 §License gate).
+#[test]
+fn source_list_without_json_prints_the_summary_lines() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+
+    // An indexed library shows the store-stamped date: the operator
+    // approve stamps the expiry on the rows.
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "2999-06-01",
+            "--operator",
+            "test",
+            cfg[0],
+            cfg[1],
+        ],
+    );
+    assert_eq!(code, 0, "approve: {stderr}");
+
+    // A second, never-indexed entry carries no store rows: the config
+    // `expires` shows, and the absent url and license render as the
+    // fallbacks.
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.\"acme\"]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "attribution = \"© Acme Corp documentation\"\n",
+            "\n",
+            "[sources.\"ghost\"]\n",
+            "expires = \"2030-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "one line per entry: {stdout}");
+    assert_eq!(
+        lines[0],
+        "acme approved_embed (MIT) · https://docs.acme.test/llms.txt · \
+         expires 2999-06-01 · © Acme Corp documentation",
+        "stdout: {stdout}"
+    );
+    assert_eq!(
+        lines[1], "ghost pending_review (unknown) ·  · expires 2030-01-01",
+        "stdout: {stdout}"
+    );
+}
+
 /// A gate refusal carrying a terminal status withdraws the previously
 /// published generation before the refusal returns: `add` after `source
 /// deny` exits 3 with `FETCH_BLOCKED` and the store rows go inactive

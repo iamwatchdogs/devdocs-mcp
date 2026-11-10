@@ -71,6 +71,27 @@ fn assert_list_report(list: &Value, tag_sha: &str) {
     );
 }
 
+/// The stored rows of one library straight from the store file: the
+/// total count and the still-active count.
+fn stored_row_counts(db: &Path, library: &str) -> (i64, i64) {
+    let conn = rusqlite::Connection::open(db).expect("db opens");
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE library = ?1",
+            rusqlite::params![library],
+            |row| row.get(0),
+        )
+        .expect("count query");
+    let active: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE library = ?1 AND active = 1",
+            rusqlite::params![library],
+            |row| row.get(0),
+        )
+        .expect("active query");
+    (total, active)
+}
+
 /// A tag-pin `add --kind git` against a local fixture repo publishes, and
 /// both the `add --json` report and `list --json` carry the tag's commit
 /// SHA.
@@ -497,21 +518,7 @@ fn add_git_on_a_denied_source_withdraws_the_published_generation() {
     assert_eq!(code, 3, "stderr: {stderr}");
     assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
 
-    let conn = rusqlite::Connection::open(&db).expect("db opens");
-    let total: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sources WHERE library = 'acme'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count query");
-    let active: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sources WHERE library = 'acme' AND active = 1",
-            [],
-            |row| row.get(0),
-        )
-        .expect("active query");
+    let (total, active) = stored_row_counts(&db, "acme");
     assert!(total > 0, "the published rows stay in the store");
     assert_eq!(active, 0, "every row went inactive on the withdrawal");
 }

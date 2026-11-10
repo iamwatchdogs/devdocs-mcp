@@ -11,7 +11,7 @@ use devdocs_ingest::{
     FixtureSet, GitPin, IngestJob, gate_fetch, pending_review_refusal, refused_status,
     registry_name,
 };
-use devdocs_model::config::Config;
+use devdocs_model::config::{Config, SourceConfig};
 use devdocs_model::envelope::{
     ResultEnvelope, SourceListEntry, SourceListEnvelope, SourceListVersion, SourceSummary,
 };
@@ -635,51 +635,56 @@ pub fn run_source_list(config: &Config) -> Result<SourceListEnvelope, Error> {
         results: config
             .sources
             .iter()
-            .map(|(name, entry)| {
-                let library_rows: Vec<_> = rows
-                    .iter()
-                    .filter(|row| row.library.eq_ignore_ascii_case(name))
-                    .collect();
-                let versions: Vec<SourceListVersion> = library_rows
-                    .iter()
-                    .map(|row| SourceListVersion {
-                        version: row.version.clone(),
-                        status: row.license_status.clone(),
-                        fetched_at: row.fetched_at.clone(),
-                        active: row.active,
-                    })
-                    .collect();
-                let status = LicenseStatus::least_privileged(
-                    library_rows
-                        .iter()
-                        .filter_map(|row| LicenseStatus::parse(&row.license_status)),
-                )
-                .map_or_else(|| String::from("pending_review"), |state| state.to_string());
-                // The earliest enforced lapse is the least privileged row;
-                // once rows exist the config value no longer speaks for
-                // the store (docs/implementation/07 §License gate).
-                let expires = if library_rows.is_empty() {
-                    entry.expires.clone()
-                } else {
-                    library_rows
-                        .iter()
-                        .filter_map(|row| row.license_expires_at.clone())
-                        .min()
-                };
-                SourceListEntry {
-                    name: name.clone(),
-                    url: entry.url.clone(),
-                    kind: entry.kind.clone(),
-                    license: entry.license.clone(),
-                    attribution: entry.attribution.clone(),
-                    expires,
-                    status,
-                    versions,
-                }
-            })
+            .map(|(name, entry)| source_list_entry(name, entry, &rows))
             .collect(),
         served_at: devdocs_model::now_rfc3339(),
     })
+}
+
+/// Builds one `source list` entry: the declarative config fields joined
+/// with the store-authoritative state of the library's rows
+/// (docs/implementation/07 §License gate).
+fn source_list_entry(name: &str, entry: &SourceConfig, rows: &[SourceSummary]) -> SourceListEntry {
+    let library_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.library.eq_ignore_ascii_case(name))
+        .collect();
+    let versions: Vec<SourceListVersion> = library_rows
+        .iter()
+        .map(|row| SourceListVersion {
+            version: row.version.clone(),
+            status: row.license_status.clone(),
+            fetched_at: row.fetched_at.clone(),
+            active: row.active,
+        })
+        .collect();
+    let status = LicenseStatus::least_privileged(
+        library_rows
+            .iter()
+            .filter_map(|row| LicenseStatus::parse(&row.license_status)),
+    )
+    .map_or_else(|| String::from("pending_review"), |state| state.to_string());
+    // The earliest enforced lapse is the least privileged row; once rows
+    // exist the config value no longer speaks for the store
+    // (docs/implementation/07 §License gate).
+    let expires = if library_rows.is_empty() {
+        entry.expires.clone()
+    } else {
+        library_rows
+            .iter()
+            .filter_map(|row| row.license_expires_at.clone())
+            .min()
+    };
+    SourceListEntry {
+        name: name.to_owned(),
+        url: entry.url.clone(),
+        kind: entry.kind.clone(),
+        license: entry.license.clone(),
+        attribution: entry.attribution.clone(),
+        expires,
+        status,
+        versions,
+    }
 }
 
 /// Parses the `<stage>` argument of `devdocs source approve` through the

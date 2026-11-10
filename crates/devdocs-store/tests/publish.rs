@@ -74,6 +74,22 @@ fn audit_count(conn: &Connection) -> i64 {
     .unwrap()
 }
 
+/// The four license-gate surfaces in one snapshot: the stored status,
+/// the active flag, the chunk count, and the audit line count.
+fn gate_snapshot(conn: &Connection) -> (String, i64, i64, i64) {
+    let (status, active): (String, i64) = conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let chunks: i64 = conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    (status, active, chunks, audit_count(conn))
+}
+
 /// A publish against a refused license state must return the typed
 /// `LicenseNotApproved` error carrying the refused status.
 fn assert_license_refused(error: devdocs_store::StoreError, expected: LicenseStatus) {
@@ -421,19 +437,7 @@ fn publish_refuses_when_the_stored_state_turned_pending_review() {
         )
         .unwrap();
 
-    let (status_before, active_before): (String, i64) = rig
-        .conn
-        .query_row(
-            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    let chunks_before: i64 = rig
-        .conn
-        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
-        .unwrap();
-    let audit_before = audit_count(&rig.conn);
+    let (status_before, active_before, chunks_before, audit_before) = gate_snapshot(&rig.conn);
 
     // The stale re-sync still carries the approved record.
     let error = rig
@@ -445,27 +449,13 @@ fn publish_refuses_when_the_stored_state_turned_pending_review() {
         .unwrap_err();
     assert_license_refused(error, LicenseStatus::PendingReview);
 
-    let (status, active): (String, i64) = rig
-        .conn
-        .query_row(
-            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+    let (status, active, chunks, audit_after) = gate_snapshot(&rig.conn);
     assert_eq!(
         status, status_before,
         "the operator's reopen decision must stay"
     );
     assert_eq!(active, active_before, "the refusal must write nothing");
-
-    let chunks: i64 = rig
-        .conn
-        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
-        .unwrap();
     assert_eq!(chunks, chunks_before, "the stale chunk set must not land");
-
-    let audit_after = audit_count(&rig.conn);
     assert_eq!(
         audit_after, audit_before,
         "the refusal must write no audit line"

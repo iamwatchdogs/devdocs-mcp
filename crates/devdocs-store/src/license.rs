@@ -103,20 +103,7 @@ impl Store {
     pub fn sweep_expired(&self, now: &str) -> Result<usize, StoreError> {
         let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
 
-        // Fast path: the sweep is advisory, so a plain read probes for due
-        // rows first and the write lock (BEGIN IMMEDIATE) is taken only
-        // when work exists — an idle sweep cannot stall readers behind a
-        // busy writer.
-        let due_probe: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sources \
-                 WHERE license_expires_at IS NOT NULL AND license_expires_at <= ?1 \
-                 AND license_status NOT IN ('expired', 'denied', 'revoked'))",
-                params![now],
-                |row| row.get(0),
-            )
-            .map_err(StoreError::Sql)?;
-        if !due_probe {
+        if !any_license_due(&conn, now)? {
             return Ok(0);
         }
 
@@ -176,6 +163,21 @@ impl Store {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         read_license_states(&conn, library)
     }
+}
+
+/// The sweep's fast path: the sweep is advisory, so a plain read probes
+/// for due rows first and the write lock (`BEGIN IMMEDIATE`) is taken
+/// only when work exists — an idle sweep cannot stall readers behind a
+/// busy writer.
+fn any_license_due(conn: &rusqlite::Connection, now: &str) -> Result<bool, StoreError> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sources \
+         WHERE license_expires_at IS NOT NULL AND license_expires_at <= ?1 \
+         AND license_status NOT IN ('expired', 'denied', 'revoked'))",
+        params![now],
+        |row| row.get(0),
+    )
+    .map_err(StoreError::Sql)
 }
 
 /// The distinct license states the library's rows carry, case-insensitive

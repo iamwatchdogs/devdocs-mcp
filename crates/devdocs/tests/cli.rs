@@ -1116,6 +1116,8 @@ fn source_list_json_shows_state_spdx_version_and_fetched_at() {
     assert_eq!(entry["attribution"], "© Acme Corp documentation");
     assert_eq!(entry["url"], "https://docs.acme.test/llms.txt");
     assert_eq!(entry["status"], "approved_index");
+    // No config `expires` and no store stamp: nothing is enforced yet.
+    assert!(entry["expires"].is_null(), "stdout: {stdout}");
     let versions = entry["versions"].as_array().expect("versions");
     assert_eq!(versions.len(), 2, "stdout: {stdout}");
     assert!(
@@ -1179,6 +1181,61 @@ fn source_approve_expires_stamps_the_expiry() {
     let (code, stdout, stderr) = source_cmd(&env, cfg, &["versions", "acme"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(stdout.contains("2999-01-01"), "stdout: {stdout}");
+}
+
+/// After `source approve --expires`, `source list` reports the stamped
+/// date the store enforces (docs/implementation/07 §License gate).
+#[test]
+fn source_list_shows_the_stamped_expiry() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, _stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "2999-06-01",
+            "--operator",
+            "test",
+        ],
+    );
+    assert_eq!(code, 0, "approve: {stderr}");
+
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["source", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(list["results"][0]["expires"], "2999-06-01");
+}
+
+/// `source list` shows the store-enforced expiry, not the declarative
+/// config value: a config-only `expires` over indexed rows that carry no
+/// store stamp must not read as if the store enforced it
+/// (docs/implementation/07 §License gate).
+#[test]
+fn source_list_hides_a_config_expiry_the_store_never_stamped() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.\"acme\"]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "attribution = \"© Acme Corp documentation\"\n",
+            "expires = \"2030-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["source", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert!(list["results"][0]["expires"].is_null(), "stdout: {stdout}");
 }
 
 /// A gate refusal carrying a terminal status withdraws the previously

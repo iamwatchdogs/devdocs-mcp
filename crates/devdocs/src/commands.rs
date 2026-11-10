@@ -615,11 +615,13 @@ pub fn run_source_deny(
 }
 
 /// Runs `devdocs source list`: the declarative config entries joined with
-/// the authoritative store state — url, license SPDX id, attribution, and
-/// the config expiry from `[sources.<name>]`; status, versions, and
-/// fetched-at from the store (docs/implementation/07 §License gate). The
-/// sweep runs first, so the reported state reflects passed expiries
-/// (docs/implementation/07 §License gate).
+/// the store-authoritative state — url, license SPDX id, and attribution
+/// from `[sources.<name>]`; status, versions, fetched-at, and the enforced
+/// expiry from the store. The config `expires` only shows while the
+/// library has no store rows, before anything is enforced
+/// (docs/implementation/07 §License gate). The sweep runs first, so the
+/// reported state reflects passed expiries (docs/implementation/07
+/// §License gate).
 ///
 /// # Errors
 /// [`Error::Upstream`] when the store cannot open or the read fails.
@@ -634,9 +636,12 @@ pub fn run_source_list(config: &Config) -> Result<SourceListEnvelope, Error> {
             .sources
             .iter()
             .map(|(name, entry)| {
-                let versions: Vec<SourceListVersion> = rows
+                let library_rows: Vec<_> = rows
                     .iter()
                     .filter(|row| row.library.eq_ignore_ascii_case(name))
+                    .collect();
+                let versions: Vec<SourceListVersion> = library_rows
+                    .iter()
                     .map(|row| SourceListVersion {
                         version: row.version.clone(),
                         status: row.license_status.clone(),
@@ -650,13 +655,24 @@ pub fn run_source_list(config: &Config) -> Result<SourceListEnvelope, Error> {
                     .collect();
                 let status = effective_state(&parsed)
                     .map_or_else(|| String::from("pending_review"), |state| state.to_string());
+                // The earliest enforced lapse is the least privileged row;
+                // once rows exist the config value no longer speaks for
+                // the store (docs/implementation/06 §License gate).
+                let expires = if library_rows.is_empty() {
+                    entry.expires.clone()
+                } else {
+                    library_rows
+                        .iter()
+                        .filter_map(|row| row.license_expires_at.clone())
+                        .min()
+                };
                 SourceListEntry {
                     name: name.clone(),
                     url: entry.url.clone(),
                     kind: entry.kind.clone(),
                     license: entry.license.clone(),
                     attribution: entry.attribution.clone(),
-                    expires: entry.expires.clone(),
+                    expires,
                     status,
                     versions,
                 }

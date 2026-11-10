@@ -144,7 +144,9 @@ pub struct SourceListEntry {
     pub license: Option<String>,
     /// The attribution line from the config entry.
     pub attribution: Option<String>,
-    /// The config expiry date, `YYYY-MM-DD`.
+    /// The enforced expiry date from the store, `YYYY-MM-DD`; the
+    /// declarative config value shows only before the first publish
+    /// (docs/implementation/07 §License gate).
     pub expires: Option<String>,
     /// The least privileged stored state of the library's rows, or the
     /// deny-by-default `pending_review` when nothing is indexed yet.

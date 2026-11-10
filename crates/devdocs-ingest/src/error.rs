@@ -83,7 +83,7 @@ pub enum IngestError {
     /// The system git is older than the adapter's enforced minimum
     /// (2.32): `GIT_CONFIG_GLOBAL` is ignored before 2.32, so the
     /// global-config pin would no-op and a hostile repo's
-    /// `.gitattributes` could reach an operator-defined global smudge
+    /// `.gitattributes` can reach an operator-defined global smudge
     /// filter (docs/implementation/09 §Git subprocess safety).
     #[error("GIT_TOO_OLD: {found} does not meet the required git 2.32")]
     GitTooOld {

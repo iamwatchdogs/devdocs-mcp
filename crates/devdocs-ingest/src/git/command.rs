@@ -54,7 +54,7 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 /// The minimum git version the adapter accepts: `GIT_CONFIG_GLOBAL`,
 /// which the child-env pin relies on, was introduced in Git 2.32 — older
 /// versions ignore the variable and read `~/.gitconfig` normally, so the
-/// pin no-ops and a hostile repo's `.gitattributes` could reach an
+/// pin no-ops and a hostile repo's `.gitattributes` can reach an
 /// operator-defined global smudge filter
 /// (docs/implementation/09 §Git subprocess safety).
 const MIN_GIT_VERSION: (u32, u32) = (2, 32);
@@ -159,7 +159,7 @@ fn build_git_command(cwd: &Path, args: &[&str], extra_config: &[&str]) -> Comman
     command.env("LC_ALL", "C");
     command.env_remove("LANGUAGE");
     // Isolate the user's global git config too: a hostile repo's
-    // `.gitattributes` could otherwise trigger an operator-defined global
+    // `.gitattributes` can otherwise trigger an operator-defined global
     // smudge filter via `core.attributesFile` during checkout. Git's
     // compiled-in default credential helper does not come from
     // ~/.gitconfig, and the per-command `-c` overrides still win.

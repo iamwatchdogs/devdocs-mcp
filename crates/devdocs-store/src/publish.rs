@@ -68,8 +68,10 @@ impl Store {
     /// is re-read, so a state that turned terminal while the caller's record
     /// was in flight (an operator deny racing a re-sync) cannot be
     /// overwritten or reactivated: the rows deactivate inside the committed
-    /// transaction and the same typed refusal returns. A stored state below
-    /// the record's non-terminal state keeps the record's state, as before.
+    /// transaction and the same typed refusal returns. A stored `pending_review`
+    /// refuses too, with no writes at all: the operator's reopen decision
+    /// stands. A stored state below the record's non-terminal state keeps the
+    /// record's state, as before.
     pub fn publish_generation(
         &self,
         src: &devdocs_model::SourceRecord,
@@ -105,6 +107,15 @@ impl Store {
             .map_err(StoreError::Sql)?;
             tx.commit().map_err(StoreError::Sql)?;
             return Err(StoreError::LicenseNotApproved { status: terminal });
+        }
+
+        // A stored `pending_review` is the operator's reopen decision: the
+        // refusal writes nothing (dropping `tx` rolls back), so the stale
+        // record can neither overwrite the state nor reactivate the rows.
+        if stored.contains(&devdocs_model::LicenseStatus::PendingReview) {
+            return Err(StoreError::LicenseNotApproved {
+                status: devdocs_model::LicenseStatus::PendingReview,
+            });
         }
 
         let result = publish_inside(&tx, src, chunks);

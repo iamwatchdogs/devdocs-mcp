@@ -385,6 +385,93 @@ fn publish_refuses_when_the_stored_state_turned_terminal() {
     );
 }
 
+/// Deny while a re-sync is in flight, then reopen to `pending_review`: the
+/// stale pre-deny approved record must not overwrite the operator's reopen
+/// decision. The refusal writes nothing at all — the stored status, the
+/// active flag, the chunk set, and the audit trail stay as they were
+/// (docs/implementation/09 §License gate enforcement points).
+#[test]
+fn publish_refuses_when_the_stored_state_turned_pending_review() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the generation the operator reopens.")],
+        )
+        .unwrap();
+
+    // The operator denies, then reopens to pending_review while the stale
+    // re-sync is still in flight.
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+
+    let (status_before, active_before): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let chunks_before: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    let audit_before = audit_count(&rig.conn);
+
+    // The stale re-sync still carries the approved record.
+    let error = rig
+        .store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a stale republication that never lands.")],
+        )
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::PendingReview);
+
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        status, status_before,
+        "the operator's reopen decision must stay"
+    );
+    assert_eq!(active, active_before, "the refusal must write nothing");
+
+    let chunks: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(chunks, chunks_before, "the stale chunk set must not land");
+
+    let audit_after = audit_count(&rig.conn);
+    assert_eq!(
+        audit_after, audit_before,
+        "the refusal must write no audit line"
+    );
+}
+
 /// The inverse order: with the stored state non-terminal, the publish
 /// keeps its existing behavior — the record's state wins — and a deny
 /// that lands afterward still transitions on top of it.

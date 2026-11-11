@@ -42,6 +42,7 @@ fn source(status: LicenseStatus) -> SourceRecord {
         commit_sha: Some("abc123".to_owned()),
         license: Some("MIT".to_owned()),
         license_status: status,
+        license_expires_at: None,
         fetched_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap(),
     }
 }
@@ -131,6 +132,214 @@ fn publish_upserts_and_activates_the_source() {
         .unwrap();
     assert_eq!(active, 1, "a successful publish flips the source active");
     assert_eq!(commit_sha, "abc123");
+}
+
+/// The `license_expires_at` column of the named library's row.
+fn row_expiry(conn: &Connection, library: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT license_expires_at FROM sources WHERE library = ?1",
+        rusqlite::params![library],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// The `license_expires_at` column of the named library and version row.
+fn row_version_expiry(conn: &Connection, library: &str, version: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT license_expires_at FROM sources \
+         WHERE library = ?1 COLLATE NOCASE AND version = ?2",
+        rusqlite::params![library, version],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// A Rig whose store holds one seeded `acme` row at `status` with an
+/// optional expiry date (docs/implementation/07 §License gate fixture
+/// shape: the row lands behind the raw insert).
+fn seeded_rig(status: &str, expires: Option<&str>) -> Rig {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("docs.db");
+    let store =
+        devdocs_testkit::seed_source_status(&db, "acme", "16.2.9", status, expires).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    Rig {
+        store,
+        conn,
+        _dir: dir,
+    }
+}
+
+/// The publishable record retargeted onto the seeded `acme` row, carrying
+/// the given configured expiry.
+fn acme_record(expires: Option<&str>) -> SourceRecord {
+    let mut record = source(LicenseStatus::ApprovedIndex);
+    record.library = String::from("acme");
+    record.origin_url = Url::parse("https://docs.test/acme/llms.txt").unwrap();
+    record.license_expires_at = expires.map(str::to_owned);
+    record
+}
+
+/// A publish stamps the configured expiry into the fresh row
+/// (docs/implementation/07 §Atomic publish).
+#[test]
+fn publish_stamps_the_configured_expiry() {
+    let rig = rig();
+    let mut record = source(LicenseStatus::ApprovedIndex);
+    record.license_expires_at = Some("2026-01-01".to_owned());
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    assert_eq!(
+        row_expiry(&rig.conn, "next.js"),
+        Some(String::from("2026-01-01"))
+    );
+}
+
+/// An operator-stamped expiry wins: the publish seed never clobbers a
+/// stored date (docs/implementation/07 §Registry commands).
+#[test]
+fn publish_never_clobbers_an_operator_stamped_expiry() {
+    let rig = seeded_rig("approved_index", Some("2027-06-30"));
+    rig.store
+        .publish_generation(
+            &acme_record(Some("2026-01-01")),
+            &[chunk(0, None, "A body to publish.")],
+        )
+        .unwrap();
+    assert_eq!(
+        row_expiry(&rig.conn, "acme"),
+        Some(String::from("2027-06-30"))
+    );
+}
+
+/// A publish of a new version inherits the library's operator-stamped
+/// expiry; the configured date seeds only a fresh library, so a later
+/// version never reverts to a lapsed configured date
+/// (docs/implementation/07 §License gate).
+#[test]
+fn publish_inherits_the_library_expiry_for_a_new_version() {
+    let rig = seeded_rig("approved_index", Some("2027-06-30"));
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("17.0.0");
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "17.0.0"),
+        Some(String::from("2027-06-30"))
+    );
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "16.2.9"),
+        Some(String::from("2027-06-30"))
+    );
+}
+
+/// A republished row with a NULL stored expiry takes the dated sibling's
+/// date: the MAX subquery feeds `excluded.license_expires_at`, and the
+/// DO UPDATE COALESCE takes it because the stored value is NULL
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_legacy_row_inherits_the_library_expiry_on_republish() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("docs.db");
+    let store = devdocs_testkit::seed_source_status(
+        &db,
+        "acme",
+        "16.2.9",
+        "approved_index",
+        Some("2027-06-30"),
+    )
+    .unwrap();
+    drop(
+        devdocs_testkit::seed_source_status(&db, "acme", "16.1.0", "approved_index", None).unwrap(),
+    );
+    let conn = Connection::open(&db).unwrap();
+
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("16.1.0");
+    store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+
+    assert_eq!(
+        row_version_expiry(&conn, "acme", "16.1.0"),
+        Some(String::from("2027-06-30")),
+        "the NULL row takes the sibling's date over the configured one"
+    );
+    assert_eq!(
+        row_version_expiry(&conn, "acme", "16.2.9"),
+        Some(String::from("2027-06-30")),
+        "the operator-stamped sibling date never clobbers"
+    );
+}
+
+/// A legacy row without an expiry picks up the configured date on the
+/// next publish: the seed fills only a NULL column
+/// (docs/implementation/07 §License gate).
+#[test]
+fn publish_seeds_a_legacy_row_without_an_expiry() {
+    let rig = seeded_rig("approved_index", None);
+    rig.store
+        .publish_generation(
+            &acme_record(Some("2026-01-01")),
+            &[chunk(0, None, "A body to publish.")],
+        )
+        .unwrap();
+    assert_eq!(
+        row_expiry(&rig.conn, "acme"),
+        Some(String::from("2026-01-01"))
+    );
+}
+
+/// Without a configured date the publish leaves the expiry unset: NULL
+/// stays NULL and nothing lapses.
+#[test]
+fn publish_leaves_the_expiry_unset_without_a_configured_date() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "A body to publish.")],
+        )
+        .unwrap();
+    assert_eq!(row_expiry(&rig.conn, "next.js"), None);
+}
+
+/// A row published from a passed configured date lapses at the sweep: the
+/// sweep flips it to `expired` and appends one `auto:expiry` audit line
+/// (docs/implementation/07 §Expiry sweep).
+#[test]
+fn a_configured_expiry_lapses_at_the_sweep() {
+    let rig = rig();
+    let mut record = source(LicenseStatus::ApprovedIndex);
+    record.license_expires_at = Some("2026-01-01".to_owned());
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+
+    let flipped = rig.store.sweep_expired("2026-11-06T12:00:00Z").unwrap();
+    assert_eq!(flipped, 1, "the past configured expiry flips");
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE library = 'next.js'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "expired");
+    let auto_expiry: i64 = rig
+        .conn
+        .query_row(
+            "SELECT count(*) FROM meta WHERE key LIKE 'audit:%' \
+             AND value LIKE '%auto:expiry%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(auto_expiry, 1, "one auto:expiry audit line");
 }
 
 /// A publish inserts the chunk rows and their symbol rows.

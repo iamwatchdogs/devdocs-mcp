@@ -299,6 +299,7 @@ impl<'a> IngestJob<'a> {
             commit_sha: Some(fetched.commit_sha),
             license: grant.license.clone(),
             license_status: grant.status,
+            license_expires_at: grant.expires.map(|date| date.to_string()),
             fetched_at: OffsetDateTime::now_utc(),
         };
         Ok(Prepared {
@@ -501,6 +502,7 @@ impl<'a> IngestJob<'a> {
             commit_sha: None,
             license: grant.license.clone(),
             license_status: grant.status,
+            license_expires_at: grant.expires.map(|date| date.to_string()),
             fetched_at: OffsetDateTime::now_utc(),
         };
         Ok(Prepared {

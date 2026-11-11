@@ -236,6 +236,45 @@ fn publish_inherits_the_library_expiry_for_a_new_version() {
     );
 }
 
+/// A republished row with a NULL stored expiry takes the dated sibling's
+/// date: the MAX subquery feeds `excluded.license_expires_at`, and the
+/// DO UPDATE COALESCE takes it because the stored value is NULL
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_legacy_row_inherits_the_library_expiry_on_republish() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("docs.db");
+    let store = devdocs_testkit::seed_source_status(
+        &db,
+        "acme",
+        "16.2.9",
+        "approved_index",
+        Some("2027-06-30"),
+    )
+    .unwrap();
+    drop(
+        devdocs_testkit::seed_source_status(&db, "acme", "16.1.0", "approved_index", None).unwrap(),
+    );
+    let conn = Connection::open(&db).unwrap();
+
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("16.1.0");
+    store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+
+    assert_eq!(
+        row_version_expiry(&conn, "acme", "16.1.0"),
+        Some(String::from("2027-06-30")),
+        "the NULL row takes the sibling's date over the configured one"
+    );
+    assert_eq!(
+        row_version_expiry(&conn, "acme", "16.2.9"),
+        Some(String::from("2027-06-30")),
+        "the operator-stamped sibling date never clobbers"
+    );
+}
+
 /// A legacy row without an expiry picks up the configured date on the
 /// next publish: the seed fills only a NULL column
 /// (docs/implementation/07 §License gate).

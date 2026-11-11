@@ -393,7 +393,7 @@ mod tests {
     /// legal re-sync on a date the store outranks.
     #[test]
     fn an_operator_dated_row_grants_despite_a_passed_configured_date() {
-        let (store, _dir) = store_with("approved_index", Some("2027-06-30"));
+        let (store, _dir) = store_with("approved_index", Some("2999-06-01"));
         let mut config = config_with("acme", "https://docs.acme.test/llms.txt");
         config.sources.get_mut("acme").unwrap().expires = Some(String::from("2026-01-01"));
         let grant = gate_fetch(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap();
@@ -406,7 +406,7 @@ mod tests {
             .into_iter()
             .map(|row| row.license_expires_at)
             .collect();
-        assert_eq!(recorded, vec![Some(String::from("2027-06-30"))]);
+        assert_eq!(recorded, vec![Some(String::from("2999-06-01"))]);
     }
 
     /// One undated row among dated ones refuses a passed configured date:
@@ -418,7 +418,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("docs.db");
         let store =
-            seed_source_status(&db, "acme", "1.0", "approved_index", Some("2027-06-30")).unwrap();
+            seed_source_status(&db, "acme", "1.0", "approved_index", Some("2999-06-01")).unwrap();
         seed_source_status(&db, "acme", "2.0", "approved_index", None).unwrap();
         let mut config = config_with("acme", "https://docs.acme.test/llms.txt");
         config.sources.get_mut("acme").unwrap().expires = Some(String::from("2026-01-01"));
@@ -435,7 +435,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("docs.db");
         let store =
-            seed_source_status(&db, "acme", "1.0", "approved_index", Some("2027-06-30")).unwrap();
+            seed_source_status(&db, "acme", "1.0", "approved_index", Some("2999-06-01")).unwrap();
         seed_source_status(&db, "acme", "2.0", "approved_index", Some("2999-01-01")).unwrap();
         let mut config = config_with("acme", "https://docs.acme.test/llms.txt");
         config.sources.get_mut("acme").unwrap().expires = Some(String::from("2026-01-01"));

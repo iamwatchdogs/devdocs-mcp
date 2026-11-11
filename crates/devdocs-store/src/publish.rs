@@ -271,7 +271,10 @@ fn stored_below_index_state(
         .filter(|state| state.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank()))
 }
 
-/// Runs the whole publish sequence inside `tx`.
+/// Runs the whole publish sequence inside `tx`. The configured expiry
+/// seeds the row's `license_expires_at` only when the column is NULL, so
+/// an operator-stamped date never clobbers
+/// (docs/implementation/07 §Atomic publish).
 fn publish_inside(
     tx: &rusqlite::Transaction<'_>,
     src: &devdocs_model::SourceRecord,
@@ -280,11 +283,12 @@ fn publish_inside(
     let source_id: i64 = tx
         .query_row(
             "INSERT INTO sources(library, version, kind, origin_url, commit_sha, license, \
-             license_status, fetched_at, active) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0) \
+             license_status, fetched_at, license_expires_at, active) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0) \
              ON CONFLICT(library, version, kind, origin_url) DO UPDATE SET \
              commit_sha = excluded.commit_sha, license = excluded.license, \
              license_status = excluded.license_status, fetched_at = excluded.fetched_at, \
+             license_expires_at = COALESCE(license_expires_at, excluded.license_expires_at), \
              active = 0 \
              RETURNING source_id",
             params![
@@ -296,6 +300,7 @@ fn publish_inside(
                 src.license,
                 src.license_status.as_str(),
                 rfc3339_utc(src.fetched_at)?,
+                src.license_expires_at,
             ],
             |row| row.get(0),
         )

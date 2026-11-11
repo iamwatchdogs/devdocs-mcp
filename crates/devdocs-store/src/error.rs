@@ -70,6 +70,40 @@ pub enum StoreError {
         status: LicenseStatus,
     },
 
+    /// The configured expiry about to seed the library has already passed
+    /// and the library records no date the publish could defer to: the
+    /// seed would stamp the lapsed date and the next read would sweep the
+    /// row to `expired` while the sync reported success
+    /// (docs/implementation/07 §Atomic publish, point 2).
+    #[error("configured expiry {date} has already passed")]
+    ConfiguredExpiryPassed {
+        /// The configured date that already passed.
+        date: String,
+    },
+
+    /// The license state machine refused the requested transition
+    /// (docs/implementation/07 §License gate). The stored state is
+    /// unchanged and no audit line was written.
+    #[error("illegal license transition {from} → {to}")]
+    InvalidTransition {
+        /// The state the transition started from.
+        from: LicenseStatus,
+        /// The state the transition asked for.
+        to: LicenseStatus,
+    },
+
+    /// `denied → pending_review` requires a non-empty note for the audit
+    /// line (docs/implementation/07 §License gate).
+    #[error("re-opening a denied source requires a non-empty note")]
+    MissingNote,
+
+    /// No source row carries the library name.
+    #[error("no indexed source for library {library:?}")]
+    UnknownLibrary {
+        /// The library name that matched nothing.
+        library: String,
+    },
+
     /// A chunk in a publish batch could not be serialized for storage.
     #[error("chunk serialization failed: {0}")]
     InvalidChunk(#[from] serde_json::Error),

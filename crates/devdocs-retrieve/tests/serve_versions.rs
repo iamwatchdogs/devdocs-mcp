@@ -405,11 +405,16 @@ fn open_of_an_unindexed_library_misses() {
 }
 
 /// Seeds `acme` with two headerless chunks (content before the first
-/// heading).
+/// heading), approved to the snippet stage so `open` serves verbatim
+/// text.
 fn seeded_headless_chunks() -> (tempfile::TempDir, Store) {
     let dir = tempdir().unwrap();
     let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
         let source = devdocs_testkit::seed_source(conn, "acme", true)?;
+        conn.execute(
+            "UPDATE sources SET license_status = 'approved_snippet' WHERE source_id = ?1",
+            [source],
+        )?;
         devdocs_testkit::seed_chunk(conn, source, 0, "[]", None, "Intro text before a heading.")?;
         devdocs_testkit::seed_chunk(conn, source, 1, "[]", None, "More head content.")?;
         Ok(())
@@ -432,11 +437,16 @@ fn open_serves_headerless_chunks_through_the_placeholder_ref() {
 
 /// Seeds `acme` with one multibyte chunk whose every line ends in a wide
 /// character, so a char-offset cursor sliced as a byte offset would land
-/// inside a character and panic.
+/// inside a character and panic. The source sits at the snippet stage so
+/// the pages serve verbatim text.
 fn seeded_multibyte_chunk() -> (tempfile::TempDir, Store) {
     let dir = tempdir().unwrap();
     let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
         let source = devdocs_testkit::seed_source(conn, "acme", true)?;
+        conn.execute(
+            "UPDATE sources SET license_status = 'approved_snippet' WHERE source_id = ?1",
+            [source],
+        )?;
         devdocs_testkit::seed_chunk(conn, source, 0, "[\"Guide\"]", None, "A ›\nB →\nC ∴\n")?;
         Ok(())
     })
@@ -472,6 +482,115 @@ fn open_resumes_a_multibyte_chunk_without_panic() {
     }
     assert!(served.len() > 1, "the budget must cut the chunk");
     assert_eq!(served.concat(), full_text);
+}
+
+/// Below the snippet stage `open` serves the empty page with the
+/// metadata intact: the render gate keeps the verbatim text off, but the
+/// item still serves — the twin of the search-path gate
+/// (docs/09 enforcement point 4).
+#[test]
+fn open_serves_an_empty_page_below_the_snippet_stage() {
+    // `seed_source` boots at the publish floor (`approved_index`), which
+    // gates verbatim text.
+    let (_dir, store) = seeded_three_chunks();
+    let envelope = open(&store, "docs://acme/v1.0.0/routing", &Plan::defaults()).unwrap();
+    assert!(!envelope.truncated);
+    assert_eq!(envelope.next_cursor, None);
+    let served = envelope.results.first().unwrap();
+    assert_eq!(served.snippet, "");
+    assert_eq!(served.license_status, "approved_index");
+    assert_eq!(served.section, "Routing");
+    assert_eq!(served.title, "Routing");
+    // No page was rendered, so the item reports no token cost either.
+    assert_eq!(served.token_count, 0);
+    assert_eq!(served.content_hash, "07".repeat(32));
+}
+
+/// Seeds `acme` (one active `approved_index` source with a routing chunk)
+/// plus one active `other` source at the fetch stage with a chunk the
+/// same query matches: the shape that separates "the under-review row
+/// stops serving" from "everything stops serving".
+fn seeded_review_with_fetch_sibling() -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        let current = devdocs_testkit::seed_source(conn, "acme", true)?;
+        devdocs_testkit::seed_chunk(
+            conn,
+            current,
+            0,
+            "[\"Routing\"]",
+            None,
+            "The routing layer maps requests for the under-review source.",
+        )?;
+        conn.execute(
+            "INSERT INTO sources(library, version, kind, origin_url, license_status, fetched_at, active) \
+             VALUES ('other', '1.0.0', 'llms_txt', 'https://example.test/other', 'approved_fetch', \
+             '2026-01-01T00:00:00Z', 1)",
+            [],
+        )?;
+        let sibling = conn.last_insert_rowid();
+        devdocs_testkit::seed_chunk(
+            conn,
+            sibling,
+            0,
+            "[\"Routing\"]",
+            None,
+            "The routing layer maps requests for the fetch-stage sibling.",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
+/// A source the operator denies and reopens to `pending_review` never
+/// serves content again — the reopen leaves the row active, so only the
+/// store's unserved-license clause keeps it out: its chunk misses search
+/// while the active `approved_fetch` sibling still serves a metadata-only
+/// hit, and `open` by ref misses (docs/implementation/07 §License gate,
+/// the `pending_review` row).
+#[test]
+fn a_source_under_review_misses_while_an_approved_sibling_serves() {
+    let (dir, store) = seeded_review_with_fetch_sibling();
+    store
+        .transition_license(
+            "acme",
+            devdocs_model::LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    store
+        .transition_license(
+            "acme",
+            devdocs_model::LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+
+    let query = Query::new("routing", None, None);
+    let envelope = search(&store, &query, dir.path(), &Plan::defaults()).unwrap();
+    assert_eq!(
+        envelope.results.len(),
+        1,
+        "only the fetch-stage sibling serves: {envelope:?}"
+    );
+    let served = envelope.results.first().unwrap();
+    assert_eq!(served.served_version, "1.0.0");
+    assert_eq!(served.license_status, "approved_fetch");
+    assert_eq!(
+        served.snippet, "",
+        "below the snippet stage the hit serves metadata only"
+    );
+
+    let error = open(&store, "docs://acme/v1.0.0/routing", &Plan::defaults()).unwrap_err();
+    assert!(
+        matches!(error, RetrieveError::Miss(MissReason::LowConfidence)),
+        "the under-review source must miss, got {error}"
+    );
 }
 
 /// A symbol-rung store failure surfaces as a store failure through both

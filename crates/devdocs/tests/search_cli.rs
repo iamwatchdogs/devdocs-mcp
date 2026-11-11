@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{indexed_doc, indexed_env, output};
+use common::{indexed_doc, indexed_env, indexed_env_at_index, output};
 use devdocs_model::ResultEnvelope;
 use serde_json::Value;
 
@@ -98,6 +98,178 @@ fn cold_misses_exit_two() {
     let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
     assert_eq!(error["error"], "NO_RESULT");
     assert_eq!(error["miss_reason"], "low_confidence");
+}
+
+/// A revoked source (revoked through the store transition, no re-sync)
+/// drops out of `search` silently — the unserved-license clause keeps the
+/// rows out of the rungs — while the direct-name paths name the refusal:
+/// a `--library` search and an `open` by ref answer `NOT_AVAILABLE` with
+/// `miss_reason: license_blocked` (docs/09 enforcement point 5).
+#[test]
+fn a_revoked_source_drops_out_of_search_and_blocks_direct_queries() {
+    let (env, config) = indexed_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    devdocs_testkit::transition_source(
+        &env.root.join("data").join("docs.db"),
+        "acme",
+        devdocs_model::LicenseStatus::Revoked,
+        "test:revoke",
+    )
+    .expect("revoke lands");
+
+    // Plain search stays silent: exit 2 with the soft miss, never the
+    // license reason.
+    let (code, stdout, stderr) = output(env.cmd(), &["search", "client", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["miss_reason"], "low_confidence");
+
+    // The direct-name search names the refusal.
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "search",
+            "client",
+            "--library",
+            "acme",
+            "--json",
+            cfg[0],
+            cfg[1],
+        ],
+    );
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["error"], "NOT_AVAILABLE");
+    assert_eq!(error["miss_reason"], "license_blocked");
+    assert!(
+        error["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("devdocs source list"),
+        "stderr: {stderr}"
+    );
+
+    // `open` by ref names the refusal too.
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["open", "docs://acme/v1.0/intro", "--json", cfg[0], cfg[1]],
+    );
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["error"], "NOT_AVAILABLE");
+    assert_eq!(error["miss_reason"], "license_blocked");
+}
+
+/// An expired source drops out at the next query: the read-path sweep
+/// flips the passed expiry to `expired` before the rungs run, so search
+/// serves nothing and the direct ref answers `NOT_AVAILABLE` with
+/// `license_blocked`.
+#[test]
+fn an_expired_source_drops_out_at_the_next_query() {
+    let (env, config) = indexed_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    devdocs_testkit::set_source_expiry(
+        &env.root.join("data").join("docs.db"),
+        "acme",
+        "2026-01-01",
+    )
+    .expect("expiry planted");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["search", "client", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["miss_reason"], "low_confidence");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["open", "docs://acme/v1.0/intro", "--json", cfg[0], cfg[1]],
+    );
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["error"], "NOT_AVAILABLE");
+    assert_eq!(error["miss_reason"], "license_blocked");
+
+    // The sweep landed in the store: the versions surface shows the
+    // flipped state.
+    let (code, stdout, stderr) = output(env.cmd(), &["versions", "acme", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stdout: {stdout} stderr: {stderr}");
+    assert!(stdout.contains("expired"), "stdout: {stdout}");
+}
+
+/// A source the operator denies and reopens to `pending_review` answers a
+/// plain `search` with the soft miss (exit 2) — the reopen leaves the row
+/// active, so the unserved-license clause is what keeps it out of the
+/// rungs — while `source list` still reports the row, under review
+/// (docs/implementation/07 §License gate, the `pending_review` row).
+#[test]
+fn a_source_under_review_misses_search_while_source_list_still_shows_it() {
+    let (env, config) = indexed_env_at_index();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    for transition in [
+        vec!["source", "deny", "acme", "--note", "robots disallow"],
+        vec![
+            "source",
+            "approve",
+            "acme",
+            "pending_review",
+            "--note",
+            "licensing question",
+        ],
+    ] {
+        let args: Vec<&str> = transition
+            .iter()
+            .copied()
+            .chain(cfg.iter().copied())
+            .collect();
+        let (code, stdout, stderr) = output(env.cmd(), &args);
+        assert_eq!(code, 0, "transition failed: {stdout} {stderr}");
+    }
+
+    // Plain search stays silent: exit 2 with the soft miss.
+    let (code, stdout, stderr) = output(env.cmd(), &["search", "client", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["miss_reason"], "low_confidence");
+
+    // The discovery surface still lists the row, under review and active.
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    let entry = &list["results"][0];
+    assert_eq!(entry["status"], "pending_review");
+    let version = &entry["versions"][0];
+    assert_eq!(version["status"], "pending_review");
+    assert_eq!(version["active"], Value::Bool(true));
+}
+
+/// The config `attribution` line joins the served items by library: the
+/// envelope carries it under `--json`, and the human `open` output prints
+/// the attribution line (docs/implementation/07 §License gate).
+#[test]
+fn attribution_joins_into_the_envelope_and_the_human_open_output() {
+    let (env, config) = indexed_env();
+    let doc_ref = indexed_doc(&env, &config).doc_ref;
+    let cfg = ["--config", config.to_str().expect("config path")];
+
+    let (code, stdout, stderr) = output(env.cmd(), &["open", &doc_ref, "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "open failed: {stderr}");
+    let envelope: ResultEnvelope = serde_json::from_str(stdout.trim()).expect("envelope");
+    assert_eq!(
+        envelope.results.first().expect("one result").attribution,
+        Some(String::from("© Acme Corp documentation"))
+    );
+
+    let (code, stdout, stderr) = output(env.cmd(), &["open", &doc_ref, cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "open failed: {stderr}");
+    assert!(
+        stdout.contains("© Acme Corp documentation"),
+        "stdout: {stdout:?}"
+    );
+}
+
+/// Parses one JSON envelope off the stderr miss channel.
+fn serde_json_from(raw: &str) -> Value {
+    serde_json::from_str(raw.trim()).expect("stderr is JSON")
 }
 
 /// A search for an absent library exits 2 with `PKG_NOT_INDEXED` and the
@@ -457,11 +629,11 @@ fn versions_without_json_print_the_discovery_lines() {
     assert_eq!(code, 0, "versions failed: {stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(
-        lines.contains(&"acme 1.0 (llms_txt · approved_index · active)"),
+        lines.contains(&"acme 1.0 (llms_txt · approved_snippet · active)"),
         "stdout: {stdout:?}"
     );
     assert!(
-        lines.contains(&"acme 2.0 (llms_txt · approved_index · active)"),
+        lines.contains(&"acme 2.0 (llms_txt · approved_snippet · active)"),
         "stdout: {stdout:?}"
     );
 }

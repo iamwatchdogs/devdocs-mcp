@@ -289,6 +289,7 @@ mod tests {
             commit_sha: Some("abc123".to_owned()),
             license: Some("MIT".to_owned()),
             license_status: LicenseStatus::ApprovedIndex,
+            license_expires_at: None,
             fetched_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap(),
         };
         let new_chunks: Vec<NewChunk> = chunks

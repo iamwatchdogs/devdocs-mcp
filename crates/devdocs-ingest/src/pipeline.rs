@@ -149,9 +149,8 @@ impl<'a> IngestJob<'a> {
     }
 
     /// Runs the pipeline: gate, fetch index, parse, fetch pages, segment,
-    /// publish. The license gate was already applied by the caller
-    /// ([`crate::license::gate_fetch`]) before the store opened; the run
-    /// re-checks nothing and trusts the grant it was handed.
+    /// publish. The license gate ([`crate::license::gate_fetch`]) consults
+    /// the store — the authoritative license state — before any fetch.
     ///
     /// The total cap bounds the fetch-and-segment work only. The publish
     /// runs after the cap: once the transaction starts, the run reports the
@@ -168,7 +167,7 @@ impl<'a> IngestJob<'a> {
         library: &str,
         version: &str,
     ) -> Result<IngestOutcome, IngestError> {
-        let grant = self.gate(index_url, library)?;
+        let grant = self.gate(&store, index_url, library)?;
         let prepared = tokio::time::timeout(
             TOTAL_INGEST_CAP,
             self.prepare(index_url, library, version, &grant),
@@ -206,7 +205,7 @@ impl<'a> IngestJob<'a> {
         pin: GitPin,
         data_root: &std::path::Path,
     ) -> Result<IngestOutcome, IngestError> {
-        let grant = self.gate(repo_url, library)?;
+        let grant = self.gate(&store, repo_url, library)?;
         // A commit pin publishes the pin lowercased as its version label —
         // the same case-insensitive, normalized-lowercase rule the plan
         // applies to the fetch — so the same commit added with different
@@ -230,16 +229,18 @@ impl<'a> IngestJob<'a> {
     }
 
     /// The license gate both entry points run: the deny-by-default fetch
-    /// gate, then the registry-name check — the published library identity
-    /// is the registry entry, so a caller that passes another name would
-    /// publish approved content under an arbitrary name, and the run
-    /// refuses instead (docs/implementation/07 §License gate).
+    /// gate over the store's authoritative license state, then the
+    /// registry-name check — the published library identity is the registry
+    /// entry, so a caller that passes another name would publish approved
+    /// content under an arbitrary name, and the run refuses instead
+    /// (docs/implementation/07 §License gate).
     fn gate(
         &self,
+        store: &Store,
         origin_url: &Url,
         library: &str,
     ) -> Result<crate::license::LicenseGrant, IngestError> {
-        let grant = crate::license::gate_fetch(self.config, origin_url)?;
+        let grant = crate::license::gate_fetch(store, self.config, origin_url)?;
         if library != grant.name {
             return Err(IngestError::LicenseNameMismatch {
                 expected: grant.name.clone(),
@@ -298,6 +299,7 @@ impl<'a> IngestJob<'a> {
             commit_sha: Some(fetched.commit_sha),
             license: grant.license.clone(),
             license_status: grant.status,
+            license_expires_at: grant.expires.map(|date| date.to_string()),
             fetched_at: OffsetDateTime::now_utc(),
         };
         Ok(Prepared {
@@ -500,6 +502,7 @@ impl<'a> IngestJob<'a> {
             commit_sha: None,
             license: grant.license.clone(),
             license_status: grant.status,
+            license_expires_at: grant.expires.map(|date| date.to_string()),
             fetched_at: OffsetDateTime::now_utc(),
         };
         Ok(Prepared {

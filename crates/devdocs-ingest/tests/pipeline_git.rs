@@ -6,7 +6,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use devdocs_ingest::guard::FetchGuard;
@@ -18,26 +17,10 @@ use devdocs_testkit::git_repo::{bare_mirror, docs_repo};
 use tempfile::tempdir;
 use url::Url;
 
-/// Runs `git` against a fixture with the same argv-only, pinned-env
-/// discipline the testkit uses, returning trimmed stdout. Inherited
-/// `GIT_*` variables are removed so a hook environment cannot redirect
-/// the child to the host repository.
+/// Fixture git runner through the testkit helper, so the argv-only and
+/// isolation-env discipline stays in one place.
 fn fixture_git(dir: &Path, args: &[&str]) -> String {
-    let mut child = Command::new("git");
-    for (key, _) in std::env::vars_os() {
-        if key.as_encoded_bytes().starts_with(b"GIT_") {
-            child.env_remove(&key);
-        }
-    }
-    let output = child
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?} failed");
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    devdocs_testkit::git_repo::git(dir, args).unwrap()
 }
 
 /// The `file://` URL of a local repository path — the exact string the
@@ -58,7 +41,8 @@ fn config(repo_url: &Url) -> Config {
             kind: Some(String::from("git")),
             url: Some(repo_url.to_string()),
             license: Some(String::from("MIT")),
-            status: Some(String::from("approved_index")),
+            attribution: None,
+            expires: None,
             refresh_days: None,
         },
     );
@@ -138,12 +122,13 @@ async fn git_run_publishes_chunks_with_commit_provenance() {
     let data = tempdir().unwrap();
     let url = repo_url(&repo.work_dir);
     let config = config(&url);
+    let store = store();
 
-    // The deny-by-default gate applies to git sources too.
-    let grant = gate_fetch(&config, &url).unwrap();
+    // The deny-by-default gate applies to git sources too; it reads
+    // the store's authoritative license state.
+    let grant = gate_fetch(&store, &config, &url).unwrap();
     assert_eq!(grant.name, "acme");
 
-    let store = store();
     let guard = guard(&config);
     let outcome = IngestJob::new(&config, &guard, None)
         .run_git(

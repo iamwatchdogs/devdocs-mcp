@@ -9,17 +9,21 @@ use rusqlite::params;
 use crate::error::StoreError;
 use crate::store::Store;
 
-/// The placeholder the serving queries carry for the terminal-license
+/// The placeholder the serving queries carry for the unserved-license
 /// filter; [`fts_sql`] and [`plain_sql`] substitute
-/// [`TERMINAL_LICENSE_CLAUSE`] for it when they compose the final SQL.
+/// [`UNSERVED_LICENSE_CLAUSE`] for it when they compose the final SQL.
 const LICENSE_PLACEHOLDER: &str = "{license_clause}";
 
-/// The WHERE clause that drops sources with a terminal license refusal out
-/// of retrieval at query time (docs/implementation/09 §License gate
-/// enforcement points, point 3). One string, shared by every serving
-/// query through the [`LICENSE_PLACEHOLDER`] in the composed SQL.
-const TERMINAL_LICENSE_CLAUSE: &str =
-    "AND s.license_status NOT IN ('denied', 'expired', 'revoked')";
+/// The WHERE clause that drops sources whose license state cannot serve
+/// content out of retrieval at query time (docs/implementation/09 §License
+/// gate enforcement points, point 3): the terminal refusals (`denied`,
+/// `expired`, `revoked`) plus the under-review state — `pending_review`
+/// records no indexed content to hit (docs/implementation/07 §License
+/// gate), and a reopened row stays active, so only this clause keeps it
+/// out. One string, shared by every serving query through the
+/// [`LICENSE_PLACEHOLDER`] in the composed SQL.
+const UNSERVED_LICENSE_CLAUSE: &str =
+    "AND s.license_status NOT IN ('denied', 'expired', 'revoked', 'pending_review')";
 
 /// One search or lookup result.
 #[derive(Debug, Clone, PartialEq)]
@@ -229,8 +233,8 @@ const FTS_FROM: &str = "chunks_fts \
 
 /// The WHERE clause shared by the three FTS shapes, before the scoping
 /// predicate: the FTS match plus the active-source filter, then the
-/// `{license_clause}` placeholder ([`TERMINAL_LICENSE_CLAUSE`]) that drops
-/// terminal-license sources at query time
+/// `{license_clause}` placeholder ([`UNSERVED_LICENSE_CLAUSE`]) that drops
+/// unserved-license sources at query time
 /// (docs/implementation/09 §License gate enforcement points, point 3).
 const FTS_MATCH_CLAUSE: &str = "chunks_fts MATCH ?1 AND s.active = 1 {license_clause}";
 
@@ -264,7 +268,7 @@ const SYMBOL_FROM: &str = "symbols sym \
      CROSS JOIN sources s ON s.source_id = c.source_id";
 
 /// The symbol-lookup WHERE clause: the exact symbol of one source, active
-/// only, with the terminal-license placeholder.
+/// only, with the unserved-license placeholder.
 const SYMBOL_CLAUSE: &str =
     "sym.symbol = ?1 AND c.source_id = ?2 AND s.active = 1 {license_clause}";
 
@@ -367,7 +371,8 @@ impl Store {
     /// limit counts chunks, not symbol rows. `offset` skips that many
     /// ranked chunks — the pagination window past the retrieval head; the
     /// ordering stays deterministic in the mode and scope. The
-    /// terminal-license clause drops refused sources at query time
+    /// unserved-license clause drops sources that cannot serve content at
+    /// query time
     /// (docs/implementation/09 §License gate enforcement points, point 3).
     pub fn search_symbols(
         &self,
@@ -408,7 +413,7 @@ impl Store {
              ORDER BY quality DESC, chunk_id \
              LIMIT ?2 OFFSET ?{offset_idx}"
         )
-        .replace(LICENSE_PLACEHOLDER, TERMINAL_LICENSE_CLAUSE);
+        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE);
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let mut stmt = conn.prepare_cached(&sql)?;
         if let Some(value) = scope_value {
@@ -426,7 +431,7 @@ const SOURCE_CHUNKS_FROM: &str = "chunks c \
      JOIN sources s ON s.source_id = c.source_id";
 
 /// The full-chunk-read WHERE clause: every chunk of one active source,
-/// with the terminal-license placeholder.
+/// with the unserved-license placeholder.
 const SOURCE_CHUNKS_CLAUSE: &str = "c.source_id = ?1 AND s.active = 1 {license_clause}";
 
 /// Composes one FTS query from a WHERE clause: the shared projection, the
@@ -441,7 +446,7 @@ fn fts_sql(where_clause: &str) -> String {
          ORDER BY bm25(chunks_fts, 5.0, 1.0) \
          LIMIT ?2"
     )
-    .replace(LICENSE_PLACEHOLDER, TERMINAL_LICENSE_CLAUSE)
+    .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
 }
 
 /// Composes the pinned-source-set clause: [`FTS_MATCH_CLAUSE`] plus
@@ -473,7 +478,7 @@ fn plain_sql(columns: &str, from_clause: &str, where_clause: &str, suffix_column
          WHERE {where_clause} \
          ORDER BY c.ordinal"
     )
-    .replace(LICENSE_PLACEHOLDER, TERMINAL_LICENSE_CLAUSE)
+    .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
 }
 
 /// The source lookup SQL: the lowest active source id for one exact
@@ -501,7 +506,8 @@ const LIBRARY_SQL: &str = "SELECT DISTINCT s.version FROM sources s \
 
 impl Store {
     /// Full-text search over active sources with the documented bm25
-    /// weights. A source whose license state turned terminal drops out at
+    /// weights. A source whose license state cannot serve content — a
+    /// terminal refusal or the under-review state — drops out at
     /// query time (docs/implementation/09 §License gate enforcement
     /// points, point 3), even when its withdrawal never ran.
     ///

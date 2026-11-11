@@ -42,6 +42,7 @@ fn source(status: LicenseStatus) -> SourceRecord {
         commit_sha: Some("abc123".to_owned()),
         license: Some("MIT".to_owned()),
         license_status: status,
+        license_expires_at: None,
         fetched_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap(),
     }
 }
@@ -62,6 +63,52 @@ fn chunk(ordinal: u32, symbol: Option<(&str, &str)>, body: &str) -> NewChunk {
         ordinal,
         page_url: None,
     }
+}
+
+/// The audit-trail row count.
+fn audit_count(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM meta WHERE key LIKE 'audit:%'",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// The four license-gate surfaces in one snapshot: the stored status,
+/// the active flag, the chunk count, and the audit line count.
+fn gate_snapshot(conn: &Connection) -> (String, i64, i64, i64) {
+    let (status, active): (String, i64) = conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let chunks: i64 = conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    (status, active, chunks, audit_count(conn))
+}
+
+/// A publish against a refused license state must return the typed
+/// `LicenseNotApproved` error carrying the refused status.
+fn assert_license_refused(error: devdocs_store::StoreError, expected: LicenseStatus) {
+    match error {
+        devdocs_store::StoreError::LicenseNotApproved { status: refused } => {
+            assert_eq!(refused, expected);
+        }
+        other => panic!("expected LicenseNotApproved, got {other:?}"),
+    }
+}
+
+/// Flip one stored row to the given license status.
+fn set_row_status(conn: &Connection, version: &str, status: &str) {
+    conn.execute(
+        "UPDATE sources SET license_status = ?1 WHERE version = ?2",
+        rusqlite::params![status, version],
+    )
+    .unwrap();
 }
 
 /// A publish upserts the source and flips it active with its metadata.
@@ -85,6 +132,286 @@ fn publish_upserts_and_activates_the_source() {
         .unwrap();
     assert_eq!(active, 1, "a successful publish flips the source active");
     assert_eq!(commit_sha, "abc123");
+}
+
+/// The `license_expires_at` column of the named library's row.
+fn row_expiry(conn: &Connection, library: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT license_expires_at FROM sources WHERE library = ?1",
+        rusqlite::params![library],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// The `license_expires_at` column of the named library and version row.
+fn row_version_expiry(conn: &Connection, library: &str, version: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT license_expires_at FROM sources \
+         WHERE library = ?1 COLLATE NOCASE AND version = ?2",
+        rusqlite::params![library, version],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// A Rig whose store holds one seeded `acme` row at `status` with an
+/// optional expiry date (docs/implementation/07 §License gate fixture
+/// shape: the row lands behind the raw insert).
+fn seeded_rig(status: &str, expires: Option<&str>) -> Rig {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("docs.db");
+    let store =
+        devdocs_testkit::seed_source_status(&db, "acme", "16.2.9", status, expires).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    Rig {
+        store,
+        conn,
+        _dir: dir,
+    }
+}
+
+/// The publishable record retargeted onto the seeded `acme` row, carrying
+/// the given configured expiry.
+fn acme_record(expires: Option<&str>) -> SourceRecord {
+    let mut record = source(LicenseStatus::ApprovedIndex);
+    record.library = String::from("acme");
+    record.origin_url = Url::parse("https://docs.test/acme/llms.txt").unwrap();
+    record.license_expires_at = expires.map(str::to_owned);
+    record
+}
+
+/// A publish stamps the configured expiry into the fresh row
+/// (docs/implementation/07 §Atomic publish).
+#[test]
+fn publish_stamps_the_configured_expiry() {
+    let rig = rig();
+    let mut record = source(LicenseStatus::ApprovedIndex);
+    record.license_expires_at = Some("2999-01-01".to_owned());
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    assert_eq!(
+        row_expiry(&rig.conn, "next.js"),
+        Some(String::from("2999-01-01"))
+    );
+}
+
+/// An operator-stamped expiry wins: the publish seed never clobbers a
+/// stored date (docs/implementation/07 §Registry commands).
+#[test]
+fn publish_never_clobbers_an_operator_stamped_expiry() {
+    let rig = seeded_rig("approved_index", Some("2027-06-30"));
+    rig.store
+        .publish_generation(
+            &acme_record(Some("2026-01-01")),
+            &[chunk(0, None, "A body to publish.")],
+        )
+        .unwrap();
+    assert_eq!(
+        row_expiry(&rig.conn, "acme"),
+        Some(String::from("2027-06-30"))
+    );
+}
+
+/// A publish of a new version inherits the library's operator-stamped
+/// expiry; the configured date seeds only a fresh library, so a later
+/// version never reverts to a lapsed configured date
+/// (docs/implementation/07 §License gate).
+#[test]
+fn publish_inherits_the_library_expiry_for_a_new_version() {
+    let rig = seeded_rig("approved_index", Some("2027-06-30"));
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("17.0.0");
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "17.0.0"),
+        Some(String::from("2027-06-30"))
+    );
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "16.2.9"),
+        Some(String::from("2027-06-30"))
+    );
+}
+
+/// A republished row with a NULL stored expiry takes the dated sibling's
+/// date: the MAX subquery feeds `excluded.license_expires_at`, and the
+/// DO UPDATE COALESCE takes it because the stored value is NULL
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_legacy_row_inherits_the_library_expiry_on_republish() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("docs.db");
+    let store = devdocs_testkit::seed_source_status(
+        &db,
+        "acme",
+        "16.2.9",
+        "approved_index",
+        Some("2027-06-30"),
+    )
+    .unwrap();
+    drop(
+        devdocs_testkit::seed_source_status(&db, "acme", "16.1.0", "approved_index", None).unwrap(),
+    );
+    let conn = Connection::open(&db).unwrap();
+
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("16.1.0");
+    store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+
+    assert_eq!(
+        row_version_expiry(&conn, "acme", "16.1.0"),
+        Some(String::from("2027-06-30")),
+        "the NULL row takes the sibling's date over the configured one"
+    );
+    assert_eq!(
+        row_version_expiry(&conn, "acme", "16.2.9"),
+        Some(String::from("2027-06-30")),
+        "the operator-stamped sibling date never clobbers"
+    );
+}
+
+/// A legacy row without an expiry picks up the configured date on the
+/// next publish: the seed fills only a NULL column
+/// (docs/implementation/07 §License gate).
+#[test]
+fn publish_seeds_a_legacy_row_without_an_expiry() {
+    let rig = seeded_rig("approved_index", None);
+    rig.store
+        .publish_generation(
+            &acme_record(Some("2999-01-01")),
+            &[chunk(0, None, "A body to publish.")],
+        )
+        .unwrap();
+    assert_eq!(
+        row_expiry(&rig.conn, "acme"),
+        Some(String::from("2999-01-01"))
+    );
+}
+
+/// Without a configured date the publish leaves the expiry unset: NULL
+/// stays NULL and nothing lapses.
+#[test]
+fn publish_leaves_the_expiry_unset_without_a_configured_date() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "A body to publish.")],
+        )
+        .unwrap();
+    assert_eq!(row_expiry(&rig.conn, "next.js"), None);
+}
+
+/// A recorded expiry that lapses flips the row at the sweep: the publish
+/// landed the future configured date, a raw backdate stands in for the
+/// passing of time, and the sweep flips it to `expired` with one
+/// `auto:expiry` audit line (docs/implementation/07 §Expiry sweep).
+#[test]
+fn a_configured_expiry_lapses_at_the_sweep() {
+    let rig = rig();
+    let mut record = source(LicenseStatus::ApprovedIndex);
+    record.license_expires_at = Some("2999-01-01".to_owned());
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    rig.conn
+        .execute("UPDATE sources SET license_expires_at = '2026-01-01'", [])
+        .unwrap();
+
+    let flipped = rig.store.sweep_expired("2026-11-06T12:00:00Z").unwrap();
+    assert_eq!(flipped, 1, "the past configured expiry flips");
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE library = 'next.js'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "expired");
+    let auto_expiry: i64 = rig
+        .conn
+        .query_row(
+            "SELECT count(*) FROM meta WHERE key LIKE 'audit:%' \
+             AND value LIKE '%auto:expiry%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(auto_expiry, 1, "one auto:expiry audit line");
+}
+
+/// A publish whose configured seed has already passed refuses when the
+/// library records no date: the seed would stamp the lapsed date and the
+/// next read would sweep the row to `expired` while the sync reported
+/// success. The refusal writes nothing
+/// (docs/implementation/07 §Atomic publish, point 2).
+#[test]
+fn a_passed_configured_seed_refuses_when_the_library_records_no_date() {
+    let rig = seeded_rig("approved_index", None);
+    let error = rig
+        .store
+        .publish_generation(
+            &acme_record(Some("2026-01-01")),
+            &[chunk(0, None, "a generation that never lands.")],
+        )
+        .unwrap_err();
+    match error {
+        devdocs_store::StoreError::ConfiguredExpiryPassed { date } => {
+            assert_eq!(date, "2026-01-01");
+        }
+        other => panic!("expected ConfiguredExpiryPassed, got {other:?}"),
+    }
+    let rows: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "the seeded row stays, nothing new is written");
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'acme'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "approved_index");
+    assert_eq!(active, 0, "the refusal must not activate the row");
+    let chunks: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(chunks, 0, "the stale chunk set must not land");
+    assert_eq!(audit_count(&rig.conn), 0, "the refusal writes no audit");
+}
+
+/// A dated sibling keeps a passed configured seed inert: the library's
+/// `MAX(license_expires_at)` is non-NULL, so the seed can never land, the
+/// publish proceeds, and the new version row inherits the sibling's date
+/// (docs/implementation/07 §Atomic publish, point 2).
+#[test]
+fn a_dated_sibling_keeps_a_passed_configured_seed_inert() {
+    let rig = seeded_rig("approved_index", Some("2999-01-01"));
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("17.0.0");
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "the v17 generation.")])
+        .unwrap();
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "17.0.0"),
+        Some(String::from("2999-01-01")),
+        "the new row inherits the sibling's date, not the passed seed"
+    );
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "16.2.9"),
+        Some(String::from("2999-01-01")),
+        "the sibling date never clobbers"
+    );
 }
 
 /// A publish inserts the chunk rows and their symbol rows.
@@ -275,12 +602,7 @@ fn a_terminal_license_state_withdraws_the_source() {
         .store
         .publish_generation(&source(LicenseStatus::Revoked), &[])
         .unwrap_err();
-    match error {
-        devdocs_store::StoreError::LicenseNotApproved { status: refused } => {
-            assert_eq!(refused, LicenseStatus::Revoked);
-        }
-        other => panic!("expected LicenseNotApproved, got {other:?}"),
-    }
+    assert_license_refused(error, LicenseStatus::Revoked);
 
     let (status, active): (String, i64) = rig
         .conn
@@ -297,6 +619,658 @@ fn a_terminal_license_state_withdraws_the_source() {
     assert!(
         rig.store.search_fts(&term, 10).unwrap().is_empty(),
         "a withdrawn source must leave the search results"
+    );
+}
+
+/// A withdrawal records every status change it makes: two rows share one
+/// `origin_url`, the expiry sweep already flipped one to `expired` (its
+/// `auto:expiry` line), and the withdrawal with `expired` appends exactly
+/// one new audit line — for the row that actually changed — while both
+/// rows deactivate (docs/implementation/07 §License gate).
+#[test]
+fn withdrawal_audits_only_the_rows_whose_status_changes() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.1.0".to_owned();
+    // Same origin_url as the younger row: the sweep gives the two rows
+    // mixed stored states on one origin_url.
+    for src in [&source(LicenseStatus::ApprovedIndex), &older] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    rig.conn
+        .execute(
+            "UPDATE sources SET license_expires_at = '2026-01-01' WHERE version = '16.1.0'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(rig.store.sweep_expired("2027-01-01T00:00:00Z").unwrap(), 1);
+    assert_eq!(audit_count(&rig.conn), 1, "the sweep wrote its one line");
+
+    let withdrawn = rig
+        .store
+        .withdraw_source_by_origin_url("https://example.test/next/llms.txt", LicenseStatus::Expired)
+        .unwrap();
+    assert_eq!(withdrawn, 2, "every row of the origin_url withdraws");
+    assert_eq!(audit_count(&rig.conn), 2, "exactly one new line");
+
+    let values: Vec<String> = rig
+        .conn
+        .prepare("SELECT value FROM meta WHERE key LIKE 'audit:%' ORDER BY key")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let withdraw_lines: Vec<&String> = values
+        .iter()
+        .filter(|value| value.contains("auto:withdraw"))
+        .collect();
+    assert_eq!(withdraw_lines.len(), 1, "one auto:withdraw line expected");
+    let line = withdraw_lines[0].as_str();
+    assert!(
+        line.ends_with(", next.js, approved_index, expired, auto:withdraw)"),
+        "the changed row carries one auto:withdraw line: {line}"
+    );
+
+    let rows: Vec<(String, String, i64)> = rig
+        .conn
+        .prepare("SELECT version, license_status, active FROM sources ORDER BY version")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("16.1.0".to_owned(), "expired".to_owned(), 0),
+            ("16.2.9".to_owned(), "expired".to_owned(), 0),
+        ],
+        "both rows deactivate and carry the terminal state"
+    );
+}
+
+/// A withdrawal of a row whose status already equals the target writes no
+/// audit line but still deactivates the row.
+#[test]
+fn withdrawal_without_a_status_change_deactivates_silently() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a generation the operator already denied.")],
+        )
+        .unwrap();
+    set_row_status(&rig.conn, "16.2.9", "denied");
+    let audit_before = audit_count(&rig.conn);
+
+    let withdrawn = rig
+        .store
+        .withdraw_source_by_origin_url("https://example.test/next/llms.txt", LicenseStatus::Denied)
+        .unwrap();
+    assert_eq!(withdrawn, 1, "the matched row withdraws even unchanged");
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "a no-change withdrawal writes no audit line"
+    );
+
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "denied");
+    assert_eq!(active, 0, "the unchanged row still deactivates");
+}
+
+/// Deny while a re-sync is in flight: a publish carrying the stale
+/// pre-deny approved record must not overwrite the terminal stored state
+/// or reactivate the rows, and the refusal writes no audit line
+/// (docs/implementation/09 §License gate enforcement points).
+#[test]
+fn publish_refuses_when_the_stored_state_turned_terminal() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the generation the operator later denies.")],
+        )
+        .unwrap();
+
+    // The operator deny lands while the stale re-sync is in flight.
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    let audit_before = audit_count(&rig.conn);
+
+    // The stale re-sync still carries the approved record.
+    let error = rig
+        .store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a stale republication that never lands.")],
+        )
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::Denied);
+
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "denied", "the terminal state must stay");
+    assert_eq!(active, 0, "the rows must stay inactive");
+
+    let chunks: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(chunks, 1, "the stale chunk set must not land");
+
+    let audit_after = audit_count(&rig.conn);
+    assert_eq!(
+        audit_after, audit_before,
+        "the clobbered move must write no audit line"
+    );
+}
+
+/// Deny while a re-sync is in flight, then reopen to `pending_review`: the
+/// stale pre-deny approved record must not overwrite the operator's reopen
+/// decision. The refusal writes nothing at all — the stored status, the
+/// active flag, the chunk set, and the audit trail stay as they were
+/// (docs/implementation/09 §License gate enforcement points).
+#[test]
+fn publish_refuses_when_the_stored_state_turned_pending_review() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the generation the operator reopens.")],
+        )
+        .unwrap();
+
+    // The operator denies, then reopens to pending_review while the stale
+    // re-sync is still in flight.
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+
+    let (status_before, active_before, chunks_before, audit_before) = gate_snapshot(&rig.conn);
+
+    // The stale re-sync still carries the approved record.
+    let error = rig
+        .store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a stale republication that never lands.")],
+        )
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::PendingReview);
+
+    let (status, active, chunks, audit_after) = gate_snapshot(&rig.conn);
+    assert_eq!(
+        status, status_before,
+        "the operator's reopen decision must stay"
+    );
+    assert_eq!(active, active_before, "the refusal must write nothing");
+    assert_eq!(chunks, chunks_before, "the stale chunk set must not land");
+    assert_eq!(
+        audit_after, audit_before,
+        "the refusal must write no audit line"
+    );
+}
+
+/// An operator walk below the index stage while a re-sync is in flight:
+/// deny, reopen, then grant only the fetch stage. The stale index-stage
+/// record must not lift that lower-tier grant on the published row
+/// itself. The refusal writes nothing at all — the stored status, the
+/// active flag, the chunk set, and the audit trail stay as they were
+/// (docs/implementation/09 §License gate enforcement points).
+#[test]
+fn publish_refuses_when_the_stored_state_turned_below_index() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the generation the operator walks down.")],
+        )
+        .unwrap();
+
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    rig.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+    rig.store
+        .transition_license("next.js", LicenseStatus::ApprovedFetch, "op", None, None)
+        .unwrap();
+
+    let (status_before, active_before, chunks_before, audit_before) = gate_snapshot(&rig.conn);
+
+    // The stale re-sync still carries the index-stage record.
+    let error = rig
+        .store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a stale republication that never lands.")],
+        )
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::ApprovedFetch);
+
+    let (status, active, chunks, audit_after) = gate_snapshot(&rig.conn);
+    assert_eq!(
+        status, status_before,
+        "the operator's lower-tier grant must stay"
+    );
+    assert_eq!(active, active_before, "the refusal must write nothing");
+    assert_eq!(chunks, chunks_before, "the stale chunk set must not land");
+    assert_eq!(
+        audit_after, audit_before,
+        "the refusal must write no audit line"
+    );
+}
+
+/// The inverse order: with the stored state non-terminal, the republish
+/// keeps the stored status — the store is authoritative once the row
+/// exists, so a stale record can neither promote nor demote it — and a
+/// deny that lands afterward still transitions on top of it.
+#[test]
+fn publish_keeps_the_stored_status_while_it_is_non_terminal() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the first generation.")],
+        )
+        .unwrap();
+
+    // A stale record at the snippet stage republishes over the
+    // non-terminal index-stage stored state; the stored status survives.
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedSnippet),
+            &[chunk(0, None, "the republished generation.")],
+        )
+        .unwrap();
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'next.js'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "approved_index", "the stored status survives");
+    assert_eq!(active, 1);
+
+    // A deny landing after the publish still transitions the library.
+    rig.store
+        .transition_license("next.js", LicenseStatus::Denied, "op", Some("robots"), None)
+        .unwrap();
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE library = 'next.js'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "denied");
+}
+
+/// Mixed stored rows (one `pending_review`, one `denied`): the recheck
+/// refuses when ANY stored state is terminal. A rank-based minimum could
+/// pick `pending_review` (rank 0, same as `denied`), drop it in the
+/// terminal filter, and let the publish resurrect the `denied` row.
+#[test]
+fn publish_refuses_when_any_stored_row_is_terminal() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.1.0".to_owned();
+    older.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    for src in [&source(LicenseStatus::ApprovedIndex), &older] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    // Per-row divergence: one row re-enters review, the other stays denied.
+    set_row_status(&rig.conn, "16.2.9", "denied");
+    set_row_status(&rig.conn, "16.1.0", "pending_review");
+
+    let audit_before = audit_count(&rig.conn);
+
+    // The stale re-sync still carries the approved record.
+    let error = rig
+        .store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "a stale republication that never lands.")],
+        )
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::Denied);
+
+    let rows: Vec<(String, String, i64)> = rig
+        .conn
+        .prepare("SELECT version, license_status, active FROM sources ORDER BY version")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("16.1.0".to_owned(), "pending_review".to_owned(), 0),
+            ("16.2.9".to_owned(), "denied".to_owned(), 0),
+        ],
+        "every row of the library deactivates, stored states stay"
+    );
+
+    let chunks: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(chunks, 2, "the stale chunk set must not land");
+
+    let audit_after = audit_count(&rig.conn);
+    assert_eq!(
+        audit_after, audit_before,
+        "the refusal must write no audit line"
+    );
+}
+
+/// Mixed non-terminal stored rows: the publish proceeds — the republished
+/// row activates — and both stored statuses persist; the record's state
+/// never overwrites them.
+#[test]
+fn publish_proceeds_and_the_stored_statuses_persist() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.1.0".to_owned();
+    older.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    for src in [&source(LicenseStatus::ApprovedIndex), &older] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    rig.conn
+        .execute(
+            "UPDATE sources SET license_status = 'approved_fetch' WHERE version = '16.1.0'",
+            [],
+        )
+        .unwrap();
+
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedSnippet),
+            &[chunk(0, None, "the republished generation.")],
+        )
+        .unwrap();
+
+    let rows: Vec<(String, String, i64)> = rig
+        .conn
+        .prepare("SELECT version, license_status, active FROM sources ORDER BY version")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            // The sibling row keeps its state and stays active from its own
+            // earlier publish.
+            ("16.1.0".to_owned(), "approved_fetch".to_owned(), 1),
+            // The republished row keeps its own stored status while the
+            // stale snippet-stage record lands on top of it.
+            ("16.2.9".to_owned(), "approved_index".to_owned(), 1),
+        ],
+        "the republished row activates, both stored statuses persist"
+    );
+}
+
+/// The operator advances the library while a new version's fetch is in
+/// flight: the in-flight record still carries the gate-time index
+/// snapshot, but the new row lands at the library's advanced floor —
+/// never the stale snapshot, which would strand the row below the library
+/// and make the next library-wide advance refuse a same-state move
+/// (docs/implementation/07 §Atomic publish, point 2).
+#[test]
+fn a_new_version_lands_at_the_library_floor_after_a_mid_fetch_advance() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.1.0".to_owned();
+    older.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    rig.store
+        .publish_generation(&older, &[chunk(0, None, "the v16 generation.")])
+        .unwrap();
+
+    // The operator advances the library while the v17 fetch runs.
+    rig.store
+        .transition_license("next.js", LicenseStatus::ApprovedEmbed, "op", None, None)
+        .unwrap();
+    let audit_before = audit_count(&rig.conn);
+
+    // The in-flight record still carries the index-stage snapshot.
+    let mut fresh = source(LicenseStatus::ApprovedIndex);
+    fresh.version = "17.0.0".to_owned();
+    fresh.origin_url = Url::parse("https://example.test/next/llms-17.txt").unwrap();
+    rig.store
+        .publish_generation(&fresh, &[chunk(0, None, "the v17 generation.")])
+        .unwrap();
+
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE version = '17.0.0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "approved_embed",
+        "the new row lands at the library floor, not the stale snapshot"
+    );
+    assert_eq!(
+        rig.store.license_states("next.js").unwrap(),
+        vec![LicenseStatus::ApprovedEmbed]
+    );
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "the publish writes no audit line"
+    );
+
+    // The library-wide advance continues: no stuck same-state pair.
+    rig.store
+        .transition_license("next.js", LicenseStatus::ApprovedCache, "op", None, None)
+        .unwrap();
+    assert_eq!(
+        rig.store.license_states("next.js").unwrap(),
+        vec![LicenseStatus::ApprovedCache]
+    );
+}
+
+/// Bootstrap: a fresh library holds no stored state to floor the row at,
+/// so the first publish lands exactly at the record's status.
+#[test]
+fn a_fresh_library_lands_the_record_at_its_own_status() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the first generation.")],
+        )
+        .unwrap();
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE library = 'next.js'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "approved_index");
+}
+
+/// Mixed non-terminal stored rows floor a new version row at the least
+/// privileged state: siblings at `approved_index` and `approved_embed`,
+/// and a new version record at the snippet stage, land the new row at
+/// `approved_index` — the floor, not the record and not the max.
+#[test]
+fn a_new_version_lands_at_the_least_privileged_floor_of_mixed_siblings() {
+    let rig = rig();
+    let mut index_row = source(LicenseStatus::ApprovedIndex);
+    index_row.version = "16.0.0".to_owned();
+    index_row.origin_url = Url::parse("https://example.test/next/llms-16.0.txt").unwrap();
+    let mut embed_row = source(LicenseStatus::ApprovedIndex);
+    embed_row.version = "16.1.0".to_owned();
+    embed_row.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    for src in [&index_row, &embed_row] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    // Per-row divergence behind raw updates: one sibling at the index
+    // stage, the other at the embed stage.
+    set_row_status(&rig.conn, "16.0.0", "approved_index");
+    set_row_status(&rig.conn, "16.1.0", "approved_embed");
+
+    let mut fresh = source(LicenseStatus::ApprovedSnippet);
+    fresh.version = "17.0.0".to_owned();
+    fresh.origin_url = Url::parse("https://example.test/next/llms-17.txt").unwrap();
+    rig.store
+        .publish_generation(&fresh, &[chunk(0, None, "the v17 generation.")])
+        .unwrap();
+
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE version = '17.0.0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "approved_index",
+        "the new row lands at the floor, not the record's status"
+    );
+}
+
+/// A new version into a uniform `approved_fetch` library: the floor is
+/// below the index stage, so the publish refuses — the store must not flip
+/// a source to `active` below `approved_index`. The refusal writes
+/// nothing (docs/implementation/09 §License gate enforcement points,
+/// point 2).
+#[test]
+fn a_floor_below_the_index_stage_refuses_a_new_version() {
+    let rig = seeded_rig("approved_fetch", None);
+    let mut fresh = acme_record(None);
+    fresh.version = String::from("17.0.0");
+    let audit_before = audit_count(&rig.conn);
+
+    let error = rig
+        .store
+        .publish_generation(&fresh, &[chunk(0, None, "a generation that never lands.")])
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::ApprovedFetch);
+
+    let rows: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "no new row lands");
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "the refusal writes no audit line"
+    );
+}
+
+/// The mixed fetch/embed sibling pair that once pinned the floor lands
+/// here as a refusal: the floor `approved_fetch` sits below the index
+/// stage, so the new version row never activates at a fetch-only stage
+/// (docs/implementation/09 §License gate enforcement points, point 2).
+#[test]
+fn a_mixed_floor_below_the_index_stage_refuses_a_new_version() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.0.0".to_owned();
+    older.origin_url = Url::parse("https://example.test/next/llms-16.0.txt").unwrap();
+    let mut younger = source(LicenseStatus::ApprovedIndex);
+    younger.version = "16.1.0".to_owned();
+    younger.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    for src in [&older, &younger] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    set_row_status(&rig.conn, "16.0.0", "approved_fetch");
+    set_row_status(&rig.conn, "16.1.0", "approved_embed");
+
+    let mut fresh = source(LicenseStatus::ApprovedSnippet);
+    fresh.version = "17.0.0".to_owned();
+    fresh.origin_url = Url::parse("https://example.test/next/llms-17.txt").unwrap();
+    let audit_before = audit_count(&rig.conn);
+
+    let error = rig
+        .store
+        .publish_generation(&fresh, &[chunk(0, None, "a generation that never lands.")])
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::ApprovedFetch);
+
+    let rows: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "no new row lands");
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "the refusal writes no audit line"
     );
 }
 

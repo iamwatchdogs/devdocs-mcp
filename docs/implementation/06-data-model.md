@@ -3,7 +3,7 @@ type: guide
 title: Data Model
 description: The complete SQLite schema for devdocs, the FTS5 configuration, the migration system, and the hashing policy. Targets SQLite 3.54 bundled in rusqlite 0.41.
 tags: [devdocs, sqlite, fts5, schema, migrations]
-timestamp: 2026-11-09T00:00:00Z
+timestamp: 2026-11-12T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -123,6 +123,19 @@ CREATE TABLE session_trajectory (
 );
 ```
 
+## License-gate state (migration 0004)
+
+Migration `0004_license_gate.sql` adds one column to `sources`:
+
+```sql
+ALTER TABLE sources ADD COLUMN license_expires_at TEXT;
+```
+
+The column is nullable and non-destructive: existing sources carry no expiry and keep their state. The date is `YYYY-MM-DD`. The expiry sweep at every read path and the sync gate flips rows whose recorded expiry has passed to `expired` (docs/implementation/07 §Expiry sweep). A new version row inherits the library's latest stored date. A fresh library takes the configured date. The publish never clobbers an operator-stamped date (docs/implementation/07 §Atomic publish).
+
+The store is authoritative for the mutable license state: `sources.license_status`, `sources.license_expires_at`, and the audit lines in `meta`. After the row exists, the store rules. A fresh library's first publish seeds the `license_expires_at` column from the config entry (docs/implementation/07 §License gate). A passed configured date that would seed a NULL column refuses at the fetch gate instead (docs/implementation/07 §License gate). An audit row keys `audit:<rfc3339 nanosecond timestamp>` — the timestamp carries a fixed 9-digit subsecond field, so the key shape never depends on the nanosecond value — and a same-instant collision takes a `-<n>` suffix on the key. The value is `(audit:<ts>, library, from, to, operator[, note])`; `from` joins the distinct row states with `|` when the library's rows disagree (docs/implementation/07 §License gate). The value is a human-readable trail recorded verbatim and is not machine-parsed.
+
+The `LicenseStatus::can_transition_to` test in `crates/devdocs-model/src/source.rs` mirrors the docs/07 transition table move for move — 24 legal moves, everything else refused.
 ## Symbol columns
 
 The publish path fills both symbol surfaces ([07](07-ingest-pipeline.md) §Symbol extraction):

@@ -184,15 +184,36 @@ pub enum Command {
 /// `devdocs source <op>`.
 #[derive(Debug, Subcommand)]
 pub enum SourceOp {
-    /// Approve a source in the license registry.
+    /// Approve a source in the license registry
+    /// (docs/implementation/07 §License gate).
     Approve {
-        /// The registry entry name.
+        /// The library name to approve.
         name: String,
+        /// The license approval stage to move to, for example
+        /// `approved_index`.
+        stage: String,
+        /// The audit note for the transition (required to re-open a
+        /// denied source as `pending_review`).
+        #[arg(long)]
+        note: Option<String>,
+        /// The operator stamping the audit line.
+        #[arg(long)]
+        operator: Option<String>,
+        /// The expiry date (YYYY-MM-DD) the approval lapses at.
+        #[arg(long)]
+        expires: Option<String>,
     },
-    /// Deny a source in the license registry.
+    /// Deny a source in the license registry
+    /// (docs/implementation/07 §License gate).
     Deny {
-        /// The registry entry name.
+        /// The library name to deny.
         name: String,
+        /// The audit note for the transition.
+        #[arg(long)]
+        note: Option<String>,
+        /// The operator stamping the audit line.
+        #[arg(long)]
+        operator: Option<String>,
     },
     /// List registry entries.
     List,
@@ -311,17 +332,64 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
         Command::Open { doc_ref, cursor } => run_open_command(cli, doc_ref, *cursor),
         Command::Verify { doc_ref } => run_verify_command(cli, doc_ref),
         Command::Versions { library } => run_versions_command(cli, library),
+        Command::Source { op } => run_source_command(cli, op),
         Command::Skill { op } => run_skill_command(op.as_ref()),
         Command::Symbol {
             target,
             symbol,
             cursor,
         } => run_symbol_command(cli, target, symbol, *cursor),
-        Command::Sync { .. }
-        | Command::Source { .. }
-        | Command::Mcp { .. }
-        | Command::Db { .. }
-        | Command::Eval { .. } => print_placeholder(),
+        Command::Sync { .. } | Command::Mcp { .. } | Command::Db { .. } | Command::Eval { .. } => {
+            print_placeholder()
+        }
+    }
+}
+
+/// Runs `devdocs source <op>` (docs/implementation/08 §CLI contract):
+/// approve and deny print the JSON transition report on stdout (stdout
+/// carries only the result envelope), list joins the declarative config
+/// with the authoritative store state.
+fn run_source_command(cli: &Cli, op: &SourceOp) -> Result<(), Error> {
+    let config = Config::load(&overrides(cli))?;
+    match op {
+        SourceOp::Approve {
+            name,
+            stage,
+            note,
+            operator,
+            expires,
+        } => {
+            let report = crate::commands::run_source_approve(
+                &config,
+                name,
+                stage,
+                note.as_deref(),
+                operator.as_deref(),
+                expires.as_deref(),
+            )?;
+            print_line(&report)
+        }
+        SourceOp::Deny {
+            name,
+            note,
+            operator,
+        } => {
+            let report = crate::commands::run_source_deny(
+                &config,
+                name,
+                note.as_deref(),
+                operator.as_deref(),
+            )?;
+            print_line(&report)
+        }
+        SourceOp::List => {
+            let envelope = crate::commands::run_source_list(&config)?;
+            if cli.json {
+                print_line(&envelope)
+            } else {
+                write_stdout_text(&summarize_source_list(&envelope))
+            }
+        }
     }
 }
 
@@ -458,6 +526,31 @@ fn run_versions_command(cli: &Cli, library: &str) -> Result<(), Error> {
     }
 }
 
+/// The human-readable `source list` summary without `--json`: one line
+/// per configured source, joined with the store state.
+fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for entry in &envelope.results {
+        let mut line = format!(
+            "{} {} ({}) · {}",
+            entry.name,
+            entry.status,
+            entry.license.as_deref().unwrap_or("unknown"),
+            entry.url.as_deref().unwrap_or(""),
+        );
+        if let Some(expires) = &entry.expires {
+            let _ = write!(line, " · expires {expires}");
+        }
+        if let Some(attribution) = &entry.attribution {
+            let _ = write!(line, " · {attribution}");
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    out
+}
+
 /// The human-readable search summary without `--json`: one line per
 /// result, in fusion order, plus the truncation notice.
 fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
@@ -479,8 +572,9 @@ fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
     out
 }
 
-/// The human-readable `open` output: the served text, then the
-/// continuation notice when the budget cut the chunk.
+/// The human-readable `open` output: the served text, the attribution
+/// line when one joins from the config, then the continuation notice when
+/// the budget cut the chunk.
 fn summarize_open(envelope: &devdocs_model::ResultEnvelope) -> String {
     use std::fmt::Write as _;
 
@@ -489,6 +583,11 @@ fn summarize_open(envelope: &devdocs_model::ResultEnvelope) -> String {
         .first()
         .map(|item| item.snippet.clone())
         .unwrap_or_default();
+    if let Some(item) = envelope.results.first()
+        && let Some(attribution) = &item.attribution
+    {
+        let _ = writeln!(out, "\n{attribution}");
+    }
     if envelope.truncated
         && let Some(cursor) = &envelope.next_cursor
     {
@@ -748,7 +847,7 @@ fn user_config_template() -> String {
         "# kind = \"llms_txt\"\n",
         "# url = \"https://nextjs.org/docs/llms.txt\"\n",
         "# license = \"MIT\"\n",
-        "# status = \"approved_snippet\"\n",
+        "# expires = \"2027-11-06\"\n",
         "# refresh_days = 2\n",
     ))
 }

@@ -3,6 +3,7 @@
 //! Contract: docs/implementation/07 §Atomic publish. On any error the
 //! transaction rolls back and the previous generation stays queryable.
 
+use rusqlite::OptionalExtension;
 use rusqlite::TransactionBehavior;
 use rusqlite::params;
 use time::format_description::well_known::Rfc3339;
@@ -63,6 +64,22 @@ impl Store {
     /// `active` flip land before the gate error returns, so the source leaves
     /// search results at this enforcement point and not only at retrieve-time
     /// filtering (docs/implementation/09 §License gate enforcement points).
+    ///
+    /// Inside the publish transaction the STORED license state of the library
+    /// is re-read, so a state that turned terminal while the caller's record
+    /// was in flight (an operator deny racing a re-sync) cannot be
+    /// overwritten or reactivated: the rows deactivate inside the committed
+    /// transaction and the same typed refusal returns. A stored `pending_review`
+    /// refuses too, with no writes at all: the operator's reopen decision
+    /// stands, and so does a stored below-index state on the published row
+    /// itself — a stale record must not lift an operator's lower-tier grant.
+    /// The stored status always survives a republish: once the row exists
+    /// the store is authoritative (docs/implementation/06 §License-gate
+    /// state), so a stale record can neither promote nor demote it; a new
+    /// version row (no stored target) lands at the library's current
+    /// least-privileged stored state, read inside the publish transaction,
+    /// instead of the record's gate-time snapshot — the floor lands only
+    /// when it allows indexing, and a floor below the index stage refuses.
     pub fn publish_generation(
         &self,
         src: &devdocs_model::SourceRecord,
@@ -84,7 +101,37 @@ impl Store {
 
         let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result = publish_inside(&tx, src, chunks);
+
+        // TOCTOU recheck: the caller-supplied record is stale when any of
+        // the library's rows carries a terminal stored state after the
+        // fetch gate read it. The withdrawal lands inside this committed
+        // transaction, so the refusal cannot roll it back.
+        let stored = crate::license::read_license_states(&tx, &src.library)?;
+        if let Some(terminal) = stored.iter().copied().find(|state| state.is_terminal()) {
+            tx.execute(
+                "UPDATE sources SET active = 0 WHERE library = ?1 COLLATE NOCASE",
+                params![src.library],
+            )
+            .map_err(StoreError::Sql)?;
+            tx.commit().map_err(StoreError::Sql)?;
+            return Err(StoreError::LicenseNotApproved { status: terminal });
+        }
+
+        // A stored `pending_review` is the operator's reopen decision: the
+        // refusal writes nothing (dropping `tx` rolls back), so the stale
+        // record can neither overwrite the state nor reactivate the rows.
+        if stored.contains(&devdocs_model::LicenseStatus::PendingReview) {
+            return Err(StoreError::LicenseNotApproved {
+                status: devdocs_model::LicenseStatus::PendingReview,
+            });
+        }
+
+        // A stale record must not lift an operator's below-index grant on
+        // the upsert target row itself, and a new version row lands at the
+        // library's current approval floor
+        // (docs/implementation/07 §Atomic publish, point 2).
+        let record = gated_record(&tx, src, &stored)?;
+        let result = publish_inside(&tx, &record, chunks);
         match result {
             Ok(()) => tx.commit().map_err(StoreError::Sql),
             Err(error) => {
@@ -100,57 +147,220 @@ impl Store {
     /// add path calls this when the gate refuses a previously indexed
     /// source: the refusal fires before any publish, so the publish-time
     /// withdrawal cannot run. A source that was never published matches no
-    /// row. Returns the number of rows withdrawn.
+    /// row. One transaction: every matched row flips to `status` and
+    /// `active = 0`, and each row whose status actually changes appends one
+    /// `auto:withdraw` audit line (docs/implementation/07 §License gate).
+    /// Returns the number of rows withdrawn — every match, changed or not.
+    ///
+    /// # Errors
+    /// [`StoreError::LockPoisoned`] or [`StoreError::Sql`] on failures.
     pub fn withdraw_source_by_origin_url(
         &self,
         origin_url: &str,
         status: devdocs_model::LicenseStatus,
     ) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        let n = conn
-            .execute(
-                "UPDATE sources SET license_status = ?1, active = 0 WHERE origin_url = ?2",
-                params![status.as_str(), origin_url],
-            )
-            .map_err(StoreError::Sql)?;
-        Ok(n)
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = select_withdrawal_rows(&tx, "WHERE origin_url = ?1", params![origin_url])?;
+        let withdrawn = withdraw_rows(&tx, &rows, status)?;
+        tx.commit().map_err(StoreError::Sql)?;
+        Ok(withdrawn)
     }
 
     /// Records the terminal license state and deactivates the matching
-    /// source row. A source that was never published matches no row, and
-    /// the single UPDATE is its own transaction.
+    /// source row. A source that was never published matches no row. One
+    /// transaction: the row flips to the terminal state and `active = 0`,
+    /// and it appends one `auto:withdraw` audit line only when its status
+    /// actually changes (docs/implementation/07 §License gate).
+    ///
+    /// # Errors
+    /// [`StoreError::LockPoisoned`] or [`StoreError::Sql`] on failures.
     fn withdraw_source(&self, src: &devdocs_model::SourceRecord) -> Result<(), StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        conn.execute(
-            "UPDATE sources SET license_status = ?1, active = 0 \
-             WHERE library = ?2 AND version = ?3 AND kind = ?4 AND origin_url = ?5",
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = select_withdrawal_rows(
+            &tx,
+            "WHERE library = ?1 COLLATE NOCASE AND version = ?2 AND kind = ?3 \
+             AND origin_url = ?4",
             params![
-                src.license_status.as_str(),
                 src.library,
                 src.version,
                 src.kind.as_str(),
                 src.origin_url.as_str(),
             ],
-        )
-        .map_err(StoreError::Sql)?;
+        )?;
+        withdraw_rows(&tx, &rows, src.license_status)?;
+        tx.commit().map_err(StoreError::Sql)?;
         Ok(())
     }
 }
 
-/// Runs the whole publish sequence inside `tx`.
+/// Loads the rows a withdrawal matches: `(source_id, library,
+/// license_status)` per row, selected with the given `WHERE` clause.
+fn select_withdrawal_rows(
+    tx: &rusqlite::Transaction<'_>,
+    where_clause: &str,
+    where_params: impl rusqlite::Params,
+) -> Result<Vec<(i64, String, String)>, StoreError> {
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT source_id, library, license_status FROM sources {where_clause}"
+        ))
+        .map_err(StoreError::Sql)?;
+    let rows = statement
+        .query_map(where_params, |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(StoreError::Sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::Sql)?;
+    Ok(rows)
+}
+
+/// Flips the loaded rows to `status` and `active = 0`, appending one
+/// `auto:withdraw` audit line per row whose stored status actually
+/// changes — a row already in `status` deactivates silently
+/// (docs/implementation/07 §License gate). Returns the number of rows
+/// withdrawn: every loaded row, changed or not.
+fn withdraw_rows(
+    tx: &rusqlite::Transaction<'_>,
+    rows: &[(i64, String, String)],
+    status: devdocs_model::LicenseStatus,
+) -> Result<usize, StoreError> {
+    for (source_id, library, from) in rows {
+        tx.execute(
+            "UPDATE sources SET license_status = ?1, active = 0 WHERE source_id = ?2",
+            params![status.as_str(), source_id],
+        )
+        .map_err(StoreError::Sql)?;
+        if from.as_str() != status.as_str() {
+            crate::license::append_audit(
+                tx,
+                library,
+                from,
+                status.as_str(),
+                crate::license::AUTO_WITHDRAW_OPERATOR,
+                None,
+            )?;
+        }
+    }
+    Ok(rows.len())
+}
+
+/// The row-scoped TOCTOU decisions, run after the library-wide rechecks:
+/// a stored below-index state on the upsert target row — keyed exactly
+/// like the publish upsert — refuses (a stale record must not lift an
+/// operator's lower-tier grant), and a target row that does not exist yet
+/// floors the record at the library's least-privileged stored state, so a
+/// mid-fetch operator advance cannot be stranded by the record's gate-time
+/// snapshot (docs/implementation/07 §Atomic publish, point 2) — and the
+/// floor lands only when it allows indexing: a floor below the index stage
+/// refuses, since the store must not flip a source to `active` below
+/// `approved_index` (docs/implementation/09 §License gate enforcement
+/// points, point 2). The
+/// record's status lands only on a new row: an existing target row keeps
+/// its stored status (the upsert's DO-UPDATE never touches
+/// `license_status`), and a fresh library (no stored states) leaves a new
+/// row at the record's status.
+fn gated_record(
+    tx: &rusqlite::Transaction<'_>,
+    src: &devdocs_model::SourceRecord,
+    stored: &[devdocs_model::LicenseStatus],
+) -> Result<devdocs_model::SourceRecord, StoreError> {
+    let target_row_status = stored_target_row_status(tx, src)?;
+    if let Some(status) = target_row_status
+        .filter(|state| state.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank())
+    {
+        return Err(StoreError::LicenseNotApproved { status });
+    }
+    let mut record = src.clone();
+    if target_row_status.is_none()
+        && let Some(floor) = devdocs_model::LicenseStatus::least_privileged(stored.iter().copied())
+    {
+        if floor.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank() {
+            return Err(StoreError::LicenseNotApproved { status: floor });
+        }
+        record.license_status = floor;
+    }
+    Ok(record)
+}
+
+/// The row-scoped TOCTOU check: reads the upsert target row's stored
+/// license state — keyed exactly like the publish upsert — at any rank;
+/// `None` when the row does not exist yet. The below-index refusal derives
+/// from it, and a `None` target lets the publish land a new version row at
+/// the library's current approval floor instead of the stale gate-time
+/// snapshot the record carries
+/// (docs/implementation/07 §Atomic publish, point 2).
+fn stored_target_row_status(
+    tx: &rusqlite::Transaction<'_>,
+    src: &devdocs_model::SourceRecord,
+) -> Result<Option<devdocs_model::LicenseStatus>, StoreError> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT license_status FROM sources \
+             WHERE library = ?1 COLLATE NOCASE AND version = ?2 AND kind = ?3 \
+             AND origin_url = ?4",
+            params![
+                src.library,
+                src.version,
+                src.kind.as_str(),
+                src.origin_url.as_str(),
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::Sql)?;
+    Ok(raw.and_then(|raw| devdocs_model::LicenseStatus::parse(&raw)))
+}
+
+/// The publish-side seed recheck: a configured expiry that has already
+/// passed refuses when the library records no date at all — the seed
+/// (`?9`) lands exactly when `MAX(license_expires_at)` over the library is
+/// NULL, so with any row dated the config date is inert and legal re-syncs
+/// keep working (docs/implementation/07 §Atomic publish, point 2).
+fn refuse_passed_configured_seed(
+    tx: &rusqlite::Transaction<'_>,
+    src: &devdocs_model::SourceRecord,
+) -> Result<(), StoreError> {
+    if let Some(seed) = src.license_expires_at.as_ref() {
+        let max: Option<String> = tx
+            .query_row(
+                "SELECT MAX(license_expires_at) FROM sources \
+                 WHERE library = ?1 COLLATE NOCASE",
+                params![src.library],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::Sql)?;
+        let today = time::OffsetDateTime::now_utc().date().to_string();
+        if max.is_none() && seed.as_str() <= today.as_str() {
+            return Err(StoreError::ConfiguredExpiryPassed { date: seed.clone() });
+        }
+    }
+    Ok(())
+}
+
+/// Runs the whole publish sequence inside `tx`. A new version row inherits
+/// the library's latest stored `license_expires_at`, a fresh library takes
+/// the configured expiry, and an operator-stamped date never clobbers
+/// (docs/implementation/07 §Atomic publish).
 fn publish_inside(
     tx: &rusqlite::Transaction<'_>,
     src: &devdocs_model::SourceRecord,
     chunks: &[NewChunk],
 ) -> Result<(), StoreError> {
+    refuse_passed_configured_seed(tx, src)?;
     let source_id: i64 = tx
         .query_row(
             "INSERT INTO sources(library, version, kind, origin_url, commit_sha, license, \
-             license_status, fetched_at, active) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0) \
+             license_status, fetched_at, license_expires_at, active) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             COALESCE((SELECT MAX(license_expires_at) FROM sources \
+             WHERE library = ?1 COLLATE NOCASE), ?9), 0) \
              ON CONFLICT(library, version, kind, origin_url) DO UPDATE SET \
              commit_sha = excluded.commit_sha, license = excluded.license, \
-             license_status = excluded.license_status, fetched_at = excluded.fetched_at, \
+             fetched_at = excluded.fetched_at, \
+             license_expires_at = COALESCE(license_expires_at, excluded.license_expires_at), \
              active = 0 \
              RETURNING source_id",
             params![
@@ -162,6 +372,7 @@ fn publish_inside(
                 src.license,
                 src.license_status.as_str(),
                 rfc3339_utc(src.fetched_at)?,
+                src.license_expires_at,
             ],
             |row| row.get(0),
         )

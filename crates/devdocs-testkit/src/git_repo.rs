@@ -1,12 +1,13 @@
 //! Local git fixture repositories (docs/implementation/04 §Fixtures).
 //!
 //! The helpers shell out to the `git` binary with argv vectors only: no
-//! shell, no interpolated command line. The child env pins
+//! shell, no interpolated command line. The child env strips every
+//! inherited `GIT_*` variable first — a git hook exports `GIT_DIR` and
+//! friends pointing at the enclosing repo — then pins
 //! `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0`, and each repo
 //! sets `user.name` and `user.email` locally and disables commit and
-//! tag signing. The child runs with a clean git environment: every
-//! inherited `GIT_*` variable is removed, so a fixture run cannot read
-//! the host identity, sign anything, or ever prompt.
+//! tag signing, so a fixture run cannot read the host identity, sign
+//! anything, ever prompt, or touch any repo but its own.
 
 use std::ffi::OsStr;
 use std::io;
@@ -29,9 +30,10 @@ pub struct DocsRepo {
 
 /// Run `git` with `args` in `dir` and return trimmed stdout. The
 /// isolation env and argv-only invocation keep the child off the host's
-/// interactive and system configuration. The child runs with a clean
-/// git environment: all inherited `GIT_*` variables are removed.
-fn git<I, S>(dir: &Path, args: I) -> io::Result<String>
+/// interactive and system configuration and off any enclosing repo.
+/// Public so every fixture runner in the workspace goes through this
+/// one scrub instead of re-deriving it.
+pub fn git<I, S>(dir: &Path, args: I) -> io::Result<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -40,20 +42,20 @@ where
         .into_iter()
         .map(|arg| arg.as_ref().to_owned())
         .collect();
-    let mut child = Command::new("git");
-    // A hook process inherits GIT_DIR, GIT_INDEX_FILE and friends; drop
-    // them so the child only sees the fixture repository.
-    for (key, _) in std::env::vars_os() {
-        if key.as_encoded_bytes().starts_with(b"GIT_") {
-            child.env_remove(&key);
+    let mut git = Command::new("git");
+    git.args(&command).current_dir(dir);
+    // A git hook exports GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE and
+    // more, all aimed at the enclosing repo. Strip every inherited
+    // `GIT_*` var — the list grows across git versions — then pin the
+    // isolation vars this fixture needs.
+    for (name, _) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"GIT_") {
+            git.env_remove(name);
         }
     }
-    let output = child
-        .args(&command)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    git.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let output = git.output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "git {command:?} in {} failed: {}",

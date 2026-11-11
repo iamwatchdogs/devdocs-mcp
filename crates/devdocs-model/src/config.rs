@@ -152,6 +152,11 @@ pub struct PartialIngest {
 }
 
 /// One license-registry entry under `[sources.<name>]`.
+///
+/// The entry is declarative: it names the origin, the license, the optional
+/// attribution line, and the optional expiry date. The mutable license
+/// state lives in the store, not here (docs/implementation/07 §License
+/// gate).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SourceConfig {
@@ -161,8 +166,10 @@ pub struct SourceConfig {
     pub url: Option<String>,
     /// The license identifier, for example `MIT`.
     pub license: Option<String>,
-    /// The license status, for example `approved_snippet`.
-    pub status: Option<String>,
+    /// The attribution line the license requires, when one applies.
+    pub attribution: Option<String>,
+    /// The date the license approval lapses, `YYYY-MM-DD`.
+    pub expires: Option<String>,
     /// Refresh cadence in days.
     pub refresh_days: Option<u32>,
 }
@@ -182,6 +189,33 @@ impl SourceConfig {
                 })
         })
     }
+
+    /// The parsed expiry date behind `expires`, when set.
+    ///
+    /// # Errors
+    /// When `expires` is set but does not parse as a `YYYY-MM-DD` date.
+    pub fn parsed_expires(&self, key_path: &str) -> Result<Option<time::Date>, Error> {
+        self.expires.as_deref().map_or(Ok(None), |raw| {
+            parse_expires_date(raw, &format!("{key_path}.expires")).map(Some)
+        })
+    }
+}
+
+/// Parses one `YYYY-MM-DD` expiry date — the shape both the config
+/// `expires` key and the `source approve --expires` flag take.
+///
+/// # Errors
+/// [`Error::ConfigInvalid`] when `raw` does not parse as a `YYYY-MM-DD`
+/// date.
+pub fn parse_expires_date(raw: &str, key_path: &str) -> Result<time::Date, Error> {
+    time::Date::parse(
+        raw,
+        time::macros::format_description!("[year]-[month]-[day]"),
+    )
+    .map_err(|e| Error::ConfigInvalid {
+        key_path: key_path.to_owned(),
+        reason: format!("expected a YYYY-MM-DD date: {e}"),
+    })
 }
 
 /// A config-file layer: the partial view that every layer parses into.
@@ -714,7 +748,8 @@ impl Config {
     }
 
     /// Validate one config file against the schema, including every
-    /// `[sources.*]` URL, so `config validate` agrees with the load path.
+    /// `[sources.*]` URL and expiry date, so `config validate` agrees with
+    /// the load path.
     ///
     /// # Errors
     /// [`Error::ConfigInvalid`] when the file is unreadable or fails
@@ -722,7 +757,9 @@ impl Config {
     pub fn validate_file(path: &Path) -> Result<(), Error> {
         let partial = read_layer(path)?;
         for (name, source) in &partial.sources {
-            source.parsed_url(&format!("sources.{name}"))?;
+            let key = format!("sources.{name}");
+            source.parsed_url(&key)?;
+            source.parsed_expires(&key)?;
         }
         Ok(())
     }
@@ -755,11 +792,12 @@ impl Config {
             .sources
             .iter()
             .map(|(name, source)| {
-                source
-                    .parsed_url(&format!("sources.{name}"))
-                    .map(|_| (name.clone(), source.clone()))
+                let key = format!("sources.{name}");
+                source.parsed_url(&key)?;
+                source.parsed_expires(&key)?;
+                Ok((name.clone(), source.clone()))
             })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+            .collect::<Result<BTreeMap<_, _>, Error>>()?;
 
         Ok(Self {
             fetch: FetchConfig {
@@ -864,7 +902,8 @@ git_extensions = ["md", "adoc"]
 kind = "llms_txt"
 url = "https://nextjs.org/docs/llms.txt"
 license = "MIT"
-status = "approved_snippet"
+attribution = "docs (c) Vercel"
+expires = "2027-11-06"
 refresh_days = 2
 "#;
         let partial = PartialConfig::parse(text).unwrap();
@@ -875,9 +914,69 @@ refresh_days = 2
             Some(vec!["md".to_owned(), "adoc".to_owned()])
         );
         assert_eq!(partial.sources["nextjs"].license.as_deref(), Some("MIT"));
+        assert_eq!(
+            partial.sources["nextjs"].attribution.as_deref(),
+            Some("docs (c) Vercel")
+        );
+        assert_eq!(
+            partial.sources["nextjs"].expires.as_deref(),
+            Some("2027-11-06")
+        );
         partial.sources["nextjs"]
             .parsed_url("sources.nextjs")
             .unwrap();
+        let expires = partial.sources["nextjs"]
+            .parsed_expires("sources.nextjs")
+            .unwrap();
+        assert_eq!(
+            expires.map(|date| date.to_string()),
+            Some("2027-11-06".to_owned())
+        );
+    }
+
+    /// The mutable license status is no longer a config key: the store owns
+    /// that state (docs/implementation/07 §License gate), so a `status` key
+    /// fails with the full entry path.
+    #[test]
+    fn status_key_is_no_longer_valid() {
+        let error =
+            PartialConfig::parse("[sources.nextjs]\nstatus = \"approved_snippet\"\n").unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "sources.nextjs.status");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    /// A malformed `expires` date fails validation and names the entry and
+    /// the key, on both the parse and the `validate_file` path.
+    #[test]
+    fn bad_expires_date_names_the_entry_key() {
+        let error = SourceConfig {
+            expires: Some("06/11/2027".to_owned()),
+            ..SourceConfig::default()
+        }
+        .parsed_expires("sources.nextjs")
+        .unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, reason } => {
+                assert_eq!(key_path, "sources.nextjs.expires");
+                assert!(reason.contains("YYYY-MM-DD"), "reason: {reason}");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sources.toml");
+        std::fs::write(&file, "[sources.nextjs]\nexpires = \"soon\"\n").unwrap();
+        let error = Config::validate_file(&file).unwrap_err();
+        match error {
+            Error::ConfigInvalid { key_path, .. } => {
+                assert_eq!(key_path, "sources.nextjs.expires");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     /// Merging folds the higher layer over the lower one per field.

@@ -468,8 +468,7 @@ fn write_config(env: &Env, with_source: bool) -> PathBuf {
             "[sources.acme]\n",
             "kind = \"llms_txt\"\n",
             "url = \"https://docs.acme.test/llms.txt\"\n",
-            "license = \"MIT\"\n",
-            "status = \"approved_index\"\n"
+            "license = \"MIT\"\n"
         )
     } else {
         ""
@@ -637,135 +636,6 @@ fn add_rejects_an_unsupported_kind() {
     assert!(!db.exists(), "a rejected add must not create the database");
 }
 
-/// A terminal registry status withdraws the previously published
-/// generation before the refusal returns: the revoked source deactivates
-/// and leaves retrieval, while a refusal without a terminal status still
-/// writes nothing (docs/09 §License gate enforcement points, point 3).
-#[test]
-fn add_refuses_a_revoked_source_and_withdraws_it() {
-    let env = Env::new();
-    let fixture = write_fixture(&env);
-    let config = write_config(&env, true);
-    let db = env.root.join("withdraw.db");
-
-    // First run publishes the source.
-    let (code, _stdout, stderr) = run_acme_add(&env, &fixture, &config, &db);
-    assert_eq!(code, 0, "stderr: {stderr}");
-
-    // The registry status flips to revoked; the second run refuses.
-    std::fs::write(
-        &config,
-        concat!(
-            "[sources.acme]\n",
-            "kind = \"llms_txt\"\n",
-            "url = \"https://docs.acme.test/llms.txt\"\n",
-            "license = \"MIT\"\n",
-            "status = \"revoked\"\n"
-        ),
-    )
-    .expect("config rewritten");
-    let (code, _stdout, stderr) = run_acme_add(&env, &fixture, &config, &db);
-    assert_eq!(code, 3, "stderr: {stderr}");
-    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
-
-    // The withdrawal landed: the source is inactive with the recorded
-    // status, so retrieval no longer serves it.
-    let (code, stdout, stderr) = output(
-        env.cmd(),
-        &[
-            "list",
-            "--json",
-            "--config",
-            config.to_str().expect("config path"),
-            "--db",
-            db.to_str().expect("db path"),
-        ],
-    );
-    assert_eq!(code, 0, "stdout: {stdout} stderr: {stderr}");
-    let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    let source = &envelope["results"][0];
-    assert_eq!(source["license_status"], "revoked");
-    assert_eq!(source["active"], false);
-}
-
-/// A terminal refusal whose withdrawal cannot be recorded surfaces as
-/// `UPSTREAM_ERROR` instead of `FETCH_BLOCKED`, so the reported outcome
-/// never hides an unrecorded withdrawal (docs/09 §License gate enforcement
-/// points, point 3).
-#[test]
-fn add_reports_a_withdrawal_that_cannot_be_recorded() {
-    let env = Env::new();
-    let fixture = write_fixture(&env);
-    let config = write_config(&env, true);
-    let db = env.root.join("withdraw-fail.db");
-
-    // First run publishes the source.
-    let (code, _stdout, stderr) = run_acme_add(&env, &fixture, &config, &db);
-    assert_eq!(code, 0, "stderr: {stderr}");
-
-    // The registry status flips to revoked, and the store cannot record
-    // the withdrawal: the db file becomes read-only.
-    std::fs::write(
-        &config,
-        concat!(
-            "[sources.acme]\n",
-            "kind = \"llms_txt\"\n",
-            "url = \"https://docs.acme.test/llms.txt\"\n",
-            "license = \"MIT\"\n",
-            "status = \"revoked\"\n"
-        ),
-    )
-    .expect("config rewritten");
-    set_db_readonly(&db, true);
-
-    // A root process ignores the permission bits, so the seal cannot hold
-    // and the withdrawal would succeed; skip loudly in that case.
-    if std::fs::OpenOptions::new().append(true).open(&db).is_ok() {
-        set_db_readonly(&db, false);
-        eprintln!("skipping: the process ignores file permission bits");
-        return;
-    }
-
-    let (code, _stdout, stderr) = run_acme_add(&env, &fixture, &config, &db);
-    assert_eq!(code, 3, "stderr: {stderr}");
-    assert!(stderr.contains("UPSTREAM_ERROR"), "stderr: {stderr}");
-    assert!(
-        stderr.contains("withdrawal"),
-        "stderr should name the failed withdrawal: {stderr}"
-    );
-
-    set_db_readonly(&db, false);
-    // The withdrawal never landed, and the command said so instead of
-    // reporting the refusal alone.
-    assert_source_still_active(&env, &config, &db);
-}
-
-/// Flips the db file's read-only flag: on unix the write bits drop, on
-/// windows the read-only attribute set, and both stop a read-write open.
-fn set_db_readonly(db: &std::path::Path, readonly: bool) {
-    let mut perms = std::fs::metadata(db).expect("db metadata").permissions();
-    perms.set_readonly(readonly);
-    std::fs::set_permissions(db, perms).expect("read-only flag set");
-}
-
-/// The source is still active: the withdrawal never landed.
-fn assert_source_still_active(env: &Env, config: &std::path::Path, db: &std::path::Path) {
-    let (code, stdout, stderr) = output(
-        env.cmd(),
-        &[
-            "list",
-            "--json",
-            "--config",
-            config.to_str().expect("config path"),
-            "--db",
-            db.to_str().expect("db path"),
-        ],
-    );
-    assert_eq!(code, 0, "stdout: {stdout} stderr: {stderr}");
-    let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(envelope["results"][0]["active"], true);
-}
-
 /// Writes a fixture manifest from raw entry objects and returns its path.
 fn write_manifest(env: &Env, entries: &Value) -> PathBuf {
     let dir = env.root.join("fixture-custom");
@@ -797,16 +667,6 @@ fn add_args<'a>(
         db.to_str().expect("db path"),
     ]);
     args
-}
-
-/// Runs the standard acme `add --fixture --json` and returns the output.
-fn run_acme_add(
-    env: &Env,
-    fixture: &std::path::Path,
-    config: &std::path::Path,
-    db: &std::path::Path,
-) -> (i32, String, String) {
-    output(env.cmd(), &add_args(fixture, config, db, true))
 }
 
 /// The human (non-`--json`) output paths: `add` prints the indexed summary
@@ -864,8 +724,7 @@ fn add_maps_a_guard_refusal_to_fetch_blocked() {
             "[sources.acme]\n",
             "kind = \"llms_txt\"\n",
             "url = \"https://docs.acme.test/llms.txt\"\n",
-            "license = \"MIT\"\n",
-            "status = \"approved_index\"\n"
+            "license = \"MIT\"\n"
         ),
     )
     .expect("config written");
@@ -1033,35 +892,6 @@ fn list_fails_when_the_data_directory_cannot_be_created() {
     assert!(stderr.contains("UPSTREAM_ERROR"), "stderr: {stderr}");
 }
 
-/// A revoked registry entry with no prior publish writes nothing: the
-/// withdrawal matches no row and the refusal still returns.
-#[test]
-fn add_with_a_revoked_source_and_no_prior_publish_writes_nothing() {
-    let env = Env::new();
-    let fixture = write_fixture(&env);
-    let config = write_config(&env, true);
-    let db = env.root.join("fresh-revoked.db");
-    std::fs::write(
-        &config,
-        concat!(
-            "[sources.acme]\n",
-            "kind = \"llms_txt\"\n",
-            "url = \"https://docs.acme.test/llms.txt\"\n",
-            "license = \"MIT\"\n",
-            "status = \"revoked\"\n"
-        ),
-    )
-    .expect("config written");
-
-    let (code, _stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
-    assert_eq!(code, 3, "stderr: {stderr}");
-    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
-    assert!(
-        devdocs_testkit::read_chunks(&db).unwrap().is_empty(),
-        "a fresh revoked add must publish nothing"
-    );
-}
-
 /// `db migrate` runs the startup migration and is idempotent.
 #[test]
 fn db_migrate_runs_and_is_idempotent() {
@@ -1074,7 +904,7 @@ fn db_migrate_runs_and_is_idempotent() {
     );
     assert_eq!(code, 0, "stderr: {stderr}");
     let result: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(result["schema_version"], 3);
+    assert_eq!(result["schema_version"], 4);
 
     let (code, stdout, stderr) = output(
         env.cmd(),
@@ -1082,7 +912,7 @@ fn db_migrate_runs_and_is_idempotent() {
     );
     assert_eq!(code, 0, "stderr: {stderr}");
     let result: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(result["schema_version"], 3);
+    assert_eq!(result["schema_version"], 4);
 }
 
 /// `list` on an empty store prints the empty envelope under `--json`.
@@ -1095,4 +925,730 @@ fn list_on_an_empty_store_prints_the_empty_envelope() {
     assert_eq!(list["results"].as_array().expect("results").len(), 0);
     assert_eq!(list["truncated"], false);
     assert!(list["served_at"].is_string());
+}
+
+/// The `source` tests need an indexed corpus: the ingest bootstrap lands
+/// at the publish floor (`approved_index`) and the operator walks the
+/// progression from there (docs/implementation/07 §License gate).
+fn source_env() -> (Env, PathBuf) {
+    let (env, config) = common::indexed_env_at_index();
+    (env, config)
+}
+
+/// One invocation against the indexed corpus: the `--json` envelope and
+/// the config flags ride along so the tests read as one line per call.
+fn source_cmd(env: &Env, cfg: [&str; 2], args: &[&str]) -> (i32, String, String) {
+    let mut with_json = args.to_vec();
+    with_json.extend(["--json", cfg[0], cfg[1]]);
+    output(env.cmd(), &with_json)
+}
+
+/// The audit trail rows, in key order.
+fn audit_lines(db: &std::path::Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(db).expect("db opens");
+    let mut statement = conn
+        .prepare("SELECT value FROM meta WHERE key LIKE 'audit:%' ORDER BY key")
+        .expect("prepare");
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query");
+    rows.map(|row| row.expect("row")).collect()
+}
+
+/// `source approve` walks the full progression: each legal move exits 0
+/// with the JSON transition report, and `source list` reports the final
+/// state (AC3).
+#[test]
+fn source_approve_walks_the_full_progression() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    for stage in ["approved_embed", "approved_cache", "approved_snippet"] {
+        let (code, stdout, stderr) = output(
+            env.cmd(),
+            &[
+                "source",
+                "approve",
+                "acme",
+                stage,
+                "--operator",
+                "test",
+                "--json",
+                cfg[0],
+                cfg[1],
+            ],
+        );
+        assert_eq!(code, 0, "approve {stage}: {stderr}");
+        let report: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+        assert_eq!(report["library"], "acme");
+        assert_eq!(report["to"], stage);
+        assert_eq!(report["operator"], "test");
+    }
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(list["results"][0]["status"], "approved_snippet");
+}
+
+/// An out-of-order approve is a typed refusal: exit 1, the USAGE envelope
+/// carries the illegal-transition detail, and the stored state stays
+/// unchanged (AC3).
+#[test]
+fn an_out_of_order_approve_exits_one_without_a_state_change() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_fetch",
+            "--json",
+            cfg[0],
+            cfg[1],
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout must stay clean: {stdout:?}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "USAGE");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("illegal license transition"),
+        "stderr: {stderr}"
+    );
+
+    // The state never moved: the list still shows the index stage.
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(list["results"][0]["status"], "approved_index");
+}
+
+/// An unknown stage name is a usage error, and so is approving a library
+/// the store never indexed (AC8).
+#[test]
+fn unknown_stage_and_unknown_library_exit_one() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source", "approve", "acme", "bogus", "--json", cfg[0], cfg[1],
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown license stage"),
+        "stderr: {stderr}"
+    );
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "approve",
+            "ghost",
+            "approved_index",
+            "--json",
+            cfg[0],
+            cfg[1],
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no indexed source"),
+        "stderr: {stderr}"
+    );
+}
+
+/// `source deny` moves the source onto `denied`; re-opening it as
+/// `pending_review` is the one refusal exit and requires `--note`: exit 1
+/// without, exit 0 with (AC8).
+#[test]
+fn denied_to_pending_review_needs_a_note() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "deny",
+            "acme",
+            "--note",
+            "robots disallow",
+            "--operator",
+            "test",
+        ],
+    );
+    assert_eq!(code, 0, "deny: {stderr}");
+    let report: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(report["to"], "denied");
+    assert_eq!(report["note"], "robots disallow");
+
+    // Without the note the re-open is a typed usage refusal.
+    let (code, stdout, stderr) =
+        source_cmd(&env, cfg, &["source", "approve", "acme", "pending_review"]);
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("requires a non-empty note"),
+        "stderr: {stderr}"
+    );
+
+    // With the note the re-open lands.
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "approve",
+            "acme",
+            "pending_review",
+            "--note",
+            "re-review after robots fix",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let report: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(report["from"], "denied");
+    assert_eq!(report["to"], "pending_review");
+}
+
+/// `source list --json` joins the declarative config (url, license SPDX
+/// id, attribution, expires) with the authoritative store state (status,
+/// version, `fetched_at`) (AC3).
+#[test]
+fn source_list_json_shows_state_spdx_version_and_fetched_at() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    let entry = &list["results"][0];
+    assert_eq!(entry["name"], "acme");
+    assert_eq!(entry["license"], "MIT");
+    assert_eq!(entry["attribution"], "© Acme Corp documentation");
+    assert_eq!(entry["url"], "https://docs.acme.test/llms.txt");
+    assert_eq!(entry["status"], "approved_index");
+    // No config `expires` and no store stamp: nothing is enforced yet.
+    assert!(entry["expires"].is_null(), "stdout: {stdout}");
+    let versions = entry["versions"].as_array().expect("versions");
+    assert_eq!(versions.len(), 2, "stdout: {stdout}");
+    assert!(
+        versions
+            .iter()
+            .all(|version| version["fetched_at"].is_string() && version["status"].is_string()),
+        "stdout: {stdout}"
+    );
+}
+
+/// `source approve --expires` stamps the expiry date on the moved rows,
+/// and a date that does not parse is a usage error
+/// (docs/implementation/07 §License gate).
+#[test]
+fn source_approve_expires_stamps_the_expiry() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+
+    // A malformed date refuses at the flag edge.
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "not-a-date",
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("YYYY-MM-DD"),
+        "stderr: {stderr}"
+    );
+
+    // A legal move with a well-formed date stamps every row.
+    let (code, stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "2999-01-01",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let report: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(report["to"], "approved_embed");
+    assert_eq!(report["expires"], "2999-01-01");
+
+    // The store carries the stamp on every version row.
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["versions", "acme"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("2999-01-01"), "stdout: {stdout}");
+}
+
+/// After `source approve --expires`, `source list` reports the stamped
+/// date the store enforces (docs/implementation/07 §License gate).
+#[test]
+fn source_list_shows_the_stamped_expiry() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, _stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "2999-06-01",
+            "--operator",
+            "test",
+        ],
+    );
+    assert_eq!(code, 0, "approve: {stderr}");
+
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["source", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(list["results"][0]["expires"], "2999-06-01");
+}
+
+/// `source list` shows the store-enforced expiry, not the declarative
+/// config value: a config-only `expires` over indexed rows that carry no
+/// store stamp must not read as if the store enforced it
+/// (docs/implementation/07 §License gate).
+#[test]
+fn source_list_hides_a_config_expiry_the_store_never_stamped() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.\"acme\"]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "attribution = \"© Acme Corp documentation\"\n",
+            "expires = \"2030-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["source", "list"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert!(list["results"][0]["expires"].is_null(), "stdout: {stdout}");
+}
+
+/// The configured expiry stamps the first sync, and `source approve
+/// --expires` keeps precedence over the seed: the second sync republishes
+/// through the COALESCE seed and never clobbers the operator date
+/// (docs/implementation/07 §License gate).
+#[test]
+fn sync_stamps_the_configured_expiry_and_approve_overrides_it() {
+    let env = Env::new();
+    let fixture = write_fixture(&env);
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.acme]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "expires = \"2999-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("expiry.db");
+    let cfg = [
+        "--config",
+        config.to_str().expect("config path"),
+        "--db",
+        db.to_str().expect("db path"),
+    ];
+
+    // First sync: the bootstrap grant carries the configured date, the
+    // publish seeds it, and `source list` reports the stamped date.
+    let (code, _stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
+    assert_eq!(code, 0, "first sync: {stderr}");
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["source", "list", "--json", cfg[0], cfg[1], cfg[2], cfg[3]],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(
+        list["results"][0]["expires"], "2999-01-01",
+        "the first sync stamps the configured date: {stdout}"
+    );
+    assert_eq!(list["results"][0]["status"], "approved_index");
+
+    // The operator approve overrides the seed with a later date.
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "2999-06-01",
+            "--operator",
+            "test",
+            "--json",
+            cfg[0],
+            cfg[1],
+            cfg[2],
+            cfg[3],
+        ],
+    );
+    assert_eq!(code, 0, "approve: {stderr}");
+
+    // The second sync republishes through the COALESCE seed: the operator
+    // date survives.
+    let (code, _stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
+    assert_eq!(code, 0, "second sync: {stderr}");
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["source", "list", "--json", cfg[0], cfg[1], cfg[2], cfg[3]],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(
+        list["results"][0]["expires"], "2999-06-01",
+        "the operator date survives the second sync: {stdout}"
+    );
+}
+
+/// A registered source whose configured expiry has already passed refuses
+/// the first sync at the bootstrap guard: `add` exits 3 with
+/// `FETCH_BLOCKED` and names the `sources.<name>.expires` key, and the
+/// refused sync leaves no source row behind
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_lapsed_configured_expiry_refuses_the_first_sync() {
+    let env = Env::new();
+    let fixture = write_fixture(&env);
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.acme]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "expires = \"2026-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("lapsed.db");
+    let cfg = [
+        "--config",
+        config.to_str().expect("config path"),
+        "--db",
+        db.to_str().expect("db path"),
+    ];
+
+    let (code, stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
+    assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("sources.acme.expires"),
+        "the refusal names the config key: {stderr}"
+    );
+    assert!(stdout.trim().is_empty(), "stdout stays clean: {stdout}");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["source", "list", "--json", cfg[0], cfg[1], cfg[2], cfg[3]],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert!(
+        list["results"][0]["versions"]
+            .as_array()
+            .expect("versions")
+            .is_empty(),
+        "a refused first sync must not leave a source row: {stdout}"
+    );
+}
+
+/// A passed configured expiry refuses a sync that would seed it into a row
+/// that records no date: `add` exits 3 with `FETCH_BLOCKED` naming the
+/// `sources.<name>.expires` key, and the pre-seeded row keeps its NULL
+/// expiry and its active flag — the refusal wrote nothing
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_lapsed_configured_expiry_refuses_a_row_without_a_recorded_date() {
+    let env = Env::new();
+    let fixture = write_fixture(&env);
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.acme]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "expires = \"2026-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("undated.db");
+    // The library already indexed one serving generation whose row records
+    // no expiry: the publish's COALESCE would seed the configured date
+    // into it on the next sync.
+    devdocs_testkit::seed_source_status(&db, "acme", "1.0", "approved_index", None)
+        .expect("undated row seeded");
+    let conn = rusqlite::Connection::open(&db).expect("db opens");
+    conn.execute("UPDATE sources SET active = 1", [])
+        .expect("row activated");
+    drop(conn);
+
+    let (code, stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
+    assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("sources.acme.expires"),
+        "the refusal names the config key: {stderr}"
+    );
+    assert!(stdout.trim().is_empty(), "stdout stays clean: {stdout}");
+
+    // The row stays NULL-expiry and active: the gate refused before any
+    // publish, so nothing was stamped and nothing swept.
+    let conn = rusqlite::Connection::open(&db).expect("db opens");
+    let (expires, active): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT license_expires_at, active FROM sources WHERE library = 'acme'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("row reads");
+    assert_eq!(expires, None, "the passed date must not seed the row");
+    assert_eq!(active, 1, "the refusal must not deactivate the row");
+}
+
+/// The human `source list` output without `--json`: one line per
+/// configured source joining the config with the store state. The CR-3
+/// semantics hold on the human path too: an indexed library shows the
+/// store-stamped expiry, a library without store rows shows the
+/// declarative config value (docs/implementation/07 §License gate).
+#[test]
+fn source_list_without_json_prints_the_summary_lines() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+
+    // An indexed library shows the store-stamped date: the operator
+    // approve stamps the expiry on the rows.
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "approve",
+            "acme",
+            "approved_embed",
+            "--expires",
+            "2999-06-01",
+            "--operator",
+            "test",
+            cfg[0],
+            cfg[1],
+        ],
+    );
+    assert_eq!(code, 0, "approve: {stderr}");
+
+    // A second, never-indexed entry carries no store rows: the config
+    // `expires` shows, and the absent url and license render as the
+    // fallbacks.
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.\"acme\"]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "attribution = \"© Acme Corp documentation\"\n",
+            "\n",
+            "[sources.\"ghost\"]\n",
+            "expires = \"2030-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "one line per entry: {stdout}");
+    assert_eq!(
+        lines[0],
+        "acme approved_embed (MIT) · https://docs.acme.test/llms.txt · \
+         expires 2999-06-01 · © Acme Corp documentation",
+        "stdout: {stdout}"
+    );
+    assert_eq!(
+        lines[1], "ghost pending_review (unknown) ·  · expires 2030-01-01",
+        "stdout: {stdout}"
+    );
+}
+
+/// A gate refusal carrying a terminal status withdraws the previously
+/// published generation before the refusal returns: `add` after `source
+/// deny` exits 3 with `FETCH_BLOCKED` and the store rows go inactive
+/// (docs/implementation/09 §License gate enforcement points, point 3).
+#[test]
+fn add_on_a_denied_source_withdraws_the_published_generation() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let (code, _stdout, stderr) = source_cmd(
+        &env,
+        cfg,
+        &[
+            "source",
+            "deny",
+            "acme",
+            "--note",
+            "robots disallow",
+            "--operator",
+            "test",
+        ],
+    );
+    assert_eq!(code, 0, "deny: {stderr}");
+
+    // The re-sync attempt refuses at the gate and withdraws on the way out;
+    // no fixture is needed, because nothing is ever fetched.
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &["add", "https://docs.acme.test/llms.txt"]);
+    assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+
+    let db = env.root.join("data").join("docs.db");
+    let conn = rusqlite::Connection::open(&db).expect("db opens");
+    let actives: Vec<i64> = conn
+        .prepare("SELECT active FROM sources WHERE library = 'acme'")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect();
+    assert!(!actives.is_empty(), "the published rows exist");
+    assert!(
+        actives.iter().all(|active| *active == 0),
+        "every published row must withdraw: {actives:?}"
+    );
+}
+
+/// `devdocs list` runs the expiry sweep like every read path: a source
+/// with a passed expiry reports `expired` (docs/implementation/07 §Expiry
+/// sweep).
+#[test]
+fn list_sweeps_a_passed_expiry() {
+    let (env, _config) = source_env();
+    let db = env.root.join("data").join("docs.db");
+    devdocs_testkit::set_source_expiry(&db, "acme", "2026-01-01").expect("expiry set");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["list", "--json"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    let results = list["results"].as_array().expect("results");
+    assert_eq!(results.len(), 2, "stdout: {stdout}");
+    assert!(
+        results.iter().all(|row| row["license_status"] == "expired"),
+        "the sweep must flip both versions: {stdout}"
+    );
+}
+
+/// A passed expiry blocks the operator moves: the sweep records the
+/// `auto:expiry` flip before the transition read, the approve onto a
+/// non-terminal stage refuses as an illegal move out of `expired`, and
+/// `source deny` reads the same swept absorbing state and refuses too —
+/// no forward move and no re-dating past the sweep
+/// (docs/implementation/07 §Expiry sweep).
+#[test]
+fn transitions_sweep_a_passed_expiry_before_the_move() {
+    let (env, config) = source_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    let db = env.root.join("data").join("docs.db");
+    devdocs_testkit::set_source_expiry(&db, "acme", "2026-01-01").expect("expiry set");
+
+    // The sweep flips acme to `expired` first; expired cannot move forward.
+    let (code, stdout, stderr) =
+        source_cmd(&env, cfg, &["source", "approve", "acme", "approved_embed"]);
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("illegal license transition"),
+        "stderr: {stderr}"
+    );
+
+    // The audit trail carries the auto:expiry line; the refused move wrote
+    // nothing.
+    let lines = audit_lines(&db);
+    // One auto:expiry line per flipped row (acme has two versions); the
+    // refused move wrote nothing.
+    assert_eq!(lines.len(), 2, "lines: {lines:?}");
+    assert!(
+        lines.iter().all(|line| line.contains("auto:expiry")
+            && line.contains(", acme, approved_index, expired, ")),
+        "the sweep lines must land before the operator move: {lines:?}"
+    );
+
+    // `source deny` also reads the swept state: `expired` is absorbing, so
+    // the move refuses too — no re-dating past the sweep.
+    let deny = [
+        "source",
+        "deny",
+        "acme",
+        "--note",
+        "takedown",
+        "--operator",
+        "test",
+    ];
+    let (code, stdout, stderr) = source_cmd(&env, cfg, &deny);
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("illegal license transition expired"),
+        "stderr: {stderr}"
+    );
+
+    // The refused deny added no audit line.
+    let lines = audit_lines(&db);
+    assert_eq!(lines.len(), 2, "lines: {lines:?}");
+    assert!(
+        lines.iter().all(|line| line.contains("auto:expiry")),
+        "only the sweep lines remain: {lines:?}"
+    );
 }

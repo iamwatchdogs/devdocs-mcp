@@ -49,6 +49,15 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         )),
         destructive: false,
     },
+    EmbeddedMigration {
+        version: 4,
+        name: "0004_license_gate",
+        sql: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0004_license_gate.sql"
+        )),
+        destructive: false,
+    },
 ];
 
 /// How many migrations ship with the store, in application order.
@@ -281,7 +290,7 @@ mod tests {
         assert_eq!(applied.len(), 1);
     }
 
-    /// The shipped run ends at `user_version` 3, adds the `chunks.page_url`
+    /// The shipped run ends at `user_version` 4, adds the `chunks.page_url`
     /// column, and re-running on the migrated database applies nothing.
     #[test]
     fn shipped_migrations_land_the_page_url_column() {
@@ -294,7 +303,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
 
         let page_url: i64 = conn
             .query_row(

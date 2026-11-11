@@ -23,9 +23,11 @@ fn repo_url(path: &Path) -> String {
         .to_string()
 }
 
-/// Writes a config with the `acme` git source approved at the index stage.
-/// The url goes into a TOML literal string: a Windows temp path carries
-/// backslashes that a basic string would read as escape sequences.
+/// Writes a config with the `acme` git source registered; the first sync
+/// bootstrap lands at `approved_index` on its own (the license state is
+/// store-owned). The url goes into a TOML literal string: a Windows temp
+/// path carries backslashes that a basic string would read as escape
+/// sequences.
 fn write_git_config(env: &Env, url: &str) -> std::path::PathBuf {
     let config = env.root.join("devdocs.toml");
     std::fs::write(
@@ -34,8 +36,7 @@ fn write_git_config(env: &Env, url: &str) -> std::path::PathBuf {
             "[sources.acme]\n\
              kind = \"git\"\n\
              url = '{url}'\n\
-             license = \"MIT\"\n\
-             status = \"approved_index\"\n"
+             license = \"MIT\"\n"
         ),
     )
     .expect("config written");
@@ -68,6 +69,27 @@ fn assert_list_report(list: &Value, tag_sha: &str) {
         results[0]["commit_sha"], tag_sha,
         "list shows the capture commit: {results:?}"
     );
+}
+
+/// The stored rows of one library straight from the store file: the
+/// total count and the still-active count.
+fn stored_row_counts(db: &Path, library: &str) -> (i64, i64) {
+    let conn = rusqlite::Connection::open(db).expect("db opens");
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE library = ?1",
+            rusqlite::params![library],
+            |row| row.get(0),
+        )
+        .expect("count query");
+    let active: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE library = ?1 AND active = 1",
+            rusqlite::params![library],
+            |row| row.get(0),
+        )
+        .expect("active query");
+    (total, active)
 }
 
 /// A tag-pin `add --kind git` against a local fixture repo publishes, and
@@ -201,8 +223,7 @@ fn add_with_an_unsupported_config_kind_is_a_usage_error() {
             "[sources.acme]\n\
              kind = \"openapi\"\n\
              url = \"{url}\"\n\
-             license = \"MIT\"\n\
-             status = \"approved_fetch\"\n"
+             license = \"MIT\"\n"
         ),
     )
     .expect("config written");
@@ -439,4 +460,65 @@ fn add_git_refuses_an_unprivate_tmp_dir() {
         assert_eq!(code, 3, "stderr: {stderr}");
         assert!(stderr.contains("GIT_TEMP_DIR"), "stderr: {stderr}");
     }
+}
+
+/// A gate refusal on a terminal state withdraws the published git
+/// generation before the refusal returns: `add` after `source deny`
+/// exits 3 with `FETCH_BLOCKED` and the store rows go inactive
+/// (docs/implementation/09 §License gate enforcement points, point 3).
+#[test]
+fn add_git_on_a_denied_source_withdraws_the_published_generation() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+    let add_args = [
+        "add",
+        url.as_str(),
+        "--version",
+        "v1.0.0",
+        "--kind",
+        "git",
+        "--json",
+        "--config",
+        config.to_str().expect("config path"),
+        "--db",
+        db.to_str().expect("db path"),
+    ];
+
+    // The first sync publishes at the bootstrap floor.
+    let (code, _stdout, stderr) = output(env.cmd(), &add_args);
+    assert_eq!(code, 0, "first sync: {stderr}");
+
+    // The operator denies the library.
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "source",
+            "deny",
+            "acme",
+            "--note",
+            "license yanked",
+            "--operator",
+            "test",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 0, "deny: {stderr}");
+
+    // The re-sync refuses at the gate and withdraws on the way out; no
+    // fixture or network is involved, because nothing is ever fetched.
+    let (code, _stdout, stderr) = output(env.cmd(), &add_args);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+
+    let (total, active) = stored_row_counts(&db, "acme");
+    assert!(total > 0, "the published rows stay in the store");
+    assert_eq!(active, 0, "every row went inactive on the withdrawal");
 }

@@ -7,11 +7,17 @@
 
 use std::sync::Arc;
 
-use devdocs_ingest::{FixtureSet, GitPin, IngestJob, gate_fetch};
-use devdocs_model::config::Config;
-use devdocs_model::envelope::{ResultEnvelope, SourceSummary};
+use devdocs_ingest::{
+    FixtureSet, GitPin, IngestJob, gate_fetch, pending_review_refusal, refused_status,
+    registry_name,
+};
+use devdocs_model::config::{Config, SourceConfig};
+use devdocs_model::envelope::{
+    ResultEnvelope, SourceListEntry, SourceListEnvelope, SourceListVersion, SourceSummary,
+};
 use devdocs_model::error::{Error, UpstreamCode};
-use devdocs_store::{MigrateOptions, Store};
+use devdocs_model::source::LicenseStatus;
+use devdocs_store::{MigrateOptions, Store, StoreError};
 use url::Url;
 
 /// The SKILL.md content `devdocs skill install` writes, verbatim from
@@ -130,7 +136,10 @@ pub fn run_search(
     };
     let query = devdocs_retrieve::Query::new(query, library, version);
     let project = project_dir()?;
-    devdocs_retrieve::serve::search(&store, &query, &project, &plan).map_err(map_retrieve_error)
+    let mut envelope = devdocs_retrieve::serve::search(&store, &query, &project, &plan)
+        .map_err(map_retrieve_error)?;
+    attribute_results(config, &mut envelope);
+    Ok(envelope)
 }
 
 /// Splits a `devdocs symbol` target into its `(library, version)` pair:
@@ -186,8 +195,10 @@ pub fn run_symbol(
         rrf_k: config.search.rrf_k,
         cursor,
     };
-    devdocs_retrieve::serve::symbol(&store, library, version, symbol, &plan)
-        .map_err(map_retrieve_error)
+    let mut envelope = devdocs_retrieve::serve::symbol(&store, library, version, symbol, &plan)
+        .map_err(map_retrieve_error)?;
+    attribute_results(config, &mut envelope);
+    Ok(envelope)
 }
 
 /// Runs `devdocs open <ref>`.
@@ -206,7 +217,10 @@ pub fn run_open(
         cursor,
         ..devdocs_retrieve::Plan::defaults()
     };
-    devdocs_retrieve::serve::open(&store, doc_ref, &plan).map_err(map_retrieve_error)
+    let mut envelope =
+        devdocs_retrieve::serve::open(&store, doc_ref, &plan).map_err(map_retrieve_error)?;
+    attribute_results(config, &mut envelope);
+    Ok(envelope)
 }
 
 /// Runs `devdocs verify <ref>`: re-derives the content hash and reports
@@ -218,7 +232,32 @@ pub fn run_open(
 /// cold-miss paths, [`Error::Upstream`] for store failures.
 pub fn run_verify(config: &Config, doc_ref: &str) -> Result<ResultEnvelope, Error> {
     let store = open_store(config, false)?;
-    devdocs_retrieve::serve::verify(&store, doc_ref).map_err(map_retrieve_error)
+    let mut envelope =
+        devdocs_retrieve::serve::verify(&store, doc_ref).map_err(map_retrieve_error)?;
+    attribute_results(config, &mut envelope);
+    Ok(envelope)
+}
+
+/// Joins the declarative config attribution onto the served items by
+/// library (docs/implementation/07 §License gate): the registry entry name
+/// is the published library identity, so the `[sources.<name>].attribution`
+/// line fills `ResultItem.attribution`. An item that already carries an
+/// attribution keeps it; an item whose ref parses to no registry entry
+/// stays unattributed.
+fn attribute_results(config: &Config, envelope: &mut ResultEnvelope) {
+    for item in &mut envelope.results {
+        if item.attribution.is_some() {
+            continue;
+        }
+        let Some(parsed) = devdocs_model::docref::ParsedRef::parse(&item.doc_ref) else {
+            continue;
+        };
+        item.attribution = config
+            .sources
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&parsed.library))
+            .and_then(|(_, entry)| entry.attribution.clone());
+    }
 }
 
 /// Runs `devdocs versions <library>`.
@@ -236,26 +275,25 @@ pub fn run_versions(
 
 /// A gate refusal carrying a terminal status (`denied`, `expired`,
 /// `revoked`) withdraws the previously published generation before the
-/// refusal returns, so a revoked registry entry takes its source out of
-/// retrieval even though the publish-time withdrawal never runs
+/// refusal returns, so a revoked source takes itself out of retrieval even
+/// though the publish-time withdrawal never runs
 /// (docs/implementation/09 §License gate enforcement points, point 3).
-/// A refusal without a terminal status — no entry, `pending_review` —
-/// writes nothing. The withdrawal is not best-effort: when the store
-/// cannot record it, the command returns `UPSTREAM_ERROR` instead of
-/// `FETCH_BLOCKED`, so a revoked source is never left serving while the
-/// command claims `FETCH_BLOCKED`.
-fn withdraw_on_terminal_refusal(config: &Config, index_url: &Url) -> Result<(), Error> {
+/// A refusal without a terminal status — no entry, no store row,
+/// `pending_review` — writes nothing. The withdrawal is not best-effort:
+/// a failed store read refuses the command outright, and when the store
+/// cannot record the withdrawal the command returns `UPSTREAM_ERROR`
+/// instead of `FETCH_BLOCKED`, so a revoked source is never left serving
+/// while the command claims `FETCH_BLOCKED`.
+fn withdraw_on_terminal_refusal(
+    store: &Arc<Store>,
+    config: &Config,
+    index_url: &Url,
+) -> Result<(), Error> {
     let Some(status) =
-        devdocs_ingest::refused_status(config, index_url).filter(|status| status.is_terminal())
+        refused_status(store, config, index_url)?.filter(|status| status.is_terminal())
     else {
         return Ok(());
     };
-    let store = open_store(config, false).map_err(|error| Error::Upstream {
-        code: UpstreamCode::UpstreamError,
-        detail: format!(
-            "gate refused with {status} but the withdrawal could not be recorded: {error}"
-        ),
-    })?;
     let withdrawn = store
         .withdraw_source_by_origin_url(index_url.as_str(), status)
         .map_err(|error| Error::Upstream {
@@ -274,12 +312,14 @@ fn withdraw_on_terminal_refusal(config: &Config, index_url: &Url) -> Result<(), 
 
 /// Runs `devdocs add <source>`.
 ///
-/// Order matters: the license gate fires before the store opens, so a
-/// refused source costs no bytes and writes no database — except a refusal
-/// carrying a terminal status, which withdraws the previously published
-/// generation first (docs/implementation/09 §License gate enforcement
-/// points): the publish-time withdrawal cannot run, because this refusal
-/// happens before any publish.
+/// Order matters: the license gate denies by default. A URL with no
+/// registry entry refuses before the store opens, so a refused source costs
+/// no bytes and writes no database. A registered entry consults the store —
+/// the authoritative license state, swept for passed expiries first — and a
+/// refusal carrying a terminal status withdraws the previously published
+/// generation before it returns (docs/implementation/09 §License gate
+/// enforcement points, point 3): the publish-time withdrawal cannot run,
+/// because this refusal happens before any publish.
 ///
 /// The effective kind dispatches the adapter (docs/implementation/07
 /// §Priority ladder): an explicit `--kind` wins, then the config
@@ -297,13 +337,13 @@ pub fn run_add(
 ) -> Result<serde_json::Value, Error> {
     let index_url = Url::parse(source).map_err(|e| Error::Usage(format!("bad source URL: {e}")))?;
 
-    // 1. The license gate: deny by default, before any fetch or store open.
-    let grant = match gate_fetch(config, &index_url) {
-        Ok(grant) => grant,
-        Err(error) => {
-            withdraw_on_terminal_refusal(config, &index_url)?;
-            return Err(error);
-        }
+    // 1. The license gate: deny by default. The unregistered refusal runs
+    //    before the store opens, and the usage validation (the effective
+    //    kind) runs before the store opens too, so a rejected add still
+    //    writes no database. The registered path then sweeps the store and
+    //    reads its authoritative state.
+    let Some(name) = registry_name(config, &index_url)? else {
+        return Err(pending_review_refusal(&index_url));
     };
 
     // 2. The effective kind. `--kind` wins, then the config entry.
@@ -311,7 +351,7 @@ pub fn run_add(
         .or_else(|| {
             config
                 .sources
-                .get(&grant.name)
+                .get(&name)
                 .and_then(|entry| entry.kind.as_deref())
         })
         .unwrap_or("llms_txt");
@@ -339,8 +379,25 @@ pub fn run_add(
                 "git sources require --version (a tag or a commit SHA)".to_owned(),
             ));
         };
-        return run_add_git(config, &index_url, &grant.name, pin);
+        let store = open_store(config, false)?;
+        let grant = match gate_fetch(&store, config, &index_url) {
+            Ok(grant) => grant,
+            Err(error) => {
+                withdraw_on_terminal_refusal(&store, config, &index_url)?;
+                return Err(error);
+            }
+        };
+        return run_add_git(config, &store, &index_url, &grant.name, pin);
     }
+
+    let store = open_store(config, false)?;
+    let grant = match gate_fetch(&store, config, &index_url) {
+        Ok(grant) => grant,
+        Err(error) => {
+            withdraw_on_terminal_refusal(&store, config, &index_url)?;
+            return Err(error);
+        }
+    };
 
     // 3. The fixture set, when replaying.
     let fixture = fixture_dir
@@ -359,7 +416,6 @@ pub fn run_add(
             detail: format!("cannot start the async runtime: {e}"),
         })?;
 
-    let store = open_store(config, false)?;
     let version = version.unwrap_or("latest");
     let job = IngestJob::new(config, &guard, fixture.as_ref());
     let result = runtime.block_on(job.run(Arc::clone(&store), &index_url, &grant.name, version));
@@ -375,13 +431,15 @@ pub fn run_add(
 /// [`IngestJob::run_git`]'s `spawn_blocking` — not through the HTTP fetch
 /// guard, which does not govern the git transport
 /// (docs/implementation/07 §Git adapter) — and the version label is the
-/// pin itself.
+/// pin itself. The store handle arrives already open: the license gate
+/// opened it, and a second open would migrate the same file twice.
 ///
 /// # Errors
 /// [`Error`] for any ingest failure (`IngestJob::run_git` maps the whole
 /// plan/fetch/segment/publish chain).
 fn run_add_git(
     config: &Config,
+    store: &Arc<Store>,
     repo_url: &Url,
     library: &str,
     pin: &str,
@@ -395,14 +453,14 @@ fn run_add_git(
             detail: format!("cannot start the async runtime: {e}"),
         })?;
 
-    let store = open_store(config, false)?;
     // The clone directory lands under the configured data root — not the
     // db's parent, which a custom `--db` path can point anywhere; the git
-    // temp dir stays inside DEVDOCS_HOME.
+    // temp dir stays inside DEVDOCS_HOME, a private directory the adapter
+    // creates with mode 0700 when missing.
     let data_root = devdocs_model::config::data_root()?;
     let job = IngestJob::new(config, &guard, None);
     let result = runtime.block_on(job.run_git(
-        Arc::clone(&store),
+        Arc::clone(store),
         repo_url,
         library,
         pin,
@@ -459,16 +517,257 @@ fn add_report(outcome: &devdocs_ingest::IngestOutcome) -> Result<serde_json::Val
 
 /// Runs `devdocs list`.
 ///
+/// The expiry sweep runs first, like on every read path
+/// (docs/implementation/07 §Expiry sweep), so the reported states reflect
+/// passed expiries.
+///
 /// # Errors
 /// [`Error::Upstream`] when the store cannot open or the query fails.
 pub fn run_list(config: &Config) -> Result<ResultEnvelope<SourceSummary>, Error> {
     let store = open_store(config, false)?;
+    store
+        .sweep_expired(&devdocs_model::now_rfc3339())
+        .map_err(|e| map_store_error(&e))?;
     let results = store.list_sources().map_err(|e| map_store_error(&e))?;
     Ok(ResultEnvelope {
         results,
         truncated: false,
         next_cursor: None,
         served_at: devdocs_model::envelope::now_rfc3339(),
+    })
+}
+
+/// Runs `devdocs source approve <library> <stage>`
+/// (docs/implementation/07 §License gate): the transition moves through
+/// [`Store::transition_license`], which appends the audit line, enforces
+/// the forward-only progression, and stamps `--expires` inside the same
+/// transaction as the move. The typed store refusals
+/// (illegal move, missing note, unknown library) surface as `Usage`
+/// exit 1; the store is authoritative for the mutable state
+/// (docs/implementation/07 §License gate).
+///
+/// # Errors
+/// [`Error::Usage`] for an unknown stage, an illegal transition, a
+/// missing note, or an unknown library; [`Error::Upstream`] when the
+/// store fails or `--expires` does not parse as a `YYYY-MM-DD` date.
+pub fn run_source_approve(
+    config: &Config,
+    name: &str,
+    stage: &str,
+    note: Option<&str>,
+    operator: Option<&str>,
+    expires: Option<&str>,
+) -> Result<serde_json::Value, Error> {
+    let to = parse_stage(stage)?;
+    let expires = parse_expires(expires)?;
+    let store = open_store(config, false)?;
+    // The sweep runs before the transition read: a source whose expiry has
+    // passed flips to the absorbing `expired` first and cannot be moved
+    // forward or re-dated without the flip on the audit trail
+    // (docs/implementation/07 §Expiry sweep).
+    store
+        .sweep_expired(&devdocs_model::now_rfc3339())
+        .map_err(|e| map_store_error(&e))?;
+    let from = least_privileged_state(&store, name)?;
+    let rows = store
+        .transition_license(
+            name,
+            to,
+            operator.unwrap_or("anonymous"),
+            note,
+            expires.as_deref(),
+        )
+        .map_err(map_license_refusal)?;
+    Ok(transition_report(
+        name,
+        from,
+        to,
+        rows,
+        operator,
+        note,
+        expires.as_deref(),
+    ))
+}
+
+/// Runs `devdocs source deny <library> --note --operator`
+/// (docs/implementation/07 §License gate): one typed move onto `denied`
+/// through [`Store::transition_license`].
+///
+/// # Errors
+/// [`Error::Usage`] for an illegal transition or an unknown library;
+/// [`Error::Upstream`] when the store fails.
+pub fn run_source_deny(
+    config: &Config,
+    name: &str,
+    note: Option<&str>,
+    operator: Option<&str>,
+) -> Result<serde_json::Value, Error> {
+    let store = open_store(config, false)?;
+    // The sweep runs before the transition read, same as `source approve`
+    // (docs/implementation/07 §Expiry sweep).
+    store
+        .sweep_expired(&devdocs_model::now_rfc3339())
+        .map_err(|e| map_store_error(&e))?;
+    let from = least_privileged_state(&store, name)?;
+    let rows = store
+        .transition_license(
+            name,
+            LicenseStatus::Denied,
+            operator.unwrap_or("anonymous"),
+            note,
+            None,
+        )
+        .map_err(map_license_refusal)?;
+    Ok(transition_report(
+        name,
+        from,
+        LicenseStatus::Denied,
+        rows,
+        operator,
+        note,
+        None,
+    ))
+}
+
+/// Runs `devdocs source list`: the declarative config entries joined with
+/// the store-authoritative state — url, license SPDX id, and attribution
+/// from `[sources.<name>]`; status, versions, fetched-at, and the enforced
+/// expiry from the store. The config `expires` only shows while the
+/// library has no store rows, before anything is enforced
+/// (docs/implementation/07 §License gate). The sweep runs first, so the
+/// reported state reflects passed expiries (docs/implementation/07
+/// §License gate).
+///
+/// # Errors
+/// [`Error::Upstream`] when the store cannot open or the read fails.
+pub fn run_source_list(config: &Config) -> Result<SourceListEnvelope, Error> {
+    let store = open_store(config, false)?;
+    store
+        .sweep_expired(&devdocs_model::now_rfc3339())
+        .map_err(|e| map_store_error(&e))?;
+    let rows = store.list_sources().map_err(|e| map_store_error(&e))?;
+    Ok(SourceListEnvelope {
+        results: config
+            .sources
+            .iter()
+            .map(|(name, entry)| source_list_entry(name, entry, &rows))
+            .collect(),
+        served_at: devdocs_model::now_rfc3339(),
+    })
+}
+
+/// Builds one `source list` entry: the declarative config fields joined
+/// with the store-authoritative state of the library's rows
+/// (docs/implementation/07 §License gate).
+fn source_list_entry(name: &str, entry: &SourceConfig, rows: &[SourceSummary]) -> SourceListEntry {
+    let library_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.library.eq_ignore_ascii_case(name))
+        .collect();
+    let versions: Vec<SourceListVersion> = library_rows
+        .iter()
+        .map(|row| SourceListVersion {
+            version: row.version.clone(),
+            status: row.license_status.clone(),
+            fetched_at: row.fetched_at.clone(),
+            active: row.active,
+        })
+        .collect();
+    let status = LicenseStatus::least_privileged(
+        library_rows
+            .iter()
+            .filter_map(|row| LicenseStatus::parse(&row.license_status)),
+    )
+    .map_or_else(|| String::from("pending_review"), |state| state.to_string());
+    // The earliest enforced lapse is the least privileged row; once rows
+    // exist the config value no longer speaks for the store
+    // (docs/implementation/07 §License gate).
+    let expires = if library_rows.is_empty() {
+        entry.expires.clone()
+    } else {
+        library_rows
+            .iter()
+            .filter_map(|row| row.license_expires_at.clone())
+            .min()
+    };
+    SourceListEntry {
+        name: name.to_owned(),
+        url: entry.url.clone(),
+        kind: entry.kind.clone(),
+        license: entry.license.clone(),
+        attribution: entry.attribution.clone(),
+        expires,
+        status,
+        versions,
+    }
+}
+
+/// Parses the `<stage>` argument of `devdocs source approve` through the
+/// model's license-state machine vocabulary.
+fn parse_stage(stage: &str) -> Result<LicenseStatus, Error> {
+    LicenseStatus::parse(stage).ok_or_else(|| {
+        Error::Usage(format!(
+            "unknown license stage {stage:?}; expected one of \
+             pending_review, approved_fetch, approved_index, approved_embed, \
+             approved_cache, approved_snippet, denied, expired, revoked"
+        ))
+    })
+}
+
+/// Parses the `--expires` flag as a `YYYY-MM-DD` date, the same shape the
+/// config `expires` key takes.
+fn parse_expires(expires: Option<&str>) -> Result<Option<String>, Error> {
+    expires
+        .map(|raw| {
+            devdocs_model::config::parse_expires_date(raw, "--expires")
+                .map(|_| raw.to_owned())
+                .map_err(|e| Error::Usage(e.to_string()))
+        })
+        .transpose()
+}
+
+/// The library's least privileged stored state, for the report's `from`.
+fn least_privileged_state(store: &Store, name: &str) -> Result<LicenseStatus, Error> {
+    let states = store
+        .license_states(name)
+        .map_err(|e| map_store_error(&e))?;
+    LicenseStatus::least_privileged(states).ok_or_else(|| {
+        Error::Usage(format!(
+            "no indexed source for library {name:?}; run: devdocs source list"
+        ))
+    })
+}
+
+/// Maps the typed license-transition refusals onto `Usage` exit 1; every
+/// other store failure keeps its upstream mapping.
+fn map_license_refusal(error: StoreError) -> Error {
+    match error {
+        StoreError::InvalidTransition { .. }
+        | StoreError::MissingNote
+        | StoreError::UnknownLibrary { .. } => Error::Usage(error.to_string()),
+        other => map_store_error(&other),
+    }
+}
+
+/// The JSON report one transition prints on stdout.
+#[allow(clippy::too_many_arguments)]
+fn transition_report(
+    name: &str,
+    from: LicenseStatus,
+    to: LicenseStatus,
+    rows: usize,
+    operator: Option<&str>,
+    note: Option<&str>,
+    expires: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "library": name,
+        "from": from.to_string(),
+        "to": to.to_string(),
+        "rows": rows,
+        "operator": operator.unwrap_or("anonymous"),
+        "note": note,
+        "expires": expires,
     })
 }
 
@@ -600,9 +899,126 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::map_ingest_error;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use super::{map_ingest_error, withdraw_on_terminal_refusal};
     use devdocs_ingest::IngestError;
+    use devdocs_model::config::{Config, SourceConfig};
     use devdocs_model::error::{Error, UpstreamCode};
+    use url::Url;
+
+    /// A config with one registered acme entry, the shape the gate tests
+    /// use.
+    fn config_with_acme() -> Config {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            String::from("acme"),
+            SourceConfig {
+                kind: Some(String::from("llms_txt")),
+                url: Some(String::from("https://docs.acme.test/llms.txt")),
+                license: Some(String::from("MIT")),
+                attribution: None,
+                expires: None,
+                refresh_days: None,
+            },
+        );
+        Config {
+            fetch: devdocs_model::config::FetchConfig {
+                concurrency: 4,
+                timeout_ms: 15_000,
+                max_bytes: 20 * 1024 * 1024,
+                max_redirects: 3,
+                user_agent: String::from("devdocs/0.2.0"),
+            },
+            index: devdocs_model::config::IndexConfig {
+                path: std::path::PathBuf::from("/tmp/unused.db"),
+                embeddings: false,
+            },
+            search: devdocs_model::config::SearchConfig {
+                // nosemgrep: codacy.yaml.security.hard-coded-tokens
+                max_tokens_default: 2000,
+                limit_default: 8,
+                rrf_k: 60,
+            },
+            ingest: devdocs_model::config::IngestConfig {
+                git_extensions: devdocs_model::config::DEFAULT_GIT_EXTENSIONS
+                    .iter()
+                    .map(|ext| (*ext).to_owned())
+                    .collect(),
+            },
+            sources,
+        }
+    }
+
+    /// A failed withdrawal surfaces `UPSTREAM_ERROR`, not `FETCH_BLOCKED`:
+    /// a terminal source is never left serving while the command claims
+    /// the fetch was blocked (docs/implementation/09 §License gate
+    /// enforcement points, point 3). The failure is forced with a
+    /// RAISE(ABORT) trigger on `sources` — a test-only schema edit on a
+    /// second connection, no production seam.
+    #[test]
+    fn a_failed_withdrawal_surfaces_upstream_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("docs.db");
+        let store = Arc::new(
+            devdocs_testkit::seed_source_status(&db, "acme", "1.0", "denied", None).unwrap(),
+        );
+        let raw = rusqlite::Connection::open(&db).unwrap();
+        raw.execute(
+            "UPDATE sources SET origin_url = 'https://docs.acme.test/llms.txt'",
+            [],
+        )
+        .unwrap();
+        raw.execute(
+            "CREATE TRIGGER block_withdraw BEFORE UPDATE ON sources \
+             BEGIN SELECT RAISE(ABORT, 'test blocked'); END;",
+            [],
+        )
+        .unwrap();
+
+        let config = config_with_acme();
+        let url = Url::parse("https://docs.acme.test/llms.txt").unwrap();
+        let error = withdraw_on_terminal_refusal(&store, &config, &url).unwrap_err();
+        match error {
+            Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                detail,
+            } => assert!(detail.contains("withdrawal failed"), "detail: {detail}"),
+            other => panic!("expected UPSTREAM_ERROR, got {other:?}"),
+        }
+    }
+
+    /// A store failure inside a license transition keeps the upstream
+    /// mapping: only the typed refusals (illegal move, missing note,
+    /// unknown library) read as usage errors — the rest is the store's
+    /// failure, not the operator's (docs/implementation/05 §Error model).
+    #[test]
+    fn a_store_failure_in_a_transition_keeps_the_upstream_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("docs.db");
+        devdocs_testkit::seed_source_status(&db, "acme", "1.0", "approved_index", None).unwrap();
+        let raw = rusqlite::Connection::open(&db).unwrap();
+        raw.execute(
+            "CREATE TRIGGER block_transition BEFORE UPDATE OF license_status ON sources \
+             BEGIN SELECT RAISE(ABORT, 'test blocked'); END;",
+            [],
+        )
+        .unwrap();
+        drop(raw);
+
+        let mut config = config_with_acme();
+        config.index.path = db;
+        let error = super::run_source_deny(&config, "acme", Some("robots disallow"), Some("test"))
+            .unwrap_err();
+        match error {
+            Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                detail,
+            } => assert!(detail.contains("test blocked"), "detail: {detail}"),
+            other => panic!("expected the upstream mapping, got {other:?}"),
+        }
+    }
 
     /// The git adapter error kinds and the stable code prefixes their
     /// CLI mapping must keep (docs/implementation/05 §Error model).

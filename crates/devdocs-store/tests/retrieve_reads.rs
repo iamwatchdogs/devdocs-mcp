@@ -6,6 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use devdocs_model::LicenseStatus;
 use devdocs_store::{Store, build_match_query};
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -228,6 +229,56 @@ fn inactive_sources_never_serve() {
     assert_eq!(
         s.store.source_chunks(s.zod).unwrap(),
         Vec::<devdocs_store::Hit>::new()
+    );
+}
+
+/// A source the operator denies and reopens to `pending_review` never
+/// serves content again: the reopen leaves the row active, so only the
+/// unserved-license clause keeps the under-review state out of the
+/// content reads (docs/implementation/07 §License gate — `pending_review`
+/// records no indexed content to hit).
+#[test]
+fn a_source_under_review_stops_serving_while_still_active() {
+    let s = seeded();
+    s.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    s.store
+        .transition_license(
+            "next.js",
+            LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+
+    // The reopen never deactivates the row — only the clause can keep it
+    // out of the reads.
+    let conn = Connection::open(s.dir.path().join("docs.db")).unwrap();
+    let active: i64 = conn
+        .query_row(
+            "SELECT active FROM sources WHERE source_id = ?1",
+            [s.v16],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active, 1);
+
+    let expr = build_match_query("routing").into_owned();
+    assert!(
+        s.store.search_fts(&expr, 10).unwrap().is_empty(),
+        "an under-review source must drop out of search at query time"
+    );
+    assert!(
+        s.store.source_chunks(s.v16).unwrap().is_empty(),
+        "an under-review source must not serve its chunks"
     );
 }
 

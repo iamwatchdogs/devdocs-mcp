@@ -15,6 +15,9 @@ rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The tool handlers run the sync store behind spawn_blocking
+# (.agents/instructions/async-and-performance.instruction.md).
+tokio.workspace = true
 
 [dev-dependencies]
 devdocs-testkit.workspace = true

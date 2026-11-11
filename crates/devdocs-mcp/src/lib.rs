@@ -48,7 +48,8 @@ pub async fn serve(config: &Config) -> Result<(), Error> {
     let server = DevdocsServer::new(store, config.clone());
     // stdio_pipes drives the streams through the non-blocking pipe driver
     // when the client spawned this process with pipes, and falls back to
-    // the blocking handles elsewhere (rmcp 3.8.0 transport docs).
+    // the blocking handles elsewhere (the workspace declares rmcp 3.8.0,
+    // the lockfile resolves 3.9.0 — docs/implementation/08 §MCP adapter).
     let running = server
         .serve(rmcp::transport::stdio_pipes())
         .await
@@ -156,14 +157,21 @@ impl DevdocsServer {
         );
         // The MCP path never walks the host's lockfiles: the project
         // context stays empty (docs/implementation/08 §MCP adapter).
-        let mut envelope = match devdocs_retrieve::serve::search_with_context(
-            &self.store,
-            &query,
-            &ProjectContext::empty(),
-            &plan,
-        ) {
-            Ok(envelope) => envelope,
-            Err(err) => return error::from_retrieve(err),
+        let project = ProjectContext::empty();
+        // The store is sync SQLite behind a Mutex: async code reaches it
+        // only inside spawn_blocking
+        // (.agents/instructions/async-and-performance.instruction.md).
+        let store = Arc::clone(&self.store);
+        let mut envelope = match tokio::task::spawn_blocking(move || {
+            devdocs_retrieve::serve::search_with_context(&store, &query, &project, &plan)
+        })
+        .await
+        {
+            Ok(Ok(envelope)) => envelope,
+            Ok(Err(err)) => return error::from_retrieve(err),
+            // defensive: the block touches no unwinding state; the arm
+            // keeps a panicked worker a protocol error, not a hang.
+            Err(join) => return Err(error::internal(format!("the search task failed: {join}"))),
         };
         wiring::attribute_results(&self.config, &mut envelope);
         let json = params
@@ -197,11 +205,22 @@ impl DevdocsServer {
                 .unwrap_or(self.config.search.max_tokens_default),
             ..devdocs_retrieve::Plan::defaults()
         };
-        let mut envelope =
-            match devdocs_retrieve::serve::open(&self.store, &params.0.doc_ref, &plan) {
-                Ok(envelope) => envelope,
-                Err(err) => return error::from_retrieve(err),
-            };
+        // The store is sync SQLite behind a Mutex: async code reaches it
+        // only inside spawn_blocking
+        // (.agents/instructions/async-and-performance.instruction.md).
+        let store = Arc::clone(&self.store);
+        let doc_ref = params.0.doc_ref;
+        let mut envelope = match tokio::task::spawn_blocking(move || {
+            devdocs_retrieve::serve::open(&store, &doc_ref, &plan)
+        })
+        .await
+        {
+            Ok(Ok(envelope)) => envelope,
+            Ok(Err(err)) => return error::from_retrieve(err),
+            // defensive: the block touches no unwinding state; the arm
+            // keeps a panicked worker a protocol error, not a hang.
+            Err(join) => return Err(error::internal(format!("the open task failed: {join}"))),
+        };
         wiring::attribute_results(&self.config, &mut envelope);
         let json = Detail::Full
             .render(&envelope)
@@ -224,9 +243,21 @@ impl DevdocsServer {
         &self,
         params: Parameters<VerifyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut envelope = match devdocs_retrieve::serve::verify(&self.store, &params.0.doc_ref) {
-            Ok(envelope) => envelope,
-            Err(err) => return error::from_retrieve(err),
+        // The store is sync SQLite behind a Mutex: async code reaches it
+        // only inside spawn_blocking
+        // (.agents/instructions/async-and-performance.instruction.md).
+        let store = Arc::clone(&self.store);
+        let doc_ref = params.0.doc_ref;
+        let mut envelope = match tokio::task::spawn_blocking(move || {
+            devdocs_retrieve::serve::verify(&store, &doc_ref)
+        })
+        .await
+        {
+            Ok(Ok(envelope)) => envelope,
+            Ok(Err(err)) => return error::from_retrieve(err),
+            // defensive: the block touches no unwinding state; the arm
+            // keeps a panicked worker a protocol error, not a hang.
+            Err(join) => return Err(error::internal(format!("the verify task failed: {join}"))),
         };
         wiring::attribute_results(&self.config, &mut envelope);
         let Some(item) = envelope.results.first() else {

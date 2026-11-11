@@ -997,6 +997,134 @@ fn publish_proceeds_with_mixed_non_terminal_stored_rows() {
     );
 }
 
+/// The operator advances the library while a new version's fetch is in
+/// flight: the in-flight record still carries the gate-time index
+/// snapshot, but the new row lands at the library's advanced floor —
+/// never the stale snapshot, which would strand the row below the library
+/// and make the next library-wide advance refuse a same-state move
+/// (docs/implementation/07 §Atomic publish, point 2).
+#[test]
+fn a_new_version_lands_at_the_library_floor_after_a_mid_fetch_advance() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.1.0".to_owned();
+    older.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    rig.store
+        .publish_generation(&older, &[chunk(0, None, "the v16 generation.")])
+        .unwrap();
+
+    // The operator advances the library while the v17 fetch runs.
+    rig.store
+        .transition_license("next.js", LicenseStatus::ApprovedEmbed, "op", None, None)
+        .unwrap();
+    let audit_before = audit_count(&rig.conn);
+
+    // The in-flight record still carries the index-stage snapshot.
+    let mut fresh = source(LicenseStatus::ApprovedIndex);
+    fresh.version = "17.0.0".to_owned();
+    fresh.origin_url = Url::parse("https://example.test/next/llms-17.txt").unwrap();
+    rig.store
+        .publish_generation(&fresh, &[chunk(0, None, "the v17 generation.")])
+        .unwrap();
+
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE version = '17.0.0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "approved_embed",
+        "the new row lands at the library floor, not the stale snapshot"
+    );
+    assert_eq!(
+        rig.store.license_states("next.js").unwrap(),
+        vec![LicenseStatus::ApprovedEmbed]
+    );
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "the publish writes no audit line"
+    );
+
+    // The library-wide advance continues: no stuck same-state pair.
+    rig.store
+        .transition_license("next.js", LicenseStatus::ApprovedCache, "op", None, None)
+        .unwrap();
+    assert_eq!(
+        rig.store.license_states("next.js").unwrap(),
+        vec![LicenseStatus::ApprovedCache]
+    );
+}
+
+/// Bootstrap: a fresh library holds no stored state to floor the row at,
+/// so the first publish lands exactly at the record's status.
+#[test]
+fn a_fresh_library_lands_the_record_at_its_own_status() {
+    let rig = rig();
+    rig.store
+        .publish_generation(
+            &source(LicenseStatus::ApprovedIndex),
+            &[chunk(0, None, "the first generation.")],
+        )
+        .unwrap();
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE library = 'next.js'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "approved_index");
+}
+
+/// Mixed non-terminal stored rows floor a new version row at the least
+/// privileged state: siblings at `approved_fetch` and `approved_embed`,
+/// and a new version record at the snippet stage, land the new row at
+/// `approved_fetch` — the floor, not the record and not the max.
+#[test]
+fn a_new_version_lands_at_the_least_privileged_floor_of_mixed_siblings() {
+    let rig = rig();
+    let mut fetch_row = source(LicenseStatus::ApprovedIndex);
+    fetch_row.version = "16.0.0".to_owned();
+    fetch_row.origin_url = Url::parse("https://example.test/next/llms-16.0.txt").unwrap();
+    let mut embed_row = source(LicenseStatus::ApprovedIndex);
+    embed_row.version = "16.1.0".to_owned();
+    embed_row.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    for src in [&fetch_row, &embed_row] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    // Per-row divergence behind raw updates: one sibling at the fetch
+    // stage, the other at the embed stage.
+    set_row_status(&rig.conn, "16.0.0", "approved_fetch");
+    set_row_status(&rig.conn, "16.1.0", "approved_embed");
+
+    let mut fresh = source(LicenseStatus::ApprovedSnippet);
+    fresh.version = "17.0.0".to_owned();
+    fresh.origin_url = Url::parse("https://example.test/next/llms-17.txt").unwrap();
+    rig.store
+        .publish_generation(&fresh, &[chunk(0, None, "the v17 generation.")])
+        .unwrap();
+
+    let status: String = rig
+        .conn
+        .query_row(
+            "SELECT license_status FROM sources WHERE version = '17.0.0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "approved_fetch",
+        "the new row lands at the floor, not the record's status"
+    );
+}
+
 /// A source whose stored status turns terminal while it stays active —
 /// exactly the state a revoked registry entry leaves behind when the gate
 /// refuses before any publish runs — drops out of retrieval at query time

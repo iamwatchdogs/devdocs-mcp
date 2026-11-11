@@ -73,7 +73,10 @@ impl Store {
     /// refuses too, with no writes at all: the operator's reopen decision
     /// stands, and so does a stored below-index state on the published row
     /// itself — a stale record must not lift an operator's lower-tier grant.
-    /// Other stored non-terminal states keep the record's state, as before.
+    /// Other stored non-terminal states keep the record's state for an
+    /// existing row, as before; a new version row (no stored target) lands
+    /// at the library's current least-privileged stored state, read inside
+    /// the publish transaction, instead of the record's gate-time snapshot.
     pub fn publish_generation(
         &self,
         src: &devdocs_model::SourceRecord,
@@ -121,12 +124,11 @@ impl Store {
         }
 
         // A stale record must not lift an operator's below-index grant on
-        // the upsert target row itself.
-        if let Some(status) = stored_below_index_state(&tx, src)? {
-            return Err(StoreError::LicenseNotApproved { status });
-        }
-
-        let result = publish_inside(&tx, src, chunks);
+        // the upsert target row itself, and a new version row lands at the
+        // library's current approval floor
+        // (docs/implementation/07 §Atomic publish, point 2).
+        let record = gated_record(&tx, src, &stored)?;
+        let result = publish_inside(&tx, &record, chunks);
         match result {
             Ok(()) => tx.commit().map_err(StoreError::Sql),
             Err(error) => {
@@ -242,12 +244,43 @@ fn withdraw_rows(
     Ok(rows.len())
 }
 
+/// The row-scoped TOCTOU decisions, run after the library-wide rechecks:
+/// a stored below-index state on the upsert target row — keyed exactly
+/// like the publish upsert — refuses (a stale record must not lift an
+/// operator's lower-tier grant), and a target row that does not exist yet
+/// floors the record at the library's least-privileged stored state, so a
+/// mid-fetch operator advance cannot be stranded by the record's gate-time
+/// snapshot (docs/implementation/07 §Atomic publish, point 2). An existing
+/// target row keeps the record's status, and a fresh library (no stored
+/// states) leaves it untouched.
+fn gated_record(
+    tx: &rusqlite::Transaction<'_>,
+    src: &devdocs_model::SourceRecord,
+    stored: &[devdocs_model::LicenseStatus],
+) -> Result<devdocs_model::SourceRecord, StoreError> {
+    let target_row_status = stored_target_row_status(tx, src)?;
+    if let Some(status) = target_row_status
+        .filter(|state| state.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank())
+    {
+        return Err(StoreError::LicenseNotApproved { status });
+    }
+    let mut record = src.clone();
+    if target_row_status.is_none()
+        && let Some(floor) = devdocs_model::LicenseStatus::least_privileged(stored.iter().copied())
+    {
+        record.license_status = floor;
+    }
+    Ok(record)
+}
+
 /// The row-scoped TOCTOU check: reads the upsert target row's stored
-/// license state — keyed exactly like the publish upsert — and returns it
-/// when it sits below the index stage. A record that was in flight while
-/// the operator walked the row below the index stage must not overwrite
-/// that lower-tier grant on publish.
-fn stored_below_index_state(
+/// license state — keyed exactly like the publish upsert — at any rank;
+/// `None` when the row does not exist yet. The below-index refusal derives
+/// from it, and a `None` target lets the publish land a new version row at
+/// the library's current approval floor instead of the stale gate-time
+/// snapshot the record carries
+/// (docs/implementation/07 §Atomic publish, point 2).
+fn stored_target_row_status(
     tx: &rusqlite::Transaction<'_>,
     src: &devdocs_model::SourceRecord,
 ) -> Result<Option<devdocs_model::LicenseStatus>, StoreError> {
@@ -266,9 +299,7 @@ fn stored_below_index_state(
         )
         .optional()
         .map_err(StoreError::Sql)?;
-    Ok(raw
-        .and_then(|raw| devdocs_model::LicenseStatus::parse(&raw))
-        .filter(|state| state.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank()))
+    Ok(raw.and_then(|raw| devdocs_model::LicenseStatus::parse(&raw)))
 }
 
 /// Runs the whole publish sequence inside `tx`. A new version row inherits

@@ -302,6 +302,32 @@ fn stored_target_row_status(
     Ok(raw.and_then(|raw| devdocs_model::LicenseStatus::parse(&raw)))
 }
 
+/// The publish-side seed recheck: a configured expiry that has already
+/// passed refuses when the library records no date at all — the seed
+/// (`?9`) lands exactly when `MAX(license_expires_at)` over the library is
+/// NULL, so with any row dated the config date is inert and legal re-syncs
+/// keep working (docs/implementation/07 §Atomic publish, point 2).
+fn refuse_passed_configured_seed(
+    tx: &rusqlite::Transaction<'_>,
+    src: &devdocs_model::SourceRecord,
+) -> Result<(), StoreError> {
+    if let Some(seed) = src.license_expires_at.as_ref() {
+        let max: Option<String> = tx
+            .query_row(
+                "SELECT MAX(license_expires_at) FROM sources \
+                 WHERE library = ?1 COLLATE NOCASE",
+                params![src.library],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::Sql)?;
+        let today = time::OffsetDateTime::now_utc().date().to_string();
+        if max.is_none() && seed.as_str() <= today.as_str() {
+            return Err(StoreError::ConfiguredExpiryPassed { date: seed.clone() });
+        }
+    }
+    Ok(())
+}
+
 /// Runs the whole publish sequence inside `tx`. A new version row inherits
 /// the library's latest stored `license_expires_at`, a fresh library takes
 /// the configured expiry, and an operator-stamped date never clobbers
@@ -311,6 +337,7 @@ fn publish_inside(
     src: &devdocs_model::SourceRecord,
     chunks: &[NewChunk],
 ) -> Result<(), StoreError> {
+    refuse_passed_configured_seed(tx, src)?;
     let source_id: i64 = tx
         .query_row(
             "INSERT INTO sources(library, version, kind, origin_url, commit_sha, license, \

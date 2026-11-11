@@ -70,6 +70,17 @@ pub enum StoreError {
         status: LicenseStatus,
     },
 
+    /// The configured expiry about to seed the library has already passed
+    /// and the library records no date the publish could defer to: the
+    /// seed would stamp the lapsed date and the next read would sweep the
+    /// row to `expired` while the sync reported success
+    /// (docs/implementation/07 §Atomic publish, point 2).
+    #[error("configured expiry {date} has already passed")]
+    ConfiguredExpiryPassed {
+        /// The configured date that already passed.
+        date: String,
+    },
+
     /// The license state machine refused the requested transition
     /// (docs/implementation/07 §License gate). The stored state is
     /// unchanged and no audit line was written.

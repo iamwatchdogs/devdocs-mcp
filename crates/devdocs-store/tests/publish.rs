@@ -187,13 +187,13 @@ fn acme_record(expires: Option<&str>) -> SourceRecord {
 fn publish_stamps_the_configured_expiry() {
     let rig = rig();
     let mut record = source(LicenseStatus::ApprovedIndex);
-    record.license_expires_at = Some("2026-01-01".to_owned());
+    record.license_expires_at = Some("2999-01-01".to_owned());
     rig.store
         .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
         .unwrap();
     assert_eq!(
         row_expiry(&rig.conn, "next.js"),
-        Some(String::from("2026-01-01"))
+        Some(String::from("2999-01-01"))
     );
 }
 
@@ -283,13 +283,13 @@ fn publish_seeds_a_legacy_row_without_an_expiry() {
     let rig = seeded_rig("approved_index", None);
     rig.store
         .publish_generation(
-            &acme_record(Some("2026-01-01")),
+            &acme_record(Some("2999-01-01")),
             &[chunk(0, None, "A body to publish.")],
         )
         .unwrap();
     assert_eq!(
         row_expiry(&rig.conn, "acme"),
-        Some(String::from("2026-01-01"))
+        Some(String::from("2999-01-01"))
     );
 }
 
@@ -307,16 +307,20 @@ fn publish_leaves_the_expiry_unset_without_a_configured_date() {
     assert_eq!(row_expiry(&rig.conn, "next.js"), None);
 }
 
-/// A row published from a passed configured date lapses at the sweep: the
-/// sweep flips it to `expired` and appends one `auto:expiry` audit line
-/// (docs/implementation/07 §Expiry sweep).
+/// A recorded expiry that lapses flips the row at the sweep: the publish
+/// landed the future configured date, a raw backdate stands in for the
+/// passing of time, and the sweep flips it to `expired` with one
+/// `auto:expiry` audit line (docs/implementation/07 §Expiry sweep).
 #[test]
 fn a_configured_expiry_lapses_at_the_sweep() {
     let rig = rig();
     let mut record = source(LicenseStatus::ApprovedIndex);
-    record.license_expires_at = Some("2026-01-01".to_owned());
+    record.license_expires_at = Some("2999-01-01".to_owned());
     rig.store
         .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    rig.conn
+        .execute("UPDATE sources SET license_expires_at = '2026-01-01'", [])
         .unwrap();
 
     let flipped = rig.store.sweep_expired("2026-11-06T12:00:00Z").unwrap();
@@ -340,6 +344,74 @@ fn a_configured_expiry_lapses_at_the_sweep() {
         )
         .unwrap();
     assert_eq!(auto_expiry, 1, "one auto:expiry audit line");
+}
+
+/// A publish whose configured seed has already passed refuses when the
+/// library records no date: the seed would stamp the lapsed date and the
+/// next read would sweep the row to `expired` while the sync reported
+/// success. The refusal writes nothing
+/// (docs/implementation/07 §Atomic publish, point 2).
+#[test]
+fn a_passed_configured_seed_refuses_when_the_library_records_no_date() {
+    let rig = seeded_rig("approved_index", None);
+    let error = rig
+        .store
+        .publish_generation(
+            &acme_record(Some("2026-01-01")),
+            &[chunk(0, None, "a generation that never lands.")],
+        )
+        .unwrap_err();
+    match error {
+        devdocs_store::StoreError::ConfiguredExpiryPassed { date } => {
+            assert_eq!(date, "2026-01-01");
+        }
+        other => panic!("expected ConfiguredExpiryPassed, got {other:?}"),
+    }
+    let rows: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "the seeded row stays, nothing new is written");
+    let (status, active): (String, i64) = rig
+        .conn
+        .query_row(
+            "SELECT license_status, active FROM sources WHERE library = 'acme'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "approved_index");
+    assert_eq!(active, 0, "the refusal must not activate the row");
+    let chunks: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(chunks, 0, "the stale chunk set must not land");
+    assert_eq!(audit_count(&rig.conn), 0, "the refusal writes no audit");
+}
+
+/// A dated sibling keeps a passed configured seed inert: the library's
+/// `MAX(license_expires_at)` is non-NULL, so the seed can never land, the
+/// publish proceeds, and the new version row inherits the sibling's date
+/// (docs/implementation/07 §Atomic publish, point 2).
+#[test]
+fn a_dated_sibling_keeps_a_passed_configured_seed_inert() {
+    let rig = seeded_rig("approved_index", Some("2999-01-01"));
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("17.0.0");
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "the v17 generation.")])
+        .unwrap();
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "17.0.0"),
+        Some(String::from("2999-01-01")),
+        "the new row inherits the sibling's date, not the passed seed"
+    );
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "16.2.9"),
+        Some(String::from("2999-01-01")),
+        "the sibling date never clobbers"
+    );
 }
 
 /// A publish inserts the chunk rows and their symbol rows.

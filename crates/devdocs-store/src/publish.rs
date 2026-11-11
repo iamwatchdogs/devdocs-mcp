@@ -271,9 +271,9 @@ fn stored_below_index_state(
         .filter(|state| state.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank()))
 }
 
-/// Runs the whole publish sequence inside `tx`. The configured expiry
-/// seeds the row's `license_expires_at` only when the column is NULL, so
-/// an operator-stamped date never clobbers
+/// Runs the whole publish sequence inside `tx`. A new version row inherits
+/// the library's latest stored `license_expires_at`, a fresh library takes
+/// the configured expiry, and an operator-stamped date never clobbers
 /// (docs/implementation/07 §Atomic publish).
 fn publish_inside(
     tx: &rusqlite::Transaction<'_>,
@@ -284,7 +284,9 @@ fn publish_inside(
         .query_row(
             "INSERT INTO sources(library, version, kind, origin_url, commit_sha, license, \
              license_status, fetched_at, license_expires_at, active) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             COALESCE((SELECT MAX(license_expires_at) FROM sources \
+             WHERE library = ?1 COLLATE NOCASE), ?9), 0) \
              ON CONFLICT(library, version, kind, origin_url) DO UPDATE SET \
              commit_sha = excluded.commit_sha, license = excluded.license, \
              license_status = excluded.license_status, fetched_at = excluded.fetched_at, \

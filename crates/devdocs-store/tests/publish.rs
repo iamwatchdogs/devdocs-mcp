@@ -144,6 +144,17 @@ fn row_expiry(conn: &Connection, library: &str) -> Option<String> {
     .unwrap()
 }
 
+/// The `license_expires_at` column of the named library and version row.
+fn row_version_expiry(conn: &Connection, library: &str, version: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT license_expires_at FROM sources \
+         WHERE library = ?1 COLLATE NOCASE AND version = ?2",
+        rusqlite::params![library, version],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 /// A Rig whose store holds one seeded `acme` row at `status` with an
 /// optional expiry date (docs/implementation/07 §License gate fixture
 /// shape: the row lands behind the raw insert).
@@ -199,6 +210,28 @@ fn publish_never_clobbers_an_operator_stamped_expiry() {
         .unwrap();
     assert_eq!(
         row_expiry(&rig.conn, "acme"),
+        Some(String::from("2027-06-30"))
+    );
+}
+
+/// A publish of a new version inherits the library's operator-stamped
+/// expiry; the configured date seeds only a fresh library, so a later
+/// version never reverts to a lapsed configured date
+/// (docs/implementation/07 §License gate).
+#[test]
+fn publish_inherits_the_library_expiry_for_a_new_version() {
+    let rig = seeded_rig("approved_index", Some("2027-06-30"));
+    let mut record = acme_record(Some("2026-01-01"));
+    record.version = String::from("17.0.0");
+    rig.store
+        .publish_generation(&record, &[chunk(0, None, "A body to publish.")])
+        .unwrap();
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "17.0.0"),
+        Some(String::from("2027-06-30"))
+    );
+    assert_eq!(
+        row_version_expiry(&rig.conn, "acme", "16.2.9"),
         Some(String::from("2027-06-30"))
     );
 }

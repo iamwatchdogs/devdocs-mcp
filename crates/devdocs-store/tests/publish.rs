@@ -1157,26 +1157,26 @@ fn a_fresh_library_lands_the_record_at_its_own_status() {
 }
 
 /// Mixed non-terminal stored rows floor a new version row at the least
-/// privileged state: siblings at `approved_fetch` and `approved_embed`,
+/// privileged state: siblings at `approved_index` and `approved_embed`,
 /// and a new version record at the snippet stage, land the new row at
-/// `approved_fetch` — the floor, not the record and not the max.
+/// `approved_index` — the floor, not the record and not the max.
 #[test]
 fn a_new_version_lands_at_the_least_privileged_floor_of_mixed_siblings() {
     let rig = rig();
-    let mut fetch_row = source(LicenseStatus::ApprovedIndex);
-    fetch_row.version = "16.0.0".to_owned();
-    fetch_row.origin_url = Url::parse("https://example.test/next/llms-16.0.txt").unwrap();
+    let mut index_row = source(LicenseStatus::ApprovedIndex);
+    index_row.version = "16.0.0".to_owned();
+    index_row.origin_url = Url::parse("https://example.test/next/llms-16.0.txt").unwrap();
     let mut embed_row = source(LicenseStatus::ApprovedIndex);
     embed_row.version = "16.1.0".to_owned();
     embed_row.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
-    for src in [&fetch_row, &embed_row] {
+    for src in [&index_row, &embed_row] {
         rig.store
             .publish_generation(src, &[chunk(0, None, "a published generation.")])
             .unwrap();
     }
-    // Per-row divergence behind raw updates: one sibling at the fetch
+    // Per-row divergence behind raw updates: one sibling at the index
     // stage, the other at the embed stage.
-    set_row_status(&rig.conn, "16.0.0", "approved_fetch");
+    set_row_status(&rig.conn, "16.0.0", "approved_index");
     set_row_status(&rig.conn, "16.1.0", "approved_embed");
 
     let mut fresh = source(LicenseStatus::ApprovedSnippet);
@@ -1195,8 +1195,82 @@ fn a_new_version_lands_at_the_least_privileged_floor_of_mixed_siblings() {
         )
         .unwrap();
     assert_eq!(
-        status, "approved_fetch",
+        status, "approved_index",
         "the new row lands at the floor, not the record's status"
+    );
+}
+
+/// A new version into a uniform `approved_fetch` library: the floor is
+/// below the index stage, so the publish refuses — the store must not flip
+/// a source to `active` below `approved_index`. The refusal writes
+/// nothing (docs/implementation/09 §License gate enforcement points,
+/// point 2).
+#[test]
+fn a_floor_below_the_index_stage_refuses_a_new_version() {
+    let rig = seeded_rig("approved_fetch", None);
+    let mut fresh = acme_record(None);
+    fresh.version = String::from("17.0.0");
+    let audit_before = audit_count(&rig.conn);
+
+    let error = rig
+        .store
+        .publish_generation(&fresh, &[chunk(0, None, "a generation that never lands.")])
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::ApprovedFetch);
+
+    let rows: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "no new row lands");
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "the refusal writes no audit line"
+    );
+}
+
+/// The mixed fetch/embed sibling pair that once pinned the floor lands
+/// here as a refusal: the floor `approved_fetch` sits below the index
+/// stage, so the new version row never activates at a fetch-only stage
+/// (docs/implementation/09 §License gate enforcement points, point 2).
+#[test]
+fn a_mixed_floor_below_the_index_stage_refuses_a_new_version() {
+    let rig = rig();
+    let mut older = source(LicenseStatus::ApprovedIndex);
+    older.version = "16.0.0".to_owned();
+    older.origin_url = Url::parse("https://example.test/next/llms-16.0.txt").unwrap();
+    let mut younger = source(LicenseStatus::ApprovedIndex);
+    younger.version = "16.1.0".to_owned();
+    younger.origin_url = Url::parse("https://example.test/next/llms-16.1.txt").unwrap();
+    for src in [&older, &younger] {
+        rig.store
+            .publish_generation(src, &[chunk(0, None, "a published generation.")])
+            .unwrap();
+    }
+    set_row_status(&rig.conn, "16.0.0", "approved_fetch");
+    set_row_status(&rig.conn, "16.1.0", "approved_embed");
+
+    let mut fresh = source(LicenseStatus::ApprovedSnippet);
+    fresh.version = "17.0.0".to_owned();
+    fresh.origin_url = Url::parse("https://example.test/next/llms-17.txt").unwrap();
+    let audit_before = audit_count(&rig.conn);
+
+    let error = rig
+        .store
+        .publish_generation(&fresh, &[chunk(0, None, "a generation that never lands.")])
+        .unwrap_err();
+    assert_license_refused(error, LicenseStatus::ApprovedFetch);
+
+    let rows: i64 = rig
+        .conn
+        .query_row("SELECT count(*) FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "no new row lands");
+    assert_eq!(
+        audit_count(&rig.conn),
+        audit_before,
+        "the refusal writes no audit line"
     );
 }
 

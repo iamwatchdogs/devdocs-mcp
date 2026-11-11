@@ -78,7 +78,8 @@ impl Store {
     /// state), so a stale record can neither promote nor demote it; a new
     /// version row (no stored target) lands at the library's current
     /// least-privileged stored state, read inside the publish transaction,
-    /// instead of the record's gate-time snapshot.
+    /// instead of the record's gate-time snapshot — the floor lands only
+    /// when it allows indexing, and a floor below the index stage refuses.
     pub fn publish_generation(
         &self,
         src: &devdocs_model::SourceRecord,
@@ -252,7 +253,11 @@ fn withdraw_rows(
 /// operator's lower-tier grant), and a target row that does not exist yet
 /// floors the record at the library's least-privileged stored state, so a
 /// mid-fetch operator advance cannot be stranded by the record's gate-time
-/// snapshot (docs/implementation/07 §Atomic publish, point 2). The
+/// snapshot (docs/implementation/07 §Atomic publish, point 2) — and the
+/// floor lands only when it allows indexing: a floor below the index stage
+/// refuses, since the store must not flip a source to `active` below
+/// `approved_index` (docs/implementation/09 §License gate enforcement
+/// points, point 2). The
 /// record's status lands only on a new row: an existing target row keeps
 /// its stored status (the upsert's DO-UPDATE never touches
 /// `license_status`), and a fresh library (no stored states) leaves a new
@@ -272,6 +277,9 @@ fn gated_record(
     if target_row_status.is_none()
         && let Some(floor) = devdocs_model::LicenseStatus::least_privileged(stored.iter().copied())
     {
+        if floor.rank() < devdocs_model::LicenseStatus::ApprovedIndex.rank() {
+            return Err(StoreError::LicenseNotApproved { status: floor });
+        }
         record.license_status = floor;
     }
     Ok(record)

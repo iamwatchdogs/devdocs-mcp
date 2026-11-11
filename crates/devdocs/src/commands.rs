@@ -17,7 +17,8 @@ use devdocs_model::envelope::{
 };
 use devdocs_model::error::{Error, UpstreamCode};
 use devdocs_model::source::LicenseStatus;
-use devdocs_store::{MigrateOptions, Store, StoreError};
+use devdocs_retrieve::wiring;
+use devdocs_store::{Store, StoreError};
 use url::Url;
 
 /// The SKILL.md content `devdocs skill install` writes, verbatim from
@@ -34,72 +35,6 @@ pub const SKILL_MD: &str = concat!(
     "4. Exit 2 = no result; run `devdocs add <source> --version <V>` if the library is missing.\n",
     "Never cite a URL not present in a result. Trust `version_status`; do not mix versions.\n",
 );
-
-/// Opens the store at the configured path and runs the startup migration.
-/// The parent directory is created first: a fresh data root must not fail
-/// the first `add` or `list`.
-///
-/// # Errors
-/// [`Error::Upstream`] when the directory cannot be created, the store
-/// cannot open, or a migration fails.
-pub fn open_store(config: &Config, force: bool) -> Result<Arc<Store>, Error> {
-    let path = config.index.path.clone();
-    if let Some(parent) = path.parent() {
-        // The store's path checks expect a private data directory. Create a
-        // missing one with mode 0700 in the same call — including the
-        // intermediate ancestors. An existing directory keeps its mode; the
-        // store warns on drift at open (docs/implementation/09 §Storage).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent)
-                .map_err(|e| Error::Upstream {
-                    code: UpstreamCode::UpstreamError,
-                    detail: format!("cannot create the data directory {}: {e}", parent.display()),
-                })?;
-        }
-        #[cfg(not(unix))]
-        std::fs::create_dir_all(parent).map_err(|e| Error::Upstream {
-            code: UpstreamCode::UpstreamError,
-            detail: format!("cannot create the data directory {}: {e}", parent.display()),
-        })?;
-    }
-    let store = Store::open(&path).map_err(|e| map_store_error(&e))?;
-    store
-        .migrate_with_options(&MigrateOptions { force })
-        .map_err(|e| map_store_error(&e))?;
-    Ok(Arc::new(store))
-}
-
-/// Maps a store error onto the upstream code (exit 3).
-fn map_store_error(error: &devdocs_store::StoreError) -> Error {
-    Error::Upstream {
-        code: UpstreamCode::UpstreamError,
-        detail: error.to_string(),
-    }
-}
-
-/// Maps a retrieval error onto the CLI error model
-/// (docs/implementation/08 §Error codes): misses exit 2 with their
-/// `miss_reason`, broken refs and cursors exit 1, drift and store
-/// failures exit 3.
-fn map_retrieve_error(error: devdocs_retrieve::RetrieveError) -> Error {
-    match error {
-        // defensive: a store failure after the index opens is only
-        // reachable through a corrupted database, which the store-layer
-        // tests cover; this arm keeps the mapping total.
-        devdocs_retrieve::RetrieveError::Store(e) => map_store_error(&e),
-        devdocs_retrieve::RetrieveError::Miss(reason) => Error::NoResult { reason },
-        devdocs_retrieve::RetrieveError::Usage(e) => Error::Usage(e.to_string()),
-        devdocs_retrieve::RetrieveError::HashMismatch(detail) => Error::Upstream {
-            code: UpstreamCode::HashMismatch,
-            detail,
-        },
-    }
-}
 
 /// The current directory for the resolver's lockfile walk; a vanished
 /// working directory is an upstream failure, not a usage error.
@@ -127,7 +62,7 @@ pub fn run_search(
     limit: Option<u32>,
     cursor: Option<u64>,
 ) -> Result<ResultEnvelope, Error> {
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     let plan = devdocs_retrieve::Plan {
         limit: limit.unwrap_or(config.search.limit_default),
         max_tokens: config.search.max_tokens_default,
@@ -137,8 +72,8 @@ pub fn run_search(
     let query = devdocs_retrieve::Query::new(query, library, version);
     let project = project_dir()?;
     let mut envelope = devdocs_retrieve::serve::search(&store, &query, &project, &plan)
-        .map_err(map_retrieve_error)?;
-    attribute_results(config, &mut envelope);
+        .map_err(wiring::map_retrieve_error)?;
+    wiring::attribute_results(config, &mut envelope);
     Ok(envelope)
 }
 
@@ -188,7 +123,7 @@ pub fn run_symbol(
     cursor: Option<u64>,
 ) -> Result<ResultEnvelope, Error> {
     let (library, version) = split_symbol_target(target)?;
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     let plan = devdocs_retrieve::Plan {
         limit: config.search.limit_default,
         max_tokens: config.search.max_tokens_default,
@@ -196,8 +131,8 @@ pub fn run_symbol(
         cursor,
     };
     let mut envelope = devdocs_retrieve::serve::symbol(&store, library, version, symbol, &plan)
-        .map_err(map_retrieve_error)?;
-    attribute_results(config, &mut envelope);
+        .map_err(wiring::map_retrieve_error)?;
+    wiring::attribute_results(config, &mut envelope);
     Ok(envelope)
 }
 
@@ -211,15 +146,15 @@ pub fn run_open(
     doc_ref: &str,
     cursor: Option<u64>,
 ) -> Result<ResultEnvelope, Error> {
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     let plan = devdocs_retrieve::Plan {
         max_tokens: config.search.max_tokens_default,
         cursor,
         ..devdocs_retrieve::Plan::defaults()
     };
-    let mut envelope =
-        devdocs_retrieve::serve::open(&store, doc_ref, &plan).map_err(map_retrieve_error)?;
-    attribute_results(config, &mut envelope);
+    let mut envelope = devdocs_retrieve::serve::open(&store, doc_ref, &plan)
+        .map_err(wiring::map_retrieve_error)?;
+    wiring::attribute_results(config, &mut envelope);
     Ok(envelope)
 }
 
@@ -231,33 +166,11 @@ pub fn run_open(
 /// [`Error::Usage`] for a malformed ref, [`Error::NoResult`] on the
 /// cold-miss paths, [`Error::Upstream`] for store failures.
 pub fn run_verify(config: &Config, doc_ref: &str) -> Result<ResultEnvelope, Error> {
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     let mut envelope =
-        devdocs_retrieve::serve::verify(&store, doc_ref).map_err(map_retrieve_error)?;
-    attribute_results(config, &mut envelope);
+        devdocs_retrieve::serve::verify(&store, doc_ref).map_err(wiring::map_retrieve_error)?;
+    wiring::attribute_results(config, &mut envelope);
     Ok(envelope)
-}
-
-/// Joins the declarative config attribution onto the served items by
-/// library (docs/implementation/07 §License gate): the registry entry name
-/// is the published library identity, so the `[sources.<name>].attribution`
-/// line fills `ResultItem.attribution`. An item that already carries an
-/// attribution keeps it; an item whose ref parses to no registry entry
-/// stays unattributed.
-fn attribute_results(config: &Config, envelope: &mut ResultEnvelope) {
-    for item in &mut envelope.results {
-        if item.attribution.is_some() {
-            continue;
-        }
-        let Some(parsed) = devdocs_model::docref::ParsedRef::parse(&item.doc_ref) else {
-            continue;
-        };
-        item.attribution = config
-            .sources
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(&parsed.library))
-            .and_then(|(_, entry)| entry.attribution.clone());
-    }
 }
 
 /// Runs `devdocs versions <library>`.
@@ -269,8 +182,8 @@ pub fn run_versions(
     config: &Config,
     library: &str,
 ) -> Result<ResultEnvelope<SourceSummary>, Error> {
-    let store = open_store(config, false)?;
-    devdocs_retrieve::serve::versions(&store, library).map_err(map_retrieve_error)
+    let store = wiring::open_store(config, false)?;
+    devdocs_retrieve::serve::versions(&store, library).map_err(wiring::map_retrieve_error)
 }
 
 /// A gate refusal carrying a terminal status (`denied`, `expired`,
@@ -379,7 +292,7 @@ pub fn run_add(
                 "git sources require --version (a tag or a commit SHA)".to_owned(),
             ));
         };
-        let store = open_store(config, false)?;
+        let store = wiring::open_store(config, false)?;
         let grant = match gate_fetch(&store, config, &index_url) {
             Ok(grant) => grant,
             Err(error) => {
@@ -390,7 +303,7 @@ pub fn run_add(
         return run_add_git(config, &store, &index_url, &grant.name, pin);
     }
 
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     let grant = match gate_fetch(&store, config, &index_url) {
         Ok(grant) => grant,
         Err(error) => {
@@ -524,11 +437,13 @@ fn add_report(outcome: &devdocs_ingest::IngestOutcome) -> Result<serde_json::Val
 /// # Errors
 /// [`Error::Upstream`] when the store cannot open or the query fails.
 pub fn run_list(config: &Config) -> Result<ResultEnvelope<SourceSummary>, Error> {
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     store
         .sweep_expired(&devdocs_model::now_rfc3339())
-        .map_err(|e| map_store_error(&e))?;
-    let results = store.list_sources().map_err(|e| map_store_error(&e))?;
+        .map_err(|e| wiring::map_store_error(&e))?;
+    let results = store
+        .list_sources()
+        .map_err(|e| wiring::map_store_error(&e))?;
     Ok(ResultEnvelope {
         results,
         truncated: false,
@@ -560,14 +475,14 @@ pub fn run_source_approve(
 ) -> Result<serde_json::Value, Error> {
     let to = parse_stage(stage)?;
     let expires = parse_expires(expires)?;
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     // The sweep runs before the transition read: a source whose expiry has
     // passed flips to the absorbing `expired` first and cannot be moved
     // forward or re-dated without the flip on the audit trail
     // (docs/implementation/07 §Expiry sweep).
     store
         .sweep_expired(&devdocs_model::now_rfc3339())
-        .map_err(|e| map_store_error(&e))?;
+        .map_err(|e| wiring::map_store_error(&e))?;
     let from = least_privileged_state(&store, name)?;
     let rows = store
         .transition_license(
@@ -602,12 +517,12 @@ pub fn run_source_deny(
     note: Option<&str>,
     operator: Option<&str>,
 ) -> Result<serde_json::Value, Error> {
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     // The sweep runs before the transition read, same as `source approve`
     // (docs/implementation/07 §Expiry sweep).
     store
         .sweep_expired(&devdocs_model::now_rfc3339())
-        .map_err(|e| map_store_error(&e))?;
+        .map_err(|e| wiring::map_store_error(&e))?;
     let from = least_privileged_state(&store, name)?;
     let rows = store
         .transition_license(
@@ -641,11 +556,13 @@ pub fn run_source_deny(
 /// # Errors
 /// [`Error::Upstream`] when the store cannot open or the read fails.
 pub fn run_source_list(config: &Config) -> Result<SourceListEnvelope, Error> {
-    let store = open_store(config, false)?;
+    let store = wiring::open_store(config, false)?;
     store
         .sweep_expired(&devdocs_model::now_rfc3339())
-        .map_err(|e| map_store_error(&e))?;
-    let rows = store.list_sources().map_err(|e| map_store_error(&e))?;
+        .map_err(|e| wiring::map_store_error(&e))?;
+    let rows = store
+        .list_sources()
+        .map_err(|e| wiring::map_store_error(&e))?;
     Ok(SourceListEnvelope {
         results: config
             .sources
@@ -730,7 +647,7 @@ fn parse_expires(expires: Option<&str>) -> Result<Option<String>, Error> {
 fn least_privileged_state(store: &Store, name: &str) -> Result<LicenseStatus, Error> {
     let states = store
         .license_states(name)
-        .map_err(|e| map_store_error(&e))?;
+        .map_err(|e| wiring::map_store_error(&e))?;
     LicenseStatus::least_privileged(states).ok_or_else(|| {
         Error::Usage(format!(
             "no indexed source for library {name:?}; run: devdocs source list"
@@ -745,7 +662,7 @@ fn map_license_refusal(error: StoreError) -> Error {
         StoreError::InvalidTransition { .. }
         | StoreError::MissingNote
         | StoreError::UnknownLibrary { .. } => Error::Usage(error.to_string()),
-        other => map_store_error(&other),
+        other => wiring::map_store_error(&other),
     }
 }
 
@@ -778,10 +695,12 @@ fn transition_report(
 /// a destructive pending migration without `--force` maps to the same
 /// upstream code with a hint naming `--force`.
 pub fn run_db_migrate(config: &Config, force: bool) -> Result<serde_json::Value, Error> {
-    let store = open_store(config, force)?;
-    // The startup migration inside open_store already ran; report the
+    let store = wiring::open_store(config, force)?;
+    // The startup migration inside wiring::open_store already ran; report the
     // schema state.
-    let version = store.user_version().map_err(|e| map_store_error(&e))?;
+    let version = store
+        .user_version()
+        .map_err(|e| wiring::map_store_error(&e))?;
     Ok(serde_json::json!({
         "schema_version": version,
         "forced": force,
@@ -809,7 +728,7 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
                 "LICENSE_MISMATCH: library `{actual}` does not match the registry entry `{expected}`"
             ),
         },
-        E::Store(store) => map_store_error(&store),
+        E::Store(store) => wiring::map_store_error(&store),
         E::LlmsTxtEmpty { url } => Error::Upstream {
             code: UpstreamCode::UpstreamError,
             detail: format!("LLMS_TXT_EMPTY: no link lines in {url}"),

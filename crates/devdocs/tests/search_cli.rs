@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{indexed_doc, indexed_env, output};
+use common::{indexed_doc, indexed_env, indexed_env_at_index, output};
 use devdocs_model::ResultEnvelope;
 use serde_json::Value;
 
@@ -101,7 +101,7 @@ fn cold_misses_exit_two() {
 }
 
 /// A revoked source (revoked through the store transition, no re-sync)
-/// drops out of `search` silently — the terminal-license clause keeps the
+/// drops out of `search` silently — the unserved-license clause keeps the
 /// rows out of the rungs — while the direct-name paths name the refusal:
 /// a `--library` search and an `open` by ref answer `NOT_AVAILABLE` with
 /// `miss_reason: license_blocked` (docs/09 enforcement point 5).
@@ -194,6 +194,52 @@ fn an_expired_source_drops_out_at_the_next_query() {
     let (code, stdout, stderr) = output(env.cmd(), &["versions", "acme", "--json", cfg[0], cfg[1]]);
     assert_eq!(code, 0, "stdout: {stdout} stderr: {stderr}");
     assert!(stdout.contains("expired"), "stdout: {stdout}");
+}
+
+/// A source the operator denies and reopens to `pending_review` answers a
+/// plain `search` with the soft miss (exit 2) — the reopen leaves the row
+/// active, so the unserved-license clause is what keeps it out of the
+/// rungs — while `source list` still reports the row, under review
+/// (docs/implementation/07 §License gate, the `pending_review` row).
+#[test]
+fn a_source_under_review_misses_search_while_source_list_still_shows_it() {
+    let (env, config) = indexed_env_at_index();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    for transition in [
+        vec!["source", "deny", "acme", "--note", "robots disallow"],
+        vec![
+            "source",
+            "approve",
+            "acme",
+            "pending_review",
+            "--note",
+            "licensing question",
+        ],
+    ] {
+        let args: Vec<&str> = transition
+            .iter()
+            .copied()
+            .chain(cfg.iter().copied())
+            .collect();
+        let (code, stdout, stderr) = output(env.cmd(), &args);
+        assert_eq!(code, 0, "transition failed: {stdout} {stderr}");
+    }
+
+    // Plain search stays silent: exit 2 with the soft miss.
+    let (code, stdout, stderr) = output(env.cmd(), &["search", "client", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["miss_reason"], "low_confidence");
+
+    // The discovery surface still lists the row, under review and active.
+    let (code, stdout, stderr) = output(env.cmd(), &["source", "list", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    let entry = &list["results"][0];
+    assert_eq!(entry["status"], "pending_review");
+    let version = &entry["versions"][0];
+    assert_eq!(version["status"], "pending_review");
+    assert_eq!(version["active"], Value::Bool(true));
 }
 
 /// The config `attribution` line joins the served items by library: the

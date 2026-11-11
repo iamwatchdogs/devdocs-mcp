@@ -561,7 +561,7 @@ fn migration_rung(
 /// license-refused source (`expired`, `revoked`, `denied`) names the
 /// refusal instead (docs/implementation/09 §License gate enforcement
 /// points, point 5); plain `search` stays silent for terminal sources —
-/// the store's terminal-license clause already keeps them out of the
+/// the store's unserved-license clause already keeps them out of the
 /// rungs. The store failure surfaces — the miss classification must not
 /// swallow it (`.agents/instructions/` error-handling: no swallowed
 /// errors).

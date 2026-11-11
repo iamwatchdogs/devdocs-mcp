@@ -506,6 +506,93 @@ fn open_serves_an_empty_page_below_the_snippet_stage() {
     assert_eq!(served.content_hash, "07".repeat(32));
 }
 
+/// Seeds `acme` (one active `approved_index` source with a routing chunk)
+/// plus one active `other` source at the fetch stage with a chunk the
+/// same query matches: the shape that separates "the under-review row
+/// stops serving" from "everything stops serving".
+fn seeded_review_with_fetch_sibling() -> (tempfile::TempDir, Store) {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated_and(&dir.path().join("docs.db"), |conn| {
+        let current = devdocs_testkit::seed_source(conn, "acme", true)?;
+        devdocs_testkit::seed_chunk(
+            conn,
+            current,
+            0,
+            "[\"Routing\"]",
+            None,
+            "The routing layer maps requests for the under-review source.",
+        )?;
+        conn.execute(
+            "INSERT INTO sources(library, version, kind, origin_url, license_status, fetched_at, active) \
+             VALUES ('other', '1.0.0', 'llms_txt', 'https://example.test/other', 'approved_fetch', \
+             '2026-01-01T00:00:00Z', 1)",
+            [],
+        )?;
+        let sibling = conn.last_insert_rowid();
+        devdocs_testkit::seed_chunk(
+            conn,
+            sibling,
+            0,
+            "[\"Routing\"]",
+            None,
+            "The routing layer maps requests for the fetch-stage sibling.",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    (dir, store)
+}
+
+/// A source the operator denies and reopens to `pending_review` never
+/// serves content again — the reopen leaves the row active, so only the
+/// store's unserved-license clause keeps it out: its chunk misses search
+/// while the active `approved_fetch` sibling still serves a metadata-only
+/// hit, and `open` by ref misses (docs/implementation/07 §License gate,
+/// the `pending_review` row).
+#[test]
+fn a_source_under_review_misses_while_an_approved_sibling_serves() {
+    let (dir, store) = seeded_review_with_fetch_sibling();
+    store
+        .transition_license(
+            "acme",
+            devdocs_model::LicenseStatus::Denied,
+            "op",
+            Some("robots disallow"),
+            None,
+        )
+        .unwrap();
+    store
+        .transition_license(
+            "acme",
+            devdocs_model::LicenseStatus::PendingReview,
+            "op",
+            Some("licensing question"),
+            None,
+        )
+        .unwrap();
+
+    let query = Query::new("routing", None, None);
+    let envelope = search(&store, &query, dir.path(), &Plan::defaults()).unwrap();
+    assert_eq!(
+        envelope.results.len(),
+        1,
+        "only the fetch-stage sibling serves: {envelope:?}"
+    );
+    let served = envelope.results.first().unwrap();
+    assert_eq!(served.served_version, "1.0.0");
+    assert_eq!(served.license_status, "approved_fetch");
+    assert_eq!(
+        served.snippet, "",
+        "below the snippet stage the hit serves metadata only"
+    );
+
+    let error = open(&store, "docs://acme/v1.0.0/routing", &Plan::defaults()).unwrap_err();
+    assert!(
+        matches!(error, RetrieveError::Miss(MissReason::LowConfidence)),
+        "the under-review source must miss, got {error}"
+    );
+}
+
 /// A symbol-rung store failure surfaces as a store failure through both
 /// the search pipeline and the exact lookup — a corrupted index must not
 /// masquerade as a miss.

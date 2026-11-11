@@ -1,0 +1,7 @@
+{
+  "minTokens": 50,
+  "threshold": 3,
+  "reporters": ["console"],
+  "format": ["rust"],
+  "ignore": ["**/tests/**", "**/target/**"]
+}

@@ -1,5 +1,6 @@
 # Hooks, CI, and agent shells run without the user's profile: rustup installs
-# cargo, rustup, and the binstall tools under ~/.cargo/bin, so prepend it once
+# cargo, rustup, and the binstall tools under ~/.cargo/bin, and pipx installs
+# the lizard and opengrep scan tools under ~/.local/bin, so prepend both once
 # for every recipe instead of per command.
 home_dir := if env_var_or_default("HOME", "") != "" {
     env_var("HOME")
@@ -8,7 +9,7 @@ home_dir := if env_var_or_default("HOME", "") != "" {
 } else {
     error("HOME and USERPROFILE are not set")
 }
-export PATH := home_dir / ".cargo" / "bin" + ":" + env_var_or_default("PATH", "")
+export PATH := home_dir / ".cargo" / "bin" + ":" + home_dir / ".local" / "bin" + ":" + env_var_or_default("PATH", "")
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -90,11 +91,59 @@ codacy:
         CODACY_DISABLE_UPDATE_CHECK=1 codacy-analysis analyze --no-log --tool Semgrep --diff origin/main; \
     fi
 
-trivy:
-    @if ! command -v trivy >/dev/null 2>&1; then \
-        echo "trivy not installed (optional gate, skipped): pnpm i -g trivy"; \
+# Local SAST scan with the committed rule set in .config/opengrep-rules:
+# no rules download, so the gate runs offline. Findings fail. Not part of
+# `just ci` and not a CI job — CodeQL owns SAST in CI and the Codacy PR
+# check runs the same engine over the diff (gap named per the
+# agent-ready-repo contract).
+opengrep:
+    @if command -v opengrep >/dev/null 2>&1; then \
+        opengrep scan --error --config .config/opengrep-rules .; \
     else \
-        trivy fs . --scanners vuln,secret,misconfig --skip-dirs target; \
+        echo "opengrep not installed: curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/main/install.sh | bash"; \
+        exit 1; \
+    fi
+
+# Filesystem scan: vulnerable Cargo.lock dependencies and hard-coded
+# secrets. HIGH or CRITICAL findings fail. Not part of `just ci` and not
+# a CI job — the dependency review workflow gates advisories on PRs (gap
+# named per the agent-ready-repo contract).
+trivy:
+    @if command -v trivy >/dev/null 2>&1; then \
+        trivy fs . --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --skip-dirs target; \
+    else \
+        echo "trivy not installed: brew install trivy"; \
+        exit 1; \
+    fi
+
+# Complexity gate over the Rust crates. A violation fails. Limits start
+# above the current worst function (CCN 24, 103 lines) so the gate starts
+# green; tighten them as the outliers refactor. The Rust lexer merges
+# functions that lack a separating blank line, so keep one blank line
+# between test functions (crates/devdocs-store/src/license/tests/mod.rs
+# does). Not part of `just ci` and not a CI job — Codacy lists Lizard as a
+# non-gating complexity metric on PRs (gap named per the agent-ready-repo
+# contract).
+lizard:
+    @if command -v lizard >/dev/null 2>&1; then \
+        lizard crates -l rust -C 25 -L 150; \
+    else \
+        echo "lizard not installed: pipx install lizard"; \
+        exit 1; \
+    fi
+
+# Copy-paste detection over the Rust crates. The .jscpd.json config owns
+# the flags: rust format, 50-token minimum clone, tests excluded (fixture
+# repetition is expected there), and a 3% clone-ratio threshold against a
+# 1.5% baseline. A ratio above the threshold fails. Not part of `just ci`
+# and not a CI job — Codacy runs jscpd as a non-gating metric on PRs (gap
+# named per the agent-ready-repo contract).
+jscpd:
+    @if command -v jscpd >/dev/null 2>&1; then \
+        jscpd crates; \
+    else \
+        echo "jscpd not installed: brew install jscpd (or npm i -g jscpd)"; \
+        exit 1; \
     fi
 
 # Unused dependency scan.
@@ -140,19 +189,6 @@ features:
 eval:
     cargo build --locked -p devdocs
     cargo run -p devdocs-eval -- run pilot
-
-# Copy-paste detection across non-Rust sources.
-#
-# Owned by Codacy — the cloud app runs jscpd via a Codacy tool integration.
-# No longer run as a local pre-push gate. If a Codacy jscpd tool is registered
-# later, its config would live in .codacy/codacy.config.json.
-
-# Trivy filesystem scan for dependency and config findings.
-#
-# Owned by Codacy — the cloud app runs Trivy as a Codacy tool with six
-# configured patterns (Trivy_malicious_packages, Trivy_secret,
-# Trivy_vulnerability_critical/high/medium/minor) in
-# .codacy/codacy.config.json. No local recipe or CI job.
 
 # Public API break detection between releases.
 semver:

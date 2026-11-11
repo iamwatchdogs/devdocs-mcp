@@ -73,10 +73,12 @@ impl Store {
     /// refuses too, with no writes at all: the operator's reopen decision
     /// stands, and so does a stored below-index state on the published row
     /// itself — a stale record must not lift an operator's lower-tier grant.
-    /// Other stored non-terminal states keep the record's state for an
-    /// existing row, as before; a new version row (no stored target) lands
-    /// at the library's current least-privileged stored state, read inside
-    /// the publish transaction, instead of the record's gate-time snapshot.
+    /// The stored status always survives a republish: once the row exists
+    /// the store is authoritative (docs/implementation/06 §License-gate
+    /// state), so a stale record can neither promote nor demote it; a new
+    /// version row (no stored target) lands at the library's current
+    /// least-privileged stored state, read inside the publish transaction,
+    /// instead of the record's gate-time snapshot.
     pub fn publish_generation(
         &self,
         src: &devdocs_model::SourceRecord,
@@ -250,9 +252,11 @@ fn withdraw_rows(
 /// operator's lower-tier grant), and a target row that does not exist yet
 /// floors the record at the library's least-privileged stored state, so a
 /// mid-fetch operator advance cannot be stranded by the record's gate-time
-/// snapshot (docs/implementation/07 §Atomic publish, point 2). An existing
-/// target row keeps the record's status, and a fresh library (no stored
-/// states) leaves it untouched.
+/// snapshot (docs/implementation/07 §Atomic publish, point 2). The
+/// record's status lands only on a new row: an existing target row keeps
+/// its stored status (the upsert's DO-UPDATE never touches
+/// `license_status`), and a fresh library (no stored states) leaves a new
+/// row at the record's status.
 fn gated_record(
     tx: &rusqlite::Transaction<'_>,
     src: &devdocs_model::SourceRecord,
@@ -347,7 +351,7 @@ fn publish_inside(
              WHERE library = ?1 COLLATE NOCASE), ?9), 0) \
              ON CONFLICT(library, version, kind, origin_url) DO UPDATE SET \
              commit_sha = excluded.commit_sha, license = excluded.license, \
-             license_status = excluded.license_status, fetched_at = excluded.fetched_at, \
+             fetched_at = excluded.fetched_at, \
              license_expires_at = COALESCE(license_expires_at, excluded.license_expires_at), \
              active = 0 \
              RETURNING source_id",

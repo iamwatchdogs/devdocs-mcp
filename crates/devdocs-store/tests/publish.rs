@@ -913,11 +913,12 @@ fn publish_refuses_when_the_stored_state_turned_below_index() {
     );
 }
 
-/// The inverse order: with the stored state non-terminal, the publish
-/// keeps its existing behavior — the record's state wins — and a deny
-/// that lands afterward still transitions on top of it.
+/// The inverse order: with the stored state non-terminal, the republish
+/// keeps the stored status — the store is authoritative once the row
+/// exists, so a stale record can neither promote nor demote it — and a
+/// deny that lands afterward still transitions on top of it.
 #[test]
-fn publish_wins_while_the_stored_state_is_non_terminal() {
+fn publish_keeps_the_stored_status_while_it_is_non_terminal() {
     let rig = rig();
     rig.store
         .publish_generation(
@@ -927,7 +928,7 @@ fn publish_wins_while_the_stored_state_is_non_terminal() {
         .unwrap();
 
     // A stale record at the snippet stage republishes over the
-    // non-terminal index-stage stored state, as before.
+    // non-terminal index-stage stored state; the stored status survives.
     rig.store
         .publish_generation(
             &source(LicenseStatus::ApprovedSnippet),
@@ -942,7 +943,7 @@ fn publish_wins_while_the_stored_state_is_non_terminal() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(status, "approved_snippet");
+    assert_eq!(status, "approved_index", "the stored status survives");
     assert_eq!(active, 1);
 
     // A deny landing after the publish still transitions the library.
@@ -1021,11 +1022,11 @@ fn publish_refuses_when_any_stored_row_is_terminal() {
     );
 }
 
-/// Mixed non-terminal stored rows: the publish proceeds with its existing
-/// behavior — the record's state wins for the matching row and the other
-/// row keeps its own state.
+/// Mixed non-terminal stored rows: the publish proceeds — the republished
+/// row activates — and both stored statuses persist; the record's state
+/// never overwrites them.
 #[test]
-fn publish_proceeds_with_mixed_non_terminal_stored_rows() {
+fn publish_proceeds_and_the_stored_statuses_persist() {
     let rig = rig();
     let mut older = source(LicenseStatus::ApprovedIndex);
     older.version = "16.1.0".to_owned();
@@ -1063,9 +1064,11 @@ fn publish_proceeds_with_mixed_non_terminal_stored_rows() {
             // The sibling row keeps its state and stays active from its own
             // earlier publish.
             ("16.1.0".to_owned(), "approved_fetch".to_owned(), 1),
-            ("16.2.9".to_owned(), "approved_snippet".to_owned(), 1),
+            // The republished row keeps its own stored status while the
+            // stale snippet-stage record lands on top of it.
+            ("16.2.9".to_owned(), "approved_index".to_owned(), 1),
         ],
-        "the republished row activates, the sibling row keeps its state"
+        "the republished row activates, both stored statuses persist"
     );
 }
 

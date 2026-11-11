@@ -55,6 +55,18 @@ pre-push:
       # config is absent, findings fail the push. Mirrors the Opengrep
       # patterns of the Codacy PR check (see docs/implementation/03).
       run: just codacy
+    # The four scan gates below fail on findings and fail loudly with an
+    # install hint when the tool is absent. Each recipe names the CI job
+    # that covers the same class on CI/PRs (docs/implementation/03 §Git
+    # hooks), and each owns its flags and config in the justfile.
+    opengrep:
+      run: just opengrep
+    trivy:
+      run: just trivy
+    lizard:
+      run: just lizard
+    jscpd:
+      run: just jscpd
 
 pre-merge-commit:
   commands:

@@ -1348,6 +1348,59 @@ fn sync_stamps_the_configured_expiry_and_approve_overrides_it() {
     );
 }
 
+/// A registered source whose configured expiry has already passed refuses
+/// the first sync at the bootstrap guard: `add` exits 3 with
+/// `FETCH_BLOCKED` and names the `sources.<name>.expires` key, and the
+/// refused sync leaves no source row behind
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_lapsed_configured_expiry_refuses_the_first_sync() {
+    let env = Env::new();
+    let fixture = write_fixture(&env);
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.acme]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "expires = \"2026-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("lapsed.db");
+    let cfg = [
+        "--config",
+        config.to_str().expect("config path"),
+        "--db",
+        db.to_str().expect("db path"),
+    ];
+
+    let (code, stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
+    assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("sources.acme.expires"),
+        "the refusal names the config key: {stderr}"
+    );
+    assert!(stdout.trim().is_empty(), "stdout stays clean: {stdout}");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["source", "list", "--json", cfg[0], cfg[1], cfg[2], cfg[3]],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert!(
+        list["results"][0]["versions"]
+            .as_array()
+            .expect("versions")
+            .is_empty(),
+        "a refused first sync must not leave a source row: {stdout}"
+    );
+}
+
 /// The human `source list` output without `--json`: one line per
 /// configured source joining the config with the store state. The CR-3
 /// semantics hold on the human path too: an indexed library shows the

@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-07T06:33:00Z
+timestamp: 2026-11-12T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -147,9 +147,11 @@ Tests: transition table (every legal and illegal move). The revoke-then-query dr
 
 ## M8 — MCP adapter (2 days)
 
-1. rmcp server in `devdocs-mcp` with the three tools and annotations from [08](08-retrieval-interfaces.md).
-2. Contract tests: in-process rmcp client calls the server. Results must equal the CLI results for the same queries against the same DB (the identical-results gate).
-3. `devdocs mcp --transport stdio` runs the server. Test with a spawned process speaking JSON-RPC over stdio.
+All three steps landed on 2026-11-12. The settled shape lives in [08](08-retrieval-interfaces.md) §MCP adapter. The workspace declares rmcp 3.8.0 and the lockfile resolves 3.9.0. The reason: an exact 3.8.0 pin fails `cargo deny` on RUSTSEC-2026-0462.
+
+1. Landed, with one extension. The shared command wiring (store open, error maps, attribution) moved into `devdocs-retrieve::wiring`, so the CLI commands and the MCP tools run the same steps. The server in `devdocs-mcp` carries the three tools, the four annotations, and the instructions text.
+2. Landed, with one extension. The identical-results gate runs on a 50-query corpus in `crates/devdocs/tests/mcp_contract.rs`. It spawns the CLI binary, so it lives in the `devdocs` crate, not in `devdocs-mcp`. The in-process protocol tests (schemas, annotations, instructions, error envelopes, the byte ceiling) live in `crates/devdocs-mcp/tests/schema.rs`.
+3. Landed. `devdocs mcp --transport stdio` serves JSON-RPC on stdout. `crates/devdocs/tests/mcp_stdio.rs` spawns the binary and holds the stdout-purity and startup-migration tests.
 
 ## M9 — Packaging (2 days)
 

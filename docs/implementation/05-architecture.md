@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-11-11T00:00:00Z
+timestamp: 2026-11-12T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -16,7 +16,7 @@ Four layers, one core, three thin adapters (research: architecture.md). The crat
 
 ```text
 ┌────────────────────────────────────────────────────────────┐
-│ L4 SERVE     devdocs (CLI)      devdocs-mcp (2–3 tools)    │
+│ L4 SERVE     devdocs (CLI)      devdocs-mcp (3 tools)      │
 │              thin wrappers; identical results per query     │
 ├────────────────────────────────────────────────────────────┤
 │ L3 RETRIEVE  devdocs-retrieve                               │
@@ -39,17 +39,20 @@ The corpus is the product. The adapters are swappable (research: architecture.md
 ## Crate graph
 
 ```text
-                 devdocs (bin)
-                /   |   \      \
-               v    v    v      v
-        devdocs-mcp  devdocs-retrieve  devdocs-ingest  devdocs-eval (bin)
-               \        |             /        |
-                v       v            v         v
-              devdocs-store ←—— devdocs-model ——→ (external types only)
-                                 (devdocs-testkit is a dev-dependency)
+devdocs (bin)      → devdocs-mcp, devdocs-retrieve, devdocs-ingest, devdocs-eval (bin),
+                     devdocs-model, devdocs-store
+devdocs-mcp        → devdocs-retrieve, devdocs-model, devdocs-store
+devdocs-eval (bin) → devdocs-retrieve, devdocs-model, devdocs-store
+devdocs-retrieve   → devdocs-model, devdocs-store
+devdocs-ingest     → devdocs-model, devdocs-store
+devdocs-store      → devdocs-model
+devdocs-model      → (external types only)
+(devdocs-testkit is a dev-dependency on model and store)
 ```
 
-Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
+The list draws the `[dependencies]` edges of the manifests. Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
+
+The `wiring` module of `devdocs-retrieve` holds the steps the edges share: the store open, the error maps, and the attribution step. The CLI commands and the MCP tools call it, so both edges serve identical envelopes ([08](08-retrieval-interfaces.md) §MCP adapter).
 
 The `context-chunker` and `context-file` crates are internal helpers outside this graph. No devdocs crate depends on them and they depend on no devdocs crate ([02](02-project-scaffolding.md)).
 

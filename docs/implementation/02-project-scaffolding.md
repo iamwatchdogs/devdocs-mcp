@@ -3,7 +3,7 @@ type: guide
 title: Project Scaffolding
 description: The exact commands, file tree, Cargo workspace, and config files that create the devdocs repository. Run the steps in order from an empty directory.
 tags: [devdocs, scaffolding, cargo, workspace]
-timestamp: 2026-11-02T00:00:00Z
+timestamp: 2026-11-12T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -235,7 +235,7 @@ The crate graph is acyclic. Enforce it in review with this table. The `context-c
 | devdocs-store | model | ingest, retrieve, cli |
 | devdocs-ingest | model, store | retrieve, mcp, cli |
 | devdocs-retrieve | model, store | ingest, mcp, cli |
-| devdocs-mcp | model, retrieve | store internals, ingest |
+| devdocs-mcp | model, retrieve, store | ingest |
 | devdocs | model, store, ingest, retrieve, mcp | (binary. May depend on all) |
 | devdocs-eval | model, store, retrieve | ingest internals, mcp |
 | devdocs-testkit | model, store | (dev-dependency only) |

@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-11T00:00:00Z
+timestamp: 2026-11-12T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -176,7 +176,7 @@ Bare `devdocs skill` installs with the default path. Install writes `SKILL.md` i
 
 ## MCP adapter
 
-Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Block goose and Apollo). Features: `server`, `transport-io` (stdio), `macros`, `schemars`. Three tools, not more (research: architecture.md §L4):
+Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Block goose and Apollo). Features: `server`, `transport-io` (stdio), `macros`, `schemars`. The lockfile resolves 3.9.0. The reason: an exact `3.8.0` pin fails `cargo deny` on RUSTSEC-2026-0462, unbounded HTTP response buffering in the Streamable HTTP clients. Three tools, not more (research: architecture.md §L4):
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -194,10 +194,18 @@ search_docs: one concept per query. open_doc: read a section by ref from search_
 Stop after 3 searches per question. verify_doc confirms a citation before you rely on it.
 ```
 
+Settled semantics:
+
+The `detail` parameter trims each item in the MCP layer. The retrieve core stays unchanged. Omitted or `full` serves the exact CLI envelope, so byte-identity applies. `summary` drops the `examples` field per item. `name` keeps only `ref`, `title`, `served_version`, and `version_status` per item. The envelope-level fields stay in all variants.
+
+Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. Unknown tools and malformed arguments stay JSON-RPC protocol errors. No new error code.
+
+The MCP path serves with an empty project context and never walks lockfiles. The CLI keeps the lockfile walk (§Version resolution). No tool carries a cursor parameter. Pagination stays a CLI feature (`--cursor C`, §CLI contract).
+
 Gates:
 
-- The MCP path and the CLI path must produce identical results for the same query against the same DB. The contract test in [04](04-testing-strategy.md) enforces it (research: architecture.md Phase 2 gate).
-- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1).
+- The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field. The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
+- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2573 bytes. The schema test holds it under a 6000-byte ceiling.
 
 ## Error codes
 

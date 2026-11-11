@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-12T01:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -39,7 +39,7 @@ The corpus is the product. The adapters are swappable (research: architecture.md
 ## Crate graph
 
 ```text
-devdocs (bin)      → devdocs-mcp, devdocs-retrieve, devdocs-ingest, devdocs-eval (bin),
+devdocs (bin)      → devdocs-mcp, devdocs-retrieve, devdocs-ingest,
                      devdocs-model, devdocs-store
 devdocs-mcp        → devdocs-retrieve, devdocs-model, devdocs-store
 devdocs-eval (bin) → devdocs-retrieve, devdocs-model, devdocs-store
@@ -47,10 +47,12 @@ devdocs-retrieve   → devdocs-model, devdocs-store
 devdocs-ingest     → devdocs-model, devdocs-store
 devdocs-store      → devdocs-model
 devdocs-model      → (external types only)
-(devdocs-testkit is a dev-dependency on model and store)
+(devdocs-testkit   → devdocs-model, devdocs-store; devdocs, devdocs-eval,
+                     devdocs-ingest, devdocs-mcp, devdocs-retrieve, and
+                     devdocs-store list it as a dev-dependency)
 ```
 
-The list draws the `[dependencies]` edges of the manifests. Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
+The list draws the `[dependencies]` edges of the manifests; the testkit line adds its dev-dependency facts. Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
 
 The `wiring` module of `devdocs-retrieve` holds the steps the edges share: the store open, the error maps, and the attribution step. The CLI commands and the MCP tools call it, so both edges serve identical envelopes ([08](08-retrieval-interfaces.md) §MCP adapter).
 

@@ -7,6 +7,8 @@
 #![allow(clippy::must_use_candidate)]
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
@@ -330,4 +332,373 @@ pub fn indexed_doc(env: &Env, config: &Path) -> ResultItem {
     assert_eq!(code, 0, "search failed: {stderr}");
     let envelope: ResultEnvelope = serde_json::from_str(stdout.trim()).expect("envelope");
     envelope.results.into_iter().next().expect("one result")
+}
+
+/// The bytes of one run, with the `served_at` entry cut at the string
+/// level — the wall-clock field is the only run-varying value in the
+/// envelope. The entry and the comma before it go, so the rest stays
+/// valid JSON. The byte-identity tests share this helper so the
+/// comparison rule lives once (docs/implementation/08 §CLI contract).
+pub fn strip_served_at(raw: &str) -> String {
+    let json = raw.trim();
+    // The entry is the envelope's last field, so the last occurrence of
+    // the key is the top-level one.
+    let key = "\"served_at\":\"";
+    let at = json.rfind(key).expect("envelope carries served_at");
+    let value_starts = at + key.len();
+    let value_ends = value_starts + json[value_starts..].find('"').expect("value closes");
+    let head = json[..at].strip_suffix(',').unwrap_or(&json[..at]);
+    format!("{head}{}", &json[value_ends + 1..])
+}
+
+/// ---- The MCP identical-results gate corpus ----
+///
+/// The source registry the contract corpus registers: the library name,
+/// its own replay host (each `add` must match exactly one
+/// `[sources.<name>]` entry, so every library carries a distinct URL),
+/// and the attribution line. The config writer and the MCP-side config
+/// mirror both derive from this one table, so both edges join the same
+/// attribution lines.
+pub const CONTRACT_SOURCES: [(&str, &str, &str); 5] = [
+    ("acme", "docs.acme.test", "© Acme Corp documentation"),
+    ("beta", "docs.beta.test", "© Beta Works documentation"),
+    (
+        "blocked",
+        "docs.blocked.test",
+        "© Blocked Press documentation",
+    ),
+    (
+        "expiring",
+        "docs.expiring.test",
+        "© Expiring Press documentation",
+    ),
+    ("denied", "docs.denied.test", "© Denied Press documentation"),
+];
+
+/// The replay host one contract library serves its fixture from.
+fn contract_host(name: &str) -> &'static str {
+    CONTRACT_SOURCES
+        .iter()
+        .find(|(library, _, _)| *library == name)
+        .map(|(_, host, _)| *host)
+        .expect("a registered contract library")
+}
+
+/// The same registry as the contract config writes, as the config map
+/// the in-process MCP server reads — both sides derive from
+/// [`CONTRACT_SOURCES`], so the attribution join cannot drift between
+/// the CLI edge and the MCP edge.
+pub fn contract_source_configs() -> BTreeMap<String, devdocs_model::config::SourceConfig> {
+    CONTRACT_SOURCES
+        .iter()
+        .map(|(name, host, attribution)| {
+            (
+                (*name).to_owned(),
+                devdocs_model::config::SourceConfig {
+                    kind: Some(String::from("llms_txt")),
+                    url: Some(format!("https://{host}/llms.txt")),
+                    license: Some(String::from("MIT")),
+                    attribution: Some((*attribution).to_owned()),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
+}
+
+/// The contract config: one `[sources.<name>]` entry per
+/// [`CONTRACT_SOURCES`] entry, every kind `llms_txt` at its own replay
+/// host. Returns the config path every CLI run needs.
+fn write_contract_config(root: &Path) -> PathBuf {
+    let config = root.join("devdocs.toml");
+    let mut text = String::new();
+    for (name, host, attribution) in CONTRACT_SOURCES {
+        let _ = write!(
+            text,
+            concat!(
+                "[sources.\"{name}\"]\n",
+                "kind = \"llms_txt\"\n",
+                "url = \"https://{host}/llms.txt\"\n",
+                "license = \"MIT\"\n",
+                "attribution = \"{attribution}\"\n\n"
+            ),
+            name = name,
+            host = host,
+            attribution = attribution
+        );
+    }
+    std::fs::write(&config, text).expect("config written");
+    config
+}
+
+/// The acme contract pages at 1.0: the page slug (the ref segment) and
+/// the page body. Every plain query hits one of these bodies verbatim.
+const ACME_V1_PAGES: [(&str, &str); 5] = [
+    (
+        "getting-started",
+        concat!(
+            "# Getting Started\n\n",
+            "The quick start builds the first widget project step by step.\n\n",
+            "## Prerequisites\n\n",
+            "Install the toolchain and set the API key before the first build.\n"
+        ),
+    ),
+    (
+        "widgets",
+        concat!(
+            "# Widgets\n\n",
+            "A widget renders a boxed frame on the screen.\n\n",
+            "## Layout\n\n",
+            "The layout engine stacks widgets in a column.\n"
+        ),
+    ),
+    (
+        "install",
+        concat!(
+            "# Install\n\n",
+            "Run the installer and export the key.\n\n",
+            "## Upgrade\n\n",
+            "The upgrade guide walks v1 users through the setup.\n"
+        ),
+    ),
+    (
+        "reference",
+        concat!(
+            "# Reference\n\n",
+            "The API reference lists every method and parameter.\n\n",
+            "## Errors\n\n",
+            "Every method reports errors through the error channel.\n"
+        ),
+    ),
+    (
+        "symbols",
+        concat!(
+            "# Symbols\n\n",
+            "The factory functions live in the core module.\n\n",
+            "## makeWidget\n\n",
+            "Create a widget with the factory.\n\n",
+            "```js\n",
+            "export function makeWidget(name) {\n",
+            "  return { name };\n",
+            "}\n",
+            "```\n\n",
+            "## renderBox\n\n",
+            "Paint one boxed frame.\n\n",
+            "```js\n",
+            "export function renderBox(node) {\n",
+            "  return node;\n",
+            "}\n",
+            "```\n"
+        ),
+    ),
+];
+
+/// The acme contract pages at 2.0: the same shape with distinct wording,
+/// so version-pinned queries separate the versions.
+const ACME_V2_PAGES: [(&str, &str); 5] = [
+    (
+        "getting-started",
+        concat!(
+            "# Getting Started\n\n",
+            "The quick start builds the first dashboard project step by step.\n\n",
+            "## Prerequisites\n\n",
+            "Install the toolchain and set the access token before the first build.\n"
+        ),
+    ),
+    (
+        "widgets",
+        concat!(
+            "# Widgets\n\n",
+            "A widget paints a panel on the dashboard.\n\n",
+            "## Layout\n\n",
+            "The layout engine arranges widgets in a grid.\n"
+        ),
+    ),
+    (
+        "install",
+        concat!(
+            "# Install\n\n",
+            "Upgrade from v1: run the installer and import the key.\n\n",
+            "## Migration\n\n",
+            "The migration guide walks v1 users through the new setup.\n"
+        ),
+    ),
+    (
+        "reference",
+        concat!(
+            "# Reference\n\n",
+            "The API reference documents every method and option.\n\n",
+            "## Errors\n\n",
+            "Every method reports failures through the failure channel.\n"
+        ),
+    ),
+    (
+        "symbols",
+        concat!(
+            "# Symbols\n\n",
+            "The factory functions live in the core module.\n\n",
+            "## makeWidget\n\n",
+            "Create a widget with the zone-aware factory.\n\n",
+            "```js\n",
+            "export function makeWidget(name, zone) {\n",
+            "  return { name, zone };\n",
+            "}\n",
+            "```\n\n",
+            "## paintPanel\n\n",
+            "Paint one dashboard panel.\n\n",
+            "```js\n",
+            "export function paintPanel(node) {\n",
+            "  return node;\n",
+            "}\n",
+            "```\n"
+        ),
+    ),
+];
+
+/// The beta pages: the second library the library-scoped queries scope to.
+const BETA_PAGES: [(&str, &str); 2] = [
+    (
+        "starter",
+        concat!(
+            "# Starter\n\n",
+            "The beta starter configures the sandbox and connects the client.\n"
+        ),
+    ),
+    (
+        "notes",
+        concat!(
+            "# Notes\n\n",
+            "The beta notes list the sandbox fixes for the release.\n"
+        ),
+    ),
+];
+
+/// The blocked page: ingested and active, then revoked before any query.
+const BLOCKED_PAGES: [(&str, &str); 1] = [(
+    "blocked",
+    "# Blocked\n\nThe blocked marker page never serves its text.\n",
+)];
+
+/// The expiring page: ingested and active, then given a past expiry so
+/// the read-path sweep flips it at the first query.
+const EXPIRING_PAGES: [(&str, &str); 1] = [(
+    "expiring",
+    "# Expiring\n\nThe expiring marker page leaves at the sweep.\n",
+)];
+
+/// The denied page: ingested and active, then denied before any query.
+const DENIED_PAGES: [(&str, &str); 1] = [(
+    "denied",
+    "# Denied\n\nThe denied marker page never serves its text.\n",
+)];
+
+/// The replay responses one multi-page corpus serves: the `llms.txt`
+/// index listing every page, then one response per page, all at the
+/// library's own replay host.
+fn pages_responses(host: &str, pages: &[(&str, &str)]) -> Value {
+    let mut index = String::from("# Corpus\n\n> The contract corpus.\n\n## Guides\n\n");
+    let mut responses = Vec::with_capacity(pages.len() + 1);
+    for (slug, body) in pages {
+        let _ = writeln!(
+            index,
+            "- [{slug}](https://{host}/{slug}.md): The {slug} page"
+        );
+        responses.push(serde_json::json!({
+            "url": format!("https://{host}/{slug}.md"),
+            "status": 200,
+            "headers": {},
+            "body": body,
+        }));
+    }
+    responses.insert(
+        0,
+        serde_json::json!({
+            "url": format!("https://{host}/llms.txt"),
+            "status": 200,
+            "headers": {},
+            "body": index,
+        }),
+    );
+    Value::Array(responses)
+}
+
+/// Runs one versioned `add --fixture` for one contract library, using
+/// its own manifest directory so replays never clobber each other.
+fn add_contract_pages(
+    env: &Env,
+    dir: &Path,
+    config: &Path,
+    name: &str,
+    version: &str,
+    pages: &[(&str, &str)],
+) {
+    let host = contract_host(name);
+    let manifest = dir.join(format!("{name}-{version}"));
+    std::fs::create_dir_all(&manifest).expect("manifest dir");
+    write_manifest(&manifest, &pages_responses(host, pages));
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            &format!("https://{host}/llms.txt"),
+            "--fixture",
+            manifest.to_str().expect("fixture path"),
+            "--version",
+            version,
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+        ],
+    );
+    assert_eq!(code, 0, "add {name} {version} failed: {stderr}");
+}
+
+/// The indexed contract corpus for the MCP identical-results gate:
+/// `acme` at 1.0 and 2.0 (five pages each) and `beta` at 1.0, all
+/// approved to the snippet stage, plus the license-refused trio
+/// (`blocked` revoked, `expiring` past expiry, `denied` denied) seeded
+/// active so the direct-name queries reach the license gate. Returns the
+/// environment and the config path every CLI run needs.
+pub fn contract_env() -> (Env, PathBuf) {
+    let env = Env::new();
+    let dir = env.root.join("fixture");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let config = write_contract_config(&env.root);
+    add_contract_pages(&env, &dir, &config, "acme", "1.0", &ACME_V1_PAGES);
+    add_contract_pages(&env, &dir, &config, "acme", "2.0", &ACME_V2_PAGES);
+    add_contract_pages(&env, &dir, &config, "beta", "1.0", &BETA_PAGES);
+    add_contract_pages(&env, &dir, &config, "blocked", "1.0", &BLOCKED_PAGES);
+    add_contract_pages(&env, &dir, &config, "expiring", "1.0", &EXPIRING_PAGES);
+    add_contract_pages(&env, &dir, &config, "denied", "1.0", &DENIED_PAGES);
+
+    let db = env.root.join("data").join("docs.db");
+    // acme and beta serve verbatim text: the operator promotes both to
+    // the snippet stage, the same walk `indexed_env` takes. The refused
+    // trio keeps its ingest floor — the license gate refuses before any
+    // text serves.
+    for library in ["acme", "beta"] {
+        devdocs_testkit::approve_source_to(
+            &db,
+            library,
+            devdocs_model::LicenseStatus::ApprovedSnippet,
+            "test:bootstrap",
+        )
+        .expect("approval lands");
+    }
+    devdocs_testkit::transition_source(
+        &db,
+        "blocked",
+        devdocs_model::LicenseStatus::Revoked,
+        "test:revoke",
+    )
+    .expect("revocation lands");
+    devdocs_testkit::transition_source(
+        &db,
+        "denied",
+        devdocs_model::LicenseStatus::Denied,
+        "test:deny",
+    )
+    .expect("denial lands");
+    devdocs_testkit::set_source_expiry(&db, "expiring", "2026-01-01").expect("expiry planted");
+    (env, config)
 }

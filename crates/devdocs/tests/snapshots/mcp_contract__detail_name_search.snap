@@ -1,0 +1,23 @@
+---
+source: crates/devdocs/tests/mcp_contract.rs
+expression: value
+---
+{
+  "next_cursor": null,
+  "results": [
+    {
+      "ref": "docs://acme/v1.0/getting-started",
+      "served_version": "1.0",
+      "title": "Getting Started",
+      "version_status": "alias"
+    },
+    {
+      "ref": "docs://acme/v2.0/getting-started",
+      "served_version": "2.0",
+      "title": "Getting Started",
+      "version_status": "alias"
+    }
+  ],
+  "served_at": "<served_at>",
+  "truncated": false
+}

@@ -10,22 +10,9 @@
 
 mod common;
 
-use common::{output, scoped_symbol_env, symbol_env, two_symbol_env};
+use common::{output, scoped_symbol_env, strip_served_at, symbol_env, two_symbol_env};
 use devdocs_model::{ErrorEnvelope, ResultEnvelope};
 use serde_json::Value;
-
-/// The bytes of one run, with the `served_at` entry cut at the string
-/// level — the wall-clock field is the only run-varying value in the
-/// envelope (docs/implementation/08 §CLI contract).
-fn strip_served_at(raw: &str) -> String {
-    let json = raw.trim();
-    let key = "\"served_at\":\"";
-    let at = json.rfind(key).expect("envelope carries served_at");
-    let value_starts = at + key.len();
-    let value_ends = value_starts + json[value_starts..].find('"').expect("value closes");
-    let head = json[..at].strip_suffix(',').unwrap_or(&json[..at]);
-    format!("{head}{}", &json[value_ends + 1..])
-}
 
 /// The exact lookup serves the seeded symbol through the standard result
 /// envelope: the pinned version serves, the ref carries the symbol

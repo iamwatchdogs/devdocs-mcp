@@ -1026,6 +1026,7 @@ dependencies = [
  "devdocs-store",
  "devdocs-testkit",
  "insta",
+ "rmcp",
  "rusqlite",
  "serde",
  "serde_json",

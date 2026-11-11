@@ -1,0 +1,43 @@
+---
+source: crates/devdocs/tests/mcp_contract.rs
+expression: value
+---
+{
+  "next_cursor": null,
+  "results": [
+    {
+      "attribution": "© Acme Corp documentation",
+      "confidence": 0.01639344262295082,
+      "content_hash": "990e14bc18c280209f90ed36fdde570d4cd12e255ab5164fd6ac840202973c05",
+      "license_status": "approved_snippet",
+      "ref": "docs://acme/v1.0/reference/errors",
+      "requested_version": null,
+      "section": "Reference > Errors",
+      "served_version": "1.0",
+      "snippet": "[acme 1.0 › Reference › <mark>Errors</mark>]\n\nEvery method reports <mark>errors</mark> through the <mark>error</mark> <mark>channel</mark>.",
+      "source_commit": "",
+      "source_url": "https://docs.acme.test/reference.md",
+      "title": "Errors",
+      "token_count": 22,
+      "version_status": "alias"
+    },
+    {
+      "attribution": "© Acme Corp documentation",
+      "confidence": 0.016129032258064516,
+      "content_hash": "5b92c43899991f02d9796fe1eedf3fc8aa9f7bc290a9537b67f061e3cfbc166b",
+      "license_status": "approved_snippet",
+      "ref": "docs://acme/v2.0/reference/errors",
+      "requested_version": null,
+      "section": "Reference > Errors",
+      "served_version": "2.0",
+      "snippet": "[acme 2.0 › Reference › <mark>Errors</mark>]\n\nEvery method reports failures through the failure <mark>channel</mark>.",
+      "source_commit": "",
+      "source_url": "https://docs.acme.test/reference.md",
+      "title": "Errors",
+      "token_count": 23,
+      "version_status": "alias"
+    }
+  ],
+  "served_at": "<served_at>",
+  "truncated": false
+}

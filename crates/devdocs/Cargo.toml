@@ -40,6 +40,10 @@ url.workspace = true
 assert_cmd.workspace = true
 devdocs-testkit.workspace = true
 insta.workspace = true
+# The identical-results gate drives an in-process rmcp client against
+# the MCP server; the client-side service needs this feature
+# (docs/implementation/04: the gate lives with the CLI end-to-end tests).
+rmcp = { workspace = true, features = ["client"] }
 rusqlite.workspace = true
 tempfile.workspace = true
 

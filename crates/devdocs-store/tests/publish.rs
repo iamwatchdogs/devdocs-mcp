@@ -42,6 +42,7 @@ fn source(status: LicenseStatus) -> SourceRecord {
         commit_sha: Some("abc123".to_owned()),
         license: Some("MIT".to_owned()),
         license_status: status,
+        license_expires_at: None,
         fetched_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap(),
     }
 }

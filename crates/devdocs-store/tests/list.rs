@@ -17,6 +17,7 @@ fn record(library: &str, version: &str, url: &str, status: LicenseStatus) -> Sou
         commit_sha: None,
         license: Some(String::from("MIT")),
         license_status: status,
+        license_expires_at: None,
         fetched_at: time::OffsetDateTime::now_utc(),
     }
 }

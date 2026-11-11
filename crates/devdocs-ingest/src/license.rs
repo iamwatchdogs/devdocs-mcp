@@ -6,7 +6,10 @@
 //! (docs/implementation/07 §License gate): the gate sweeps passed expiries,
 //! reads the stored state, and refuses anything below `approved_fetch`, so
 //! `denied`, `expired`, and `revoked` sources cannot re-sync without
-//! re-approval. The gate runs before any fetch, so a refused source costs
+//! re-approval. The configured `sources.<name>.expires` date rides the
+//! grant to the first publish, which seeds it into the store row; a first
+//! sync whose configured date has already passed refuses at the gate. The
+//! gate runs before any fetch, so a refused source costs
 //! no bytes on the wire. The store's publish gate (`approved_index`) is the
 //! second enforcement point
 //! (docs/implementation/09 §License gate enforcement points).
@@ -34,6 +37,9 @@ pub struct LicenseGrant {
     pub name: String,
     /// The recorded SPDX id, when the entry names one.
     pub license: Option<String>,
+    /// The configured lapse date (`sources.<name>.expires`) the first
+    /// publish stamps into the store; `None` when the entry names no date.
+    pub expires: Option<time::Date>,
     /// The recorded approval stage.
     pub status: LicenseStatus,
 }
@@ -45,13 +51,18 @@ pub struct LicenseGrant {
 /// library's stored states gate the run. When the library's rows disagree,
 /// the least privileged state applies, so a sync can never upgrade a
 /// refused library. A registered source with no store row grants
-/// the index stage (`FIRST_SYNC_STAGE`) for its first publish.
+/// the index stage (`FIRST_SYNC_STAGE`) for its first publish — unless the
+/// entry's configured expiry has already passed, which refuses the first
+/// sync. The grant carries the configured date either way, so the first
+/// publish can seed it into the store row.
 ///
 /// # Errors
 /// [`Error::Upstream`] with `FETCH_BLOCKED` when no registry entry matches
-/// the URL (the `pending_review` deny-by-default refusal) or when the
-/// stored state sits below `approved_fetch`; [`Error::Upstream`] with
-/// `UPSTREAM_ERROR` when the store read fails.
+/// the URL (the `pending_review` deny-by-default refusal), when the
+/// stored state sits below `approved_fetch`, or when a registered source
+/// with no store row names a configured expiry that has already passed;
+/// [`Error::Upstream`] with `UPSTREAM_ERROR` when the store read fails;
+/// [`Error::ConfigInvalid`] when the entry's `expires` key does not parse.
 pub fn gate_fetch(store: &Store, config: &Config, url: &Url) -> Result<LicenseGrant, Error> {
     let Some((name, entry)) = find_entry(config, url)? else {
         return Err(pending_review_refusal(url));
@@ -67,6 +78,18 @@ pub fn gate_fetch(store: &Store, config: &Config, url: &Url) -> Result<LicenseGr
     let states = store
         .license_states(&name)
         .map_err(|error| store_error(&error))?;
+    let expires = entry.parsed_expires(&format!("sources.{name}"))?;
+    // Bootstrap guard: with no store rows the configured expiry is all the
+    // enforcement there is, so a date that has already passed refuses the
+    // first sync instead of granting the index stage. With rows present the
+    // store is authoritative and the sweep already handled the recorded
+    // date.
+    if states.is_empty() {
+        let today = time::OffsetDateTime::now_utc().date();
+        if let Some(date) = expires.filter(|date| *date <= today) {
+            return Err(expired_configured_expiry(url, &name, date));
+        }
+    }
     let grant_status = LicenseStatus::least_privileged(states).unwrap_or(FIRST_SYNC_STAGE);
     if !grant_status.allows_fetch() {
         return Err(Error::Upstream {
@@ -80,8 +103,23 @@ pub fn gate_fetch(store: &Store, config: &Config, url: &Url) -> Result<LicenseGr
     Ok(LicenseGrant {
         name,
         license: entry.license.clone(),
+        expires,
         status: grant_status,
     })
+}
+
+/// The bootstrap refusal for a registered source with no store row whose
+/// `sources.<name>.expires` date has already passed: recording the entry is
+/// the operator's approval decision, so a lapsed date refuses the first
+/// sync instead of granting the index stage.
+fn expired_configured_expiry(url: &Url, name: &str, date: time::Date) -> Error {
+    Error::Upstream {
+        code: UpstreamCode::FetchBlocked,
+        detail: format!(
+            "source {url} has a passed configured expiry {date}; move sources.{name}.expires \
+             to a future date to allow fetching"
+        ),
+    }
 }
 
 /// The deny-by-default refusal for a URL with no `[sources]` registry
@@ -278,6 +316,60 @@ mod tests {
         assert_eq!(
             refused_status(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap(),
             None
+        );
+    }
+
+    /// A registered source with no store row whose configured expiry has
+    /// already passed refuses the first sync with `FETCH_BLOCKED`, naming
+    /// the date and the `sources.<name>.expires` key: the bootstrap guard.
+    #[test]
+    fn a_passed_configured_date_refuses_the_first_fetch() {
+        let (store, _dir) = empty_store();
+        let mut config = config_with("acme", "https://docs.acme.test/llms.txt");
+        config.sources.get_mut("acme").unwrap().expires = Some(String::from("2026-01-01"));
+        let error =
+            gate_fetch(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap_err();
+        match error {
+            Error::Upstream {
+                code: UpstreamCode::FetchBlocked,
+                detail,
+            } => assert!(
+                detail.contains("2026-01-01") && detail.contains("sources.acme.expires"),
+                "detail: {detail}"
+            ),
+            other => panic!("expected FetchBlocked, got {other:?}"),
+        }
+    }
+
+    /// The bootstrap grant carries the configured expiry date to the first
+    /// publish, so the publish can seed it into the store row.
+    #[test]
+    fn the_bootstrap_grant_carries_the_configured_expiry() {
+        let (store, _dir) = empty_store();
+        let mut config = config_with("acme", "https://docs.acme.test/llms.txt");
+        config.sources.get_mut("acme").unwrap().expires = Some(String::from("2999-01-01"));
+        let grant = gate_fetch(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap();
+        assert_eq!(grant.name, "acme");
+        assert_eq!(grant.status, LicenseStatus::ApprovedIndex);
+        assert_eq!(
+            grant.expires.map(|date| date.to_string()),
+            Some(String::from("2999-01-01"))
+        );
+    }
+
+    /// With store rows present the store is authoritative for the status,
+    /// but the grant still carries the configured date: the publish's
+    /// COALESCE decides whether it seeds the row.
+    #[test]
+    fn an_existing_row_still_carries_the_configured_expiry_in_the_grant() {
+        let (store, _dir) = store_with("approved_fetch", None);
+        let mut config = config_with("acme", "https://docs.acme.test/llms.txt");
+        config.sources.get_mut("acme").unwrap().expires = Some(String::from("2999-01-01"));
+        let grant = gate_fetch(&store, &config, &url("https://docs.acme.test/llms.txt")).unwrap();
+        assert_eq!(grant.status, LicenseStatus::ApprovedFetch);
+        assert_eq!(
+            grant.expires.map(|date| date.to_string()),
+            Some(String::from("2999-01-01"))
         );
     }
 

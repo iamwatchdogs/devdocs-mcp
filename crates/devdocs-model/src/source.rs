@@ -252,6 +252,9 @@ pub struct SourceRecord {
     pub license: Option<String>,
     /// Current license approval stage.
     pub license_status: LicenseStatus,
+    /// Configured lapse date stamped on the first publish; `None` leaves
+    /// the stored value untouched.
+    pub license_expires_at: Option<String>,
     /// When the content was fetched, RFC 3339 UTC.
     pub fetched_at: OffsetDateTime,
 }

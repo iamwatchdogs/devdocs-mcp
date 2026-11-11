@@ -1,0 +1,23 @@
+---
+source: crates/devdocs-mcp/src/detail.rs
+expression: "serde_json::from_str::<serde_json::Value>(&json).unwrap()"
+---
+{
+  "next_cursor": "12",
+  "results": [
+    {
+      "ref": "docs://next.js/v16.2.9/proxy",
+      "served_version": "16.2.9",
+      "title": "Proxy",
+      "version_status": "verified"
+    },
+    {
+      "ref": "docs://next.js/v16.2.9/routing",
+      "served_version": "16.2.9",
+      "title": "Proxy",
+      "version_status": "verified"
+    }
+  ],
+  "served_at": "2026-01-01T00:00:00Z",
+  "truncated": true
+}

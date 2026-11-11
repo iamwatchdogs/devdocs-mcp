@@ -1,0 +1,55 @@
+---
+source: crates/devdocs-mcp/src/detail.rs
+expression: "serde_json::from_str::<serde_json::Value>(&json).unwrap()"
+---
+{
+  "next_cursor": "12",
+  "results": [
+    {
+      "attribution": "© Vercel",
+      "confidence": 0.75,
+      "content_hash": "deadbeef",
+      "examples": [
+        {
+          "code": "export const proxy = {}",
+          "language": "ts"
+        }
+      ],
+      "license_status": "approved_index",
+      "ref": "docs://next.js/v16.2.9/proxy",
+      "requested_version": "16.2.9",
+      "section": "Routing > Proxy",
+      "served_version": "16.2.9",
+      "snippet": "Rewrites the request before the handler runs.",
+      "source_commit": "abc123",
+      "source_url": "https://docs.test/next.js/proxy",
+      "title": "Proxy",
+      "token_count": 42,
+      "version_status": "verified"
+    },
+    {
+      "attribution": "© Vercel",
+      "confidence": 0.75,
+      "content_hash": "deadbeef",
+      "examples": [
+        {
+          "code": "export const proxy = {}",
+          "language": "ts"
+        }
+      ],
+      "license_status": "approved_index",
+      "ref": "docs://next.js/v16.2.9/routing",
+      "requested_version": "16.2.9",
+      "section": "Routing > Proxy",
+      "served_version": "16.2.9",
+      "snippet": "Rewrites the request before the handler runs.",
+      "source_commit": "abc123",
+      "source_url": "https://docs.test/next.js/proxy",
+      "title": "Proxy",
+      "token_count": 42,
+      "version_status": "verified"
+    }
+  ],
+  "served_at": "2026-01-01T00:00:00Z",
+  "truncated": true
+}

@@ -1,0 +1,142 @@
+---
+source: crates/devdocs-mcp/tests/schema.rs
+expression: value
+---
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read one section by ref. Refs come only from search_docs results. The result carries the section text bounded by the token budget.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_tokens": {
+            "description": "The output budget in tokens. The config default applies when\nabsent.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ref": {
+            "description": "The section ref to read. Refs come only from `search_docs`\nresults.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "name": "open_doc"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Search the version-pinned official docs in the local index. One concept per query. Read a result with open_doc.",
+      "inputSchema": {
+        "$defs": {
+          "Detail": {
+            "description": "How much of each result item the `search_docs` tool serves. `full` is\nthe default: the exact CLI envelope.",
+            "oneOf": [
+              {
+                "const": "name",
+                "description": "The identity of each item: the ref, the title, the served\nversion, and the version status.",
+                "type": "string"
+              },
+              {
+                "const": "summary",
+                "description": "Each item without its code examples.",
+                "type": "string"
+              },
+              {
+                "const": "full",
+                "description": "The exact CLI envelope. The default.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Detail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How much of each item to serve. The default is `full`."
+          },
+          "library": {
+            "description": "The library to scope the search to, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_tokens": {
+            "description": "The output budget in tokens. The config default applies when\nabsent.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "One concept per query.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The version to pin the query to, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_docs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Confirm a citation before you rely on it. Refs come only from search_docs results. Returns valid and the content hash.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "ref": {
+            "description": "The section ref to confirm. Refs come only from `search_docs`\nresults.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "name": "verify_doc"
+    }
+  ]
+}

@@ -308,15 +308,38 @@ impl Gate {
                 insta::assert_json_snapshot!("detail_summary_search", value, {
                     ".served_at" => "<served_at>"
                 });
-                for item in value["results"].as_array().expect("results") {
-                    let keys = sorted_keys(item);
-                    assert!(
-                        !keys.contains(&"examples"),
-                        "{label}: the summary projection drops examples: {keys:?}"
-                    );
-                    assert!(
-                        keys.contains(&"snippet"),
-                        "{label}: the summary projection keeps the text: {keys:?}"
+                // The expected key set derives from a full envelope item
+                // of the same query minus `examples`, so a projection
+                // that drops any other field cannot pass.
+                let full_entry = CorpusQuery {
+                    detail: None,
+                    ..entry.clone()
+                };
+                let full_result = self.mcp_call(&full_entry).await;
+                assert_eq!(
+                    full_result.is_error,
+                    Some(false),
+                    "{label}: the full call must serve"
+                );
+                let full_value: Value =
+                    serde_json::from_str(mcp_text(&full_result)).expect("the envelope parses");
+                let full_items = full_value["results"].as_array().expect("results");
+                let items = value["results"].as_array().expect("results");
+                assert_eq!(
+                    items.len(),
+                    full_items.len(),
+                    "{label}: both calls serve the same result count"
+                );
+                let Some(full_item) = full_items.first() else {
+                    panic!("{label}: the corpus detail entry must hit");
+                };
+                let mut expected = sorted_keys(full_item);
+                expected.retain(|key| *key != "examples");
+                for item in items {
+                    assert_eq!(
+                        sorted_keys(item),
+                        expected,
+                        "{label}: the summary projection drops examples only"
                     );
                 }
             }

@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-12T01:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -198,7 +198,7 @@ Settled semantics:
 
 The `detail` parameter trims each item in the MCP layer. The retrieve core stays unchanged. Omitted or `full` serves the exact CLI envelope, so byte-identity applies. `summary` drops the `examples` field per item. `name` keeps only `ref`, `title`, `served_version`, and `version_status` per item. The envelope-level fields stay in all variants.
 
-Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. Unknown tools and malformed arguments stay JSON-RPC protocol errors. No new error code.
+Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. An unknown tool stays a JSON-RPC protocol error: the rmcp router answers `INVALID_PARAMS` before any handler runs. Malformed arguments surface as the tool-level error result the same router builds from the deserialization failure. No new error code.
 
 The MCP path serves with an empty project context and never walks lockfiles. The CLI keeps the lockfile walk (§Version resolution). No tool carries a cursor parameter. Pagination stays a CLI feature (`--cursor C`, §CLI contract).
 

@@ -28,7 +28,7 @@ pub enum Outcome {
 
 /// One corpus entry: the query and its parameters, shared verbatim by
 /// the MCP tool call and the CLI flags.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CorpusQuery {
     /// The tool both edges run.
     pub kind: Kind,

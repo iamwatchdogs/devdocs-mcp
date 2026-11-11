@@ -707,6 +707,40 @@ pub fn run_db_migrate(config: &Config, force: bool) -> Result<serde_json::Value,
     }))
 }
 
+/// Runs `devdocs mcp --transport stdio` (docs/implementation/08 §MCP
+/// adapter): serves the three MCP tools over the stdio JSON-RPC stream
+/// until the client disconnects. Nothing prints on stdout — stdout carries
+/// the protocol stream only; logs stay on stderr through the subscriber
+/// the binary set up (.agents/instructions/observability).
+///
+/// # Errors
+/// [`Error::Usage`] for a transport other than `stdio`; [`Error::Upstream`]
+/// when the store cannot open or migrate, or the serve loop fails.
+pub fn run_mcp(config: &Config, transport: &str) -> Result<(), Error> {
+    // Clap validates the value, but this function is public: a caller that
+    // skips clap gets a usage error instead of a silent wrong transport.
+    if transport != "stdio" {
+        return Err(Error::Usage(format!(
+            "unsupported transport {transport}: only stdio is supported"
+        )));
+    }
+    // The runtime is local to the command, the same shape the ingest
+    // commands run their async work in: the rest of the CLI stays
+    // synchronous, and no second runtime spawns inside the serve loop.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail: format!("cannot start the async runtime: {e}"),
+        })?;
+    let result = runtime.block_on(devdocs_mcp::serve(config));
+    // The serve loop ended; the transport's blocking tasks stop with the
+    // runtime without blocking the exit.
+    runtime.shutdown_background();
+    result
+}
+
 /// Maps an ingest error onto the CLI error model: guard refusals become
 /// `FETCH_BLOCKED`, everything else `UPSTREAM_ERROR` (docs/implementation/08
 /// §Error codes).

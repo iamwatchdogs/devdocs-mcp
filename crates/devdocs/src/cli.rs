@@ -339,9 +339,8 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             symbol,
             cursor,
         } => run_symbol_command(cli, target, symbol, *cursor),
-        Command::Sync { .. } | Command::Mcp { .. } | Command::Db { .. } | Command::Eval { .. } => {
-            print_placeholder()
-        }
+        Command::Mcp { transport } => run_mcp_command(cli, transport),
+        Command::Sync { .. } | Command::Db { .. } | Command::Eval { .. } => print_placeholder(),
     }
 }
 
@@ -443,6 +442,14 @@ fn run_db_migrate_command(cli: &Cli, force: bool) -> Result<(), Error> {
     let config = Config::load(&overrides(cli))?;
     let result = crate::commands::run_db_migrate(&config, force)?;
     print_line(&result)
+}
+
+/// Runs `devdocs mcp --transport stdio` and serves until the client
+/// disconnects. Nothing prints on stdout: stdout carries the JSON-RPC
+/// protocol stream only (.agents/instructions/observability).
+fn run_mcp_command(cli: &Cli, transport: &str) -> Result<(), Error> {
+    let config = Config::load(&overrides(cli))?;
+    crate::commands::run_mcp(&config, transport)
 }
 
 /// Runs `devdocs search` and prints the envelope.

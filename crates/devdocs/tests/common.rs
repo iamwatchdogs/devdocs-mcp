@@ -71,7 +71,15 @@ impl Env {
 
     /// The command with the isolated environment applied.
     pub fn cmd(&self) -> Command {
-        let mut cmd = Command::cargo_bin("devdocs").expect("devdocs binary");
+        Command::from_std(self.std_cmd(&[]))
+    }
+
+    /// The raw std command with the isolated environment applied, for
+    /// tests that drive the child interactively (`assert_cmd` cannot
+    /// hold the pipes open across writes). `args` are the CLI arguments.
+    pub fn std_cmd(&self, args: &[&str]) -> std::process::Command {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_devdocs"));
+        cmd.args(args);
         cmd.env("XDG_CONFIG_HOME", self.root.join("config"));
         if self.homeless {
             cmd.env_remove("DEVDOCS_HOME")

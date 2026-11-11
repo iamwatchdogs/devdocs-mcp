@@ -281,10 +281,14 @@ fn mcp_transport_rejects_unknown_values() {
             .contains("stdio")
     );
 
+    // The default transport now serves: with no client ever speaking,
+    // the serve path fails with the upstream envelope, and stdout stays
+    // empty.
     let (code, stdout, stderr) = output(env.cmd(), &["mcp"]);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    let value: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(value["results"], serde_json::json!([]));
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert_eq!(stdout, "");
+    let error: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(error["error"], "UPSTREAM_ERROR");
 }
 
 /// `config validate` passes a well-formed file and exits 0.

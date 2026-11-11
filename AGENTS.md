@@ -75,6 +75,7 @@ These apply to every task:
 - **Orchestrator role**: the main agent acts as the orchestrator — it decides, sequences, and verifies; subagents do the leg work. Must dispatch at least one subagent for research, exploration, or verification before the main work starts. Must keep broad exploration off the orchestrator's own context: subagents gather details and report back in agent-friendly form, and the orchestrator acts on the reports.
 - **Subagent skill routing**: every dispatched subagent must load the skill that matches its task, from the global skills directory `~/.agents/skills`. General tasks, and any task with no better match, must use `/caveman full`. Small code changes must use `/ponytail`. Research or exploration tasks must use `/agent-reach`. If the matching skill is absent from `~/.agents/skills`, the subagent must report the missing skill to the orchestrator and, when `/caveman` is present, use `/caveman full` instead.
 - **Official sources first**: must study library docs, wikis, and changelogs before writing code. When the Context7 MCP tools are available, must use them for official documentation; add other relevant sources on top.
+- **Worktree isolation**: handle every change on its own worktree on its own branch (`wt switch --create <branch>`); never commit a change on `main` or on another change's branch. The branch lifecycle rules live in `.agents/instructions/worktree-lifecycle.instruction.md`.
 - Must write all communication and documentation in ASD-STE100: replies to the user, commit messages, design docs, and everything you publish on GitHub — PRs, issues, and review comments.
 - Label new issues with the ticket-set pattern: `ready-for-agent`, one `phase-*`, and the relevant `area:*` labels.
 - Task subagents with fixed roles live in `.agents/subagents/` in the zcode subagent definition format; the workflows in `.agents/instructions/` link to them. Write a new definition there when a role repeats across tasks.
@@ -85,6 +86,7 @@ These apply to every task:
 
 | When the task involves… | Read `.agents/instructions/…` |
 | --- | --- |
+| Any change (its worktree and branch lifecycle) | `worktree-lifecycle.instruction.md` |
 | Adding a crate, placing code, or crate dependency rules | `cargo-workspaces.instruction.md` |
 | Modeling error types, handling failures, or exit codes | `error-handling.instruction.md` |
 | Logging, `--json` output, or MCP stream correctness | `observability.instruction.md` |

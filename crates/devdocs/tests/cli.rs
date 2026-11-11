@@ -1401,6 +1401,61 @@ fn a_lapsed_configured_expiry_refuses_the_first_sync() {
     );
 }
 
+/// A passed configured expiry refuses a sync that would seed it into a row
+/// that records no date: `add` exits 3 with `FETCH_BLOCKED` naming the
+/// `sources.<name>.expires` key, and the pre-seeded row keeps its NULL
+/// expiry and its active flag — the refusal wrote nothing
+/// (docs/implementation/07 §License gate).
+#[test]
+fn a_lapsed_configured_expiry_refuses_a_row_without_a_recorded_date() {
+    let env = Env::new();
+    let fixture = write_fixture(&env);
+    let config = env.root.join("devdocs.toml");
+    std::fs::write(
+        &config,
+        concat!(
+            "[sources.acme]\n",
+            "kind = \"llms_txt\"\n",
+            "url = \"https://docs.acme.test/llms.txt\"\n",
+            "license = \"MIT\"\n",
+            "expires = \"2026-01-01\"\n"
+        ),
+    )
+    .expect("config written");
+    let db = env.root.join("undated.db");
+    // The library already indexed one serving generation whose row records
+    // no expiry: the publish's COALESCE would seed the configured date
+    // into it on the next sync.
+    devdocs_testkit::seed_source_status(&db, "acme", "1.0", "approved_index", None)
+        .expect("undated row seeded");
+    let conn = rusqlite::Connection::open(&db).expect("db opens");
+    conn.execute("UPDATE sources SET active = 1", [])
+        .expect("row activated");
+    drop(conn);
+
+    let (code, stdout, stderr) = output(env.cmd(), &add_args(&fixture, &config, &db, true));
+    assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("FETCH_BLOCKED"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("sources.acme.expires"),
+        "the refusal names the config key: {stderr}"
+    );
+    assert!(stdout.trim().is_empty(), "stdout stays clean: {stdout}");
+
+    // The row stays NULL-expiry and active: the gate refused before any
+    // publish, so nothing was stamped and nothing swept.
+    let conn = rusqlite::Connection::open(&db).expect("db opens");
+    let (expires, active): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT license_expires_at, active FROM sources WHERE library = 'acme'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("row reads");
+    assert_eq!(expires, None, "the passed date must not seed the row");
+    assert_eq!(active, 1, "the refusal must not deactivate the row");
+}
+
 /// The human `source list` output without `--json`: one line per
 /// configured source joining the config with the store state. The CR-3
 /// semantics hold on the human path too: an indexed library shows the

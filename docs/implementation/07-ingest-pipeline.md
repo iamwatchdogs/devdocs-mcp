@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-11T00:00:00Z
+timestamp: 2026-11-12T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -125,7 +125,7 @@ The gate runs before any fetch, embed, or serve decision for a source (research:
 
 The SQLite store is authoritative for the mutable license state: `sources.license_status`, `sources.license_expires_at`, and the audit lines in `meta` (docs/implementation/06 §License-gate state). The config entry `[sources.<name>]` stays declarative for `url`, the license SPDX id, and the optional `attribution` line. The optional `expires` line is the enforced default: a fresh library's first publish stamps it into the store row. A config entry that carries `status` fails validation with the key path `sources.<name>.status` (docs/implementation/05 §Configuration).
 
-The first sync of a registered source with no store row grants the index stage. Recording the `[sources.<name>]` entry is the operator's approval decision. The gate parses the `expires` line before it grants. A configured date that has already passed refuses the first sync with `FETCH_BLOCKED` and names the `sources.<name>.expires` key. A future date rides the grant to the publish, which seeds it into the row. With rows present the store stays authoritative. The sweep handles the recorded date, and the gate reads no config date for refusals.
+The first sync of a registered source with no store row grants the index stage. Recording the `[sources.<name>]` entry is the operator's approval decision. The gate parses the `expires` line before it grants. A configured date that has already passed refuses the sync with `FETCH_BLOCKED` and names the `sources.<name>.expires` key — on the first sync, and on any sync where a row of the library records no date the publish would fill. A future date rides the grant to the publish, which seeds it into the row. With rows present and every row already recording a date, the store stays authoritative: the sweep handles the recorded date, and the inert config date cannot seed.
 
 State machine:
 

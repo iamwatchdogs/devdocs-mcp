@@ -167,6 +167,26 @@ impl Store {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         read_license_states(&conn, library)
     }
+
+    /// Whether any source row of `library` records no expiry date
+    /// (`license_expires_at IS NULL`), case-insensitive on the library —
+    /// the same library-wide scope the publish seed's MAX subquery reads.
+    /// The ingest gate probes it before a configured expiry date can
+    /// become the recorded seed that fills a NULL column
+    /// (docs/implementation/07 §License gate).
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    pub fn has_undated_rows(&self, library: &str) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sources \
+             WHERE library = ?1 COLLATE NOCASE AND license_expires_at IS NULL)",
+            params![library],
+            |row| row.get(0),
+        )
+        .map_err(StoreError::Sql)
+    }
 }
 
 /// The sweep's fast path: the sweep is advisory, so a plain read probes

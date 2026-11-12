@@ -228,6 +228,21 @@ fn mcp_stdio_serves_the_protocol_on_stdout_only() {
     assert_eq!(code, 0, "the server exits cleanly when stdin closes");
 }
 
+/// A client that closes stdin before the initialize handshake ends the
+/// server normally: exit 0, nothing on the protocol stream, and no error
+/// envelope on stderr (docs/implementation/08 §CLI contract).
+#[test]
+fn mcp_pre_init_stdin_close_exits_cleanly() {
+    let env = common::Env::new();
+    let session = Session::spawn(&env);
+    let (code, stderr) = session.shutdown();
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        !stderr.contains("UPSTREAM_ERROR"),
+        "the close must carry no error envelope: {stderr}"
+    );
+}
+
 /// The startup migration hook: the serve path opens the store and runs
 /// the migrations before the first tool call, so the index file exists
 /// under the data root with the shipped schema.

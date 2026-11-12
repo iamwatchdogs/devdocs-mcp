@@ -72,13 +72,20 @@ pub async fn serve(config: &Config) -> Result<(), Error> {
     // when the client spawned this process with pipes, and falls back to
     // the blocking handles elsewhere (the workspace declares rmcp 3.8.0,
     // the lockfile resolves 3.9.0 — docs/implementation/08 §MCP adapter).
-    let running = server
-        .serve(rmcp::transport::stdio_pipes())
-        .await
-        .map_err(|e| Error::Upstream {
-            code: UpstreamCode::UpstreamError,
-            detail: format!("the mcp server failed to start: {e}"),
-        })?;
+    let running = match server.serve(rmcp::transport::stdio_pipes()).await {
+        // rmcp reports a client that closes stdin before the initialize
+        // handshake as `ConnectionClosed`: the transport receive side hit
+        // end of stream. A client that closes the pipe ends the server
+        // normally, so this is a clean exit, not an upstream error.
+        Err(rmcp::service::ServerInitializeError::ConnectionClosed(_)) => return Ok(()),
+        Ok(running) => running,
+        Err(e) => {
+            return Err(Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                detail: format!("the mcp server failed to start: {e}"),
+            });
+        }
+    };
     running.waiting().await.map_err(|e| Error::Upstream {
         code: UpstreamCode::UpstreamError,
         detail: format!("the mcp serve loop failed: {e}"),

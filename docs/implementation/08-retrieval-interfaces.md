@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-12T01:00:00Z
+timestamp: 2026-11-12T02:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -140,6 +140,8 @@ Commands:
 | `devdocs eval run <suite> [--json]` | Run a golden-set suite (see [14](14-benchmark-eval.md)) |
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
+
+`devdocs mcp` serves until the client closes stdin; the server then exits 0 with no error output, also when stdin closes before the initialize handshake.
 
 `add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; a non-SHA pin that names no tag fails as a `USAGE` error (exit 1, `GIT_PIN_NOT_TAG`) from the tag fetch; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
 

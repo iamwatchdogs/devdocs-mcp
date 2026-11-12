@@ -446,7 +446,7 @@ fn run_db_migrate_command(cli: &Cli, force: bool) -> Result<(), Error> {
 
 /// Runs `devdocs mcp --transport stdio` and serves until the client
 /// disconnects. Nothing prints on stdout: stdout carries the JSON-RPC
-/// protocol stream only (.agents/instructions/observability).
+/// protocol stream only (.agents/instructions/observability.instruction.md).
 fn run_mcp_command(cli: &Cli, transport: &str) -> Result<(), Error> {
     let config = Config::load(&overrides(cli))?;
     crate::commands::run_mcp(&config, transport)

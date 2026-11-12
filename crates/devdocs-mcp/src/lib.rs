@@ -192,6 +192,10 @@ impl DevdocsServer {
         // (.agents/instructions/async-and-performance.instruction.md).
         let store = Arc::clone(&self.store);
         let mut envelope = match tokio::task::spawn_blocking(move || {
+            // The expiry sweep runs at the top of every public read path
+            // (docs/implementation/07 §Expiry sweep); search_with_context
+            // alone skips it, so the MCP search must sweep up front.
+            store.sweep_expired(&devdocs_model::now_rfc3339())?;
             devdocs_retrieve::serve::search_with_context(&store, &query, &project, &plan)
         })
         .await

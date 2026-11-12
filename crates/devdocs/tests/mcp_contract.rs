@@ -464,6 +464,29 @@ async fn scoped_and_refused_searches_match_the_cli() {
     }
 }
 
+/// The fresh-state sweep gate for the MCP search: the `expiring` source
+/// keeps a serving license status until a read path sweeps it, so with
+/// no CLI run yet the first MCP query must still answer the
+/// `NOT_AVAILABLE` miss — the sweep runs inside the `search_docs`
+/// handler (docs/implementation/07 §Expiry sweep). Without that sweep
+/// the source serves and this test fails.
+#[tokio::test]
+async fn an_expired_source_misses_before_any_cli_read_sweeps_it() {
+    let gate = Gate::contract().await;
+    let entry = CORPUS
+        .iter()
+        .find(|e| e.query == "expiring marker")
+        .expect("the expiring corpus entry");
+    assert_eq!(
+        entry.library,
+        Some("expiring"),
+        "the gate sweeps the expiring source only"
+    );
+    // The MCP call runs first; no CLI search touched the index yet, so
+    // only the handler sweep can refuse the query.
+    gate.compare_miss("fresh-expiry", entry).await;
+}
+
 /// The miss-and-budget slice: gibberish misses echo the `NO_RESULT`
 /// envelope, version-pinned opens echo `PKG_NOT_INDEXED`, and the
 /// budgeted pages serve the same truncated envelope with the same

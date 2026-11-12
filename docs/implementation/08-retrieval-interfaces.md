@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-12T17:29:38Z
+timestamp: 2026-11-12T18:05:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -206,7 +206,7 @@ The MCP path serves with an empty project context and never walks lockfiles. The
 
 Gates:
 
-- The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field. The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
+- The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field, when both sides run with an empty project context. The gate runs the CLI in a clean cwd with no lockfiles; a CLI run from a directory with lockfiles can differ, because the CLI resolves versions from lockfiles (§Version resolution) and the MCP path never walks them (§MCP adapter). The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
 - The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2585 bytes. The schema test holds it under a 6000-byte ceiling.
 
 ## Error codes

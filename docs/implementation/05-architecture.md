@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-11-12T01:00:00Z
+timestamp: 2026-11-12T02:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -169,7 +169,7 @@ Error codes are stable UPPER_SNAKE strings. A new code is a minor release. The f
 
 ## Concurrency model
 
-- tokio multi-thread runtime. The CLI builds it with `#[tokio::main]`.
+- tokio current-thread runtime, one per command. The CLI builds each runtime with `tokio::runtime::Builder::new_current_thread()` and drives it with `block_on`. The MCP server runs on one of these runtimes; its blocking store work runs in `spawn_blocking`.
 - rusqlite is synchronous. All store access runs inside `tokio::task::spawn_blocking` behind `devdocs_store::Store`, which wraps a `Mutex<Connection>`.
 - One writer at a time. The DB opens with WAL mode. Readers and the writer share the single connection. Ingest jobs serialize on the store mutex. Concurrency needs stay modest by design (single user, local DB).
 - Fetch concurrency defaults to 4 with a semaphore. The config caps it at 16.

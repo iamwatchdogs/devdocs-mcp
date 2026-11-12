@@ -247,7 +247,17 @@ pub fn run_add(
     version: Option<&str>,
     kind: Option<&str>,
     fixture_dir: Option<&std::path::Path>,
+    record_to: Option<&std::path::Path>,
 ) -> Result<serde_json::Value, Error> {
+    // The replay set and the recorder are opposites — one reads recorded
+    // responses, the other writes them — so carrying both is a broken
+    // invocation, refused before anything else runs.
+    if fixture_dir.is_some() && record_to.is_some() {
+        return Err(Error::Usage(
+            "--fixture replays recorded responses and --record-to records them; pass one, not both"
+                .to_owned(),
+        ));
+    }
     let index_url = Url::parse(source).map_err(|e| Error::Usage(format!("bad source URL: {e}")))?;
 
     // 1. The license gate: deny by default. The unregistered refusal runs
@@ -284,6 +294,13 @@ pub fn run_add(
         if fixture_dir.is_some() {
             return Err(Error::Usage(
                 "--fixture replays HTTP recordings and does not apply to git sources".to_owned(),
+            ));
+        }
+        // `--record-to` records the llms.txt fetch path only; a silent
+        // drop would run the networked clone with no recording.
+        if record_to.is_some() {
+            return Err(Error::Usage(
+                "--record-to records HTTP responses and does not apply to git sources".to_owned(),
             ));
         }
         // The pin must be explicit: there is no "latest" tag to resolve.
@@ -329,13 +346,24 @@ pub fn run_add(
             detail: format!("cannot start the async runtime: {e}"),
         })?;
 
+    // The recorder captures the run's live responses for a later replay;
+    // the manifest is written only after the run succeeds.
+    let recorder = record_to.map(|_| devdocs_ingest::Recorder::new());
     let version = version.unwrap_or("latest");
     let job = IngestJob::new(config, &guard, fixture.as_ref());
+    let job = match &recorder {
+        Some(recorder) => job.with_recorder(recorder),
+        None => job,
+    };
     let result = runtime.block_on(job.run(Arc::clone(&store), &index_url, &grant.name, version));
     // A run that hit the total cap can leave its in-flight segmentation
     // blocking task running; do not wait for it when the runtime drops.
     runtime.shutdown_background();
     let outcome = result.map_err(map_ingest_error)?;
+    if let (Some(recorder), Some(dir)) = (&recorder, record_to) {
+        recorder.write(dir).map_err(map_ingest_error)?;
+        tracing::info!(dir = %dir.display(), "recorded the ingest responses");
+    }
     add_report(&outcome)
 }
 

@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-12T18:10:00Z
+timestamp: 2026-11-13T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -118,6 +118,15 @@ The fetch guard is the only network code in the tool. Design from the research e
 6. User agent from config. Identify honestly as `devdocs/VERSION`.
 
 Implementation: reqwest 0.13 with `dns_resolver(Arc<dyn Resolve>)`. The custom resolver returns one pinned address per lookup, and a connect-time hook re-validates it. reqwest 0.13 keeps this hook (verified 2026-10-28: `dns_resolver<R: IntoResolve>`). The crypto default is aws-lc-rs under rustls, so no OpenSSL link.
+
+## Live-response recording
+
+A manual networked run can capture its responses into the offline replay format: `devdocs add <source> --record-to DIR` writes one `<DIR>/manifest.json` — a JSON array of recorded responses, each with the URL, the status, the `Link` headers, and the body, in the exact shape `--fixture` replays ([04](04-testing-strategy.md) §Fixtures). The recorder rides the llms.txt fetch path (`devdocs-ingest::record`), next to the replay set it feeds:
+
+- Every successful guard response is recorded under the URL the pipeline requested. A redirect that moved the response adds a second entry under the final URL, so absolute links to it replay too. A re-fetch of a recorded URL replaces the earlier entry: replay serves one recorded body per URL, and the last fetch is the one a later listing saw.
+- An absent response records nothing: a 404 or 410 probe result and every failed fetch leave no entry, and the replay reads the absence the same way. Only the `Link` headers are recorded — the one header the replay path reads (llmstxt.org v2 relations).
+- The manifest is written only after the run succeeds, and a failed write reports the failure after the publish. When the recorded run saw no redirect, the replay reproduces the run byte-identically: same outcome, same chunks, same hashes. A redirect that moves the response's directory changes the base relative links join against, and the replay joins against the requested URL — such sites replay through their absolute links only.
+- `--record-to` refuses together with `--fixture` (usage error) and does not apply to git sources, mirroring the `--fixture` refusal. The stdout envelope and the exit codes do not change.
 
 ## License gate
 

@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-12T18:05:00Z
+timestamp: 2026-11-13T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -122,7 +122,7 @@ Commands:
 
 | Command | Purpose |
 |---|---|
-| `devdocs add <source> [--version V] [--kind K]` | Ingest a source through the ladder |
+| `devdocs add <source> [--version V] [--kind K] [--fixture DIR] [--record-to DIR]` | Ingest a source through the ladder; `--fixture` replays recorded responses offline, `--record-to` records them ([07](07-ingest-pipeline.md) §Live-response recording) |
 | `devdocs sync [library]` | Refresh stale approved sources |
 | `devdocs list [--json]` | List indexed libraries and versions |
 | `devdocs search "query" [--library L] [--version V] [--limit N] [--cursor C] [--max-tokens T] [--json]` | Hybrid search |

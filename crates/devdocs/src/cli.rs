@@ -86,6 +86,11 @@ pub enum Command {
         /// the network (docs/implementation/13 §M3 step 5).
         #[arg(long, value_name = "DIR")]
         fixture: Option<PathBuf>,
+        /// Record the live responses of this run into the directory, as a
+        /// fixture replay for a later `--fixture` run
+        /// (docs/implementation/07 §Live-response recording).
+        #[arg(long, value_name = "DIR")]
+        record_to: Option<PathBuf>,
     },
     /// Refresh stale approved sources.
     Sync {
@@ -304,12 +309,14 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             version,
             kind,
             fixture,
+            record_to,
         } => run_add_command(
             cli,
             source,
             version.as_deref(),
             kind.as_deref(),
             fixture.as_deref(),
+            record_to.as_deref(),
         ),
         Command::List => run_list_command(cli),
         Command::Db {
@@ -399,6 +406,7 @@ fn run_add_command(
     version: Option<&str>,
     kind: Option<&str>,
     fixture: Option<&std::path::Path>,
+    record_to: Option<&std::path::Path>,
 ) -> Result<(), Error> {
     // Only the llms.txt and git adapters exist in this slice; a silent
     // flag drop would run the wrong pipeline with no error.
@@ -411,7 +419,7 @@ fn run_add_command(
         )));
     }
     let config = Config::load(&overrides(cli))?;
-    let result = crate::commands::run_add(&config, source, version, kind, fixture)?;
+    let result = crate::commands::run_add(&config, source, version, kind, fixture, record_to)?;
     if cli.json {
         print_line(&result)
     } else {

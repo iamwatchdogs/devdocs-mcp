@@ -639,6 +639,79 @@ fn add_rejects_an_unsupported_kind() {
     assert!(!db.exists(), "a rejected add must not create the database");
 }
 
+/// `--record-to` records what `--fixture` replays; carrying both is a
+/// broken invocation, refused before anything runs
+/// (docs/implementation/07 §Live-response recording).
+#[test]
+fn add_refuses_record_to_with_a_fixture() {
+    let env = Env::new();
+    let fixture = write_fixture(&env);
+    let record_dir = env.root.join("recorded");
+    let config = write_config(&env, true);
+    let db = env.root.join("conflict.db");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            "https://docs.acme.test/llms.txt",
+            "--fixture",
+            fixture.to_str().expect("fixture path"),
+            "--record-to",
+            record_dir.to_str().expect("record path"),
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("--record-to"), "stderr: {stderr}");
+    assert!(stdout.trim().is_empty(), "stdout stays clean: {stdout}");
+    assert!(!db.exists(), "a refused add must not create the database");
+    assert!(
+        !record_dir.join("manifest.json").exists(),
+        "a refused add must not write a manifest"
+    );
+}
+
+/// `--record-to` records the llms.txt fetch path only; a git source has no
+/// HTTP surface to record, so the flag refuses instead of dropping
+/// silently.
+#[test]
+fn add_refuses_record_to_for_a_git_source() {
+    let env = Env::new();
+    let record_dir = env.root.join("recorded-git");
+    let config = write_config(&env, true);
+    let db = env.root.join("git-record.db");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            "https://docs.acme.test/llms.txt",
+            "--kind",
+            "git",
+            "--record-to",
+            record_dir.to_str().expect("record path"),
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("--record-to"), "stderr: {stderr}");
+    assert!(stdout.trim().is_empty(), "stdout stays clean: {stdout}");
+    assert!(!db.exists(), "a refused add must not create the database");
+    assert!(
+        !record_dir.join("manifest.json").exists(),
+        "a refused add must not write a manifest"
+    );
+}
+
 /// Writes a fixture manifest from raw entry objects and returns its path.
 fn write_manifest(env: &Env, entries: &Value) -> PathBuf {
     let dir = env.root.join("fixture-custom");

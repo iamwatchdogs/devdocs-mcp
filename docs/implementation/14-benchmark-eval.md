@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-13T00:30:00Z
+timestamp: 2026-11-13T12:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -75,11 +75,11 @@ Timing note: the harness measures the in-process pipeline plus, in a second pass
 | p95 latency | 95th percentile of CLI subprocess wall time across the suite. Until M4, the CLI `search` path is a placeholder, so the row times process start and dispatch only | < 400 ms |
 | cost per query | Model cost of the retrieval path (always $0 locally. Ingest embedding cost counted in Phase 3) | $0 |
 | failure rate | Fraction of questions with a wrong or partial result under the binary grader | baseline for the −49% Phase 2 delta |
-| version correctness | Fraction of results with `version_status = verified` where an exact version was requested | ≥ 0.99 |
+| version correctness | Fraction of questions where a result was served and the top result serves the answer's pinned version — the question's own pin, except `multi_library` where the matched expected ref's version decides. Unanswerable abstentions leave the denominator | ≥ 0.99 |
 
 The binary grader: partial counts as wrong. The research protocol is explicit (research: benchmark-protocol.md Step 6).
 
-Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate and version correctness count every question — an abstention with no results is not version-correct. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands. Symbol recall grades from the rung results within the retrieval headroom window (4× the page limit, docs/implementation/08 §Rungs), so a suite pinning more symbols than the window holds cannot reach full recall.
+Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate counts every question. Version correctness counts the questions where a result was served. Unanswerable abstentions leave the denominator: an abstention has no served version to be wrong. The top result grades against the version the answer is pinned to: the question's own pin. A `multi_library` question grades against the version of the expected ref its top hit matches. When no expected ref matches the top hit, the question's own pin decides. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands. Symbol recall grades from the rung results within the retrieval headroom window (4× the page limit, docs/implementation/08 §Rungs), so a suite pinning more symbols than the window holds cannot reach full recall.
 
 ## Gate table
 

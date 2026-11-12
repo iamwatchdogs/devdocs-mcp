@@ -131,8 +131,9 @@ fn a_run_renders_the_report_and_judges_the_gates() {
     assert!(md.contains("Phase 0 stub"));
 
     // Deterministic gates: hit@5 is 1/2 (the absent ref misses), symbol
-    // recall is 1/1, and version correctness is 2/3 (the abstention has no
-    // top hit). The absent ref keeps the table honest: not all PASS.
+    // recall is 1/1, and version correctness is 2/2 (the abstention leaves
+    // the denominator; both served top hits are on-pin). The absent ref
+    // keeps the table honest: not all PASS.
     let status = |name: &str| {
         outcome
             .gates
@@ -143,7 +144,7 @@ fn a_run_renders_the_report_and_judges_the_gates() {
     };
     assert_eq!(status("hit@5"), GateStatus::Fail);
     assert_eq!(status("Symbol recall"), GateStatus::Pass);
-    assert_eq!(status("Version correctness"), GateStatus::Fail);
+    assert_eq!(status("Version correctness"), GateStatus::Pass);
     assert_eq!(status("Cost per 1,000 queries"), GateStatus::Pass);
     assert!(!outcome.all_gates_pass);
 }

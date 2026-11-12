@@ -185,6 +185,21 @@ mod tests {
         assert!(!all_pass(&gates));
     }
 
+    /// An all-unanswerable suite serves nothing, so version correctness has
+    /// no denominator: the gate is INCONCLUSIVE, also a block.
+    #[test]
+    fn an_empty_version_correctness_denominator_is_inconclusive() {
+        let m = metrics((1, 1), (1, 1), (0, 1), (0, 0));
+        let gates = evaluate(&m, Some(50.0));
+        let version = gates
+            .iter()
+            .find(|g| g.gate == "Version correctness")
+            .unwrap();
+        assert_eq!(version.status, GateStatus::Inconclusive);
+        assert_eq!(version.measured, "no denominator");
+        assert!(!all_pass(&gates));
+    }
+
     #[test]
     fn p95_judges_the_400ms_threshold() {
         let m = metrics((1, 1), (1, 1), (0, 1), (1, 1));

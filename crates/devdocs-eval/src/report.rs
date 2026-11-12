@@ -544,7 +544,7 @@ mod tests {
             hit_at_5: false,
             symbols_found: 0,
             symbols_pinned: 1,
-            version_correct: false,
+            version_correct: Some(false),
         };
         (question, score)
     }

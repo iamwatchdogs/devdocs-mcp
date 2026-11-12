@@ -234,8 +234,9 @@ impl Gate {
     /// The miss comparison: the CLI answers on stderr with the error
     /// envelope, the MCP tool answers with a tool-level error whose text
     /// content is the same single-line JSON. The error envelope carries
-    /// no `served_at`, so the strings compare whole.
-    async fn compare_miss(&self, label: &str, entry: &CorpusQuery) {
+    /// no `served_at`, so the strings compare whole. Returns the MCP
+    /// text so a caller can pin the envelope's reason code.
+    async fn compare_miss(&self, label: &str, entry: &CorpusQuery) -> String {
         let result = self.mcp_call(entry).await;
         assert_eq!(result.is_error, Some(true), "{label}: a miss must fail");
         let text = mcp_text(&result).to_owned();
@@ -249,6 +250,7 @@ impl Gate {
             stderr.trim(),
             "{label}: the miss envelopes must be byte-identical"
         );
+        text
     }
 
     /// The verify comparison, field-level: the MCP tool reports
@@ -472,7 +474,9 @@ async fn scoped_and_refused_searches_match_the_cli() {
         let label = format!("scoped[{index}] {} {:?}", entry.query, entry.library);
         match entry.outcome {
             Outcome::Hit => gate.compare_hit(&label, entry).await,
-            Outcome::Miss => gate.compare_miss(&label, entry).await,
+            Outcome::Miss => {
+                gate.compare_miss(&label, entry).await;
+            }
         }
     }
 }
@@ -496,8 +500,12 @@ async fn an_expired_source_misses_before_any_cli_read_sweeps_it() {
         "the gate sweeps the expiring source only"
     );
     // The MCP call runs first; no CLI search touched the index yet, so
-    // only the handler sweep can refuse the query.
-    gate.compare_miss("fresh-expiry", entry).await;
+    // only the handler sweep can refuse the query. The miss envelope's
+    // reason code is pinned here so the gate cannot pass on a
+    // different-but-matching drift.
+    let text = gate.compare_miss("fresh-expiry", entry).await;
+    let envelope: Value = serde_json::from_str(text.trim()).expect("the envelope parses");
+    assert_eq!(envelope["error"], json!("NOT_AVAILABLE"), "{envelope}");
 }
 
 /// The miss-and-budget slice: gibberish misses echo the `NO_RESULT`
@@ -516,7 +524,9 @@ async fn misses_and_budgeted_pages_match_the_cli() {
         );
         match entry.outcome {
             Outcome::Hit => gate.compare_hit(&label, entry).await,
-            Outcome::Miss => gate.compare_miss(&label, entry).await,
+            Outcome::Miss => {
+                gate.compare_miss(&label, entry).await;
+            }
         }
     }
 }
@@ -535,7 +545,9 @@ async fn opens_and_detail_projections_match_the_cli() {
             let label = format!("open[{index}] {}", entry.doc_ref.unwrap_or("?"));
             match entry.outcome {
                 Outcome::Hit => gate.compare_hit(&label, entry).await,
-                Outcome::Miss => gate.compare_miss(&label, entry).await,
+                Outcome::Miss => {
+                    gate.compare_miss(&label, entry).await;
+                }
             }
         }
     }

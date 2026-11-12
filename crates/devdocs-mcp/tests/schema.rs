@@ -26,7 +26,7 @@ const TOOL_SURFACE_MAX_BYTES: usize = 6000;
 
 /// The measured tool-surface byte count docs/implementation/08 quotes.
 /// Update the doc and this constant together.
-const TOOL_SURFACE_MEASURED_BYTES: usize = 2573;
+const TOOL_SURFACE_MEASURED_BYTES: usize = 2582;
 
 /// A seeded index in a temp dir with a config pointing at it. The store
 /// carries one `acme` source at `approved_index` with one chunk under

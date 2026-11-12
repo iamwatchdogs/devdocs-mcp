@@ -1,5 +1,6 @@
 ---
 source: crates/devdocs-mcp/tests/schema.rs
+assertion_line: 123
 expression: value
 ---
 {
@@ -122,7 +123,7 @@ expression: value
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Confirm a citation before you rely on it. Refs come only from search_docs results. Returns valid and the content hash.",
+      "description": "Confirm a citation before you rely on it. Refs come only from search_docs results. Returns the valid flag and the content hash.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

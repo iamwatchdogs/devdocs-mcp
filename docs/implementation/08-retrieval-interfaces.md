@@ -207,7 +207,7 @@ The MCP path serves with an empty project context and never walks lockfiles. The
 Gates:
 
 - The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field. The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
-- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2573 bytes. The schema test holds it under a 6000-byte ceiling.
+- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2582 bytes. The schema test holds it under a 6000-byte ceiling.
 
 ## Error codes
 

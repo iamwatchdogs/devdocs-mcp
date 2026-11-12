@@ -260,7 +260,7 @@ impl DevdocsServer {
     /// Confirms a citation: re-derives the content hash and reports it.
     #[tool(
         name = "verify_doc",
-        description = "Confirm a citation before you rely on it. Refs come only from search_docs results. Returns valid and the content hash.",
+        description = "Confirm a citation before you rely on it. Refs come only from search_docs results. Returns the valid flag and the content hash.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

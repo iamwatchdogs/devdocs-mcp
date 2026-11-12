@@ -3,7 +3,7 @@ type: guide
 title: Testing Strategy
 description: The test frameworks, the test pyramid, fixture strategy, coverage and mutation policy for devdocs. Framework versions verified 2026-10-28.
 tags: [devdocs, testing, nextest, insta, proptest, coverage]
-timestamp: 2026-11-12T03:00:00Z
+timestamp: 2026-11-12T06:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -96,6 +96,7 @@ One clarification since the 80-token segmentation overlap landed: adjacent chunk
 - Command: `just coverage` produces `lcov.info` through cargo-llvm-cov.
 - Gate: line coverage at or above 80% for `devdocs-store`, `devdocs-retrieve`, and the guard modules of `devdocs-ingest`. No gate on glue code and the CLI layer.
 - CI uploads to Codecov. The badge lives in the README at M9. Coverage is a signal, not a target: a mutant-surviving line at 100% coverage is still a bug.
+- The Codecov statuses follow this policy (`codecov.yml`): the project status compares against the base commit, and the patch status is informational — it reports the diff coverage but never fails the check. The gates stay the line-coverage floors above; a hard diff gate would push test-only code for the documented defensive arms, which are unreachable through the public surface.
 
 ## Mutation testing
 

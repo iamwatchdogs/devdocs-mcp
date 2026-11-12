@@ -1,0 +1,15 @@
+# Codecov statuses follow docs/implementation/04 §Coverage: coverage is
+# a signal, not a target, and glue code and the CLI layer carry no gate.
+# The patch status stays informational: the adapter's documented
+# defensive arms are unreachable through the public surface, so a hard
+# diff gate would push test-only code instead of real tests. The
+# enforced gates stay the docs/04 table: 80% line coverage on
+# devdocs-store, devdocs-retrieve, and the devdocs-ingest guard modules.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+    patch:
+      default:
+        informational: true

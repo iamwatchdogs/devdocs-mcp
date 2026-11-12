@@ -48,7 +48,7 @@ impl Detail {
 /// The `summary` projection of one result item: the CLI item without its
 /// `examples` field.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SummaryItem {
+pub(crate) struct SummaryItem {
     /// The document ref, for example `docs://next.js/v16.2.9/proxy#rewrite`.
     #[serde(rename = "ref")]
     pub doc_ref: String,
@@ -109,7 +109,7 @@ impl SummaryItem {
 /// The `summary` projection of the result envelope: the envelope-level
 /// fields stay, each item drops its `examples` field.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SummaryEnvelope {
+pub(crate) struct SummaryEnvelope {
     /// The projected results, in fusion order.
     pub results: Vec<SummaryItem>,
     /// Whether the budget cut the result list short.
@@ -135,7 +135,7 @@ impl SummaryEnvelope {
 
 /// The `name` projection of one result item: only the identity fields.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NameItem {
+pub(crate) struct NameItem {
     /// The document ref, for example `docs://next.js/v16.2.9/proxy#rewrite`.
     #[serde(rename = "ref")]
     pub doc_ref: String,
@@ -163,7 +163,7 @@ impl NameItem {
 /// The `name` projection of the result envelope: the envelope-level
 /// fields stay, each item keeps only its identity fields.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NameEnvelope {
+pub(crate) struct NameEnvelope {
     /// The projected results, in fusion order.
     pub results: Vec<NameItem>,
     /// Whether the budget cut the result list short.
@@ -191,7 +191,7 @@ impl NameEnvelope {
 /// content hash the section served under (docs/implementation/08 §MCP
 /// adapter). Field order is declaration order: `valid` first.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct VerifyReport {
+pub(crate) struct VerifyReport {
     /// Whether the ref resolved to a section whose hash matches the
     /// index. Always `true` on a success result: a mismatch is the
     /// tool-level error envelope.

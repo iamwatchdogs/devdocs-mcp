@@ -8,7 +8,9 @@
 //! (`.agents/instructions/observability.instruction.md`).
 
 pub mod detail;
-pub mod error;
+// The error helpers expose no public items: only the tool handlers in
+// this crate call them, so the module stays crate-private.
+pub(crate) mod error;
 
 use std::sync::Arc;
 

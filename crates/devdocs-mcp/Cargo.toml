@@ -30,7 +30,6 @@ rmcp = { workspace = true, features = ["client"] }
 # raw-connection shape the other crates' tests use.
 rusqlite.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true

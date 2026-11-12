@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-12T16:46:31Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -186,7 +186,7 @@ All three steps landed on 2026-11-12. The settled shape lives in [08](08-retriev
 | FTS5 query builder produces invalid MATCH on odd input | Medium | Low | Property test with an escaper. Every token quoted. Fuzz in CI monthly |
 | reqwest DNS hook changes in a future 0.x | Low | High | The guard wraps reqwest behind one type. The connect-time re-check is independent code that works with or without the hook |
 | rust-trafilatura or dom_smoothie stalls | Low | Low | Both are interchangeable behind the extractor boundary. Htmd is the noted alternate ([10](10-dependency-audit.md)) |
-| rmcp breaking changes (3.x moved fast: 16 releases in 2026) | Medium | Medium | Pin exact version. Contract tests catch behavior drift at bump time |
+| rmcp breaking changes (3.x moved fast: 16 releases in 2026) | Medium | Medium | Caret range `3.8.0`; the deny gate refuses an exact pin on the open RUSTSEC-2026-0462 (fixed in 3.9.0). Contract tests catch behavior drift at bump time ([08](08-retrieval-interfaces.md)) |
 | Golden set too small to trust the gates | Medium | High | Grow to GPT2-style sizing (300 tasks) before any external adoption claim ([14](14-benchmark-eval.md)) |
 | Solo-project bus factor | High | Medium | This guide is the bus insurance: every decision and command is written down. CI is the enforcer |
 | SQLite FTS5 edge cases on CJK or mixed-script docs | Medium | Low | unicode61 covers most. Note the limitation in README. Trigram tokenizer is a documented future option |

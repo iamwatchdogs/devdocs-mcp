@@ -19,7 +19,7 @@ pub(crate) type StdinErrorSlot = Arc<Mutex<Option<io::Error>>>;
 /// The stdin side of the stdio transport: it delegates every read to
 /// the wrapped reader and captures the first read error in the slot.
 /// The generic reader keeps the error path testable with stand-in
-/// readers; the serve path wraps the [`StdioReader`].
+/// readers; the serve path wraps the [`rmcp::transport::StdioReader`].
 pub(crate) struct GuardedStdin<R> {
     inner: R,
     slot: StdinErrorSlot,

@@ -3,7 +3,7 @@ type: guide
 title: Project Scaffolding
 description: The exact commands, file tree, Cargo workspace, and config files that create the devdocs repository. Run the steps in order from an empty directory.
 tags: [devdocs, scaffolding, cargo, workspace]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-13T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -318,6 +318,7 @@ The committed `justfile` at the repository root is the source of truth for the r
 | `docs` | `cargo doc` with warnings denied |
 | `deny`, `audit`, `machete` | Dependency checks. Missing tools fail loudly |
 | `coverage` | `cargo llvm-cov` to `lcov.info` |
+| `coverage-gate` | Parses `lcov.info`, fails below the docs/04 floors; no rebuild |
 | `msrv` | `cargo +<MSRV> check` against the workspace `rust-version` toolchain |
 | `features` | Build `devdocs` in every feature state CI checks |
 | `eval` | Eval harness smoke run until the harness lands ([14](14-benchmark-eval.md)) |

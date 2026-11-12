@@ -169,6 +169,7 @@ coverage:
 coverage_gate_awk := '
     /^SF:/ {
         p = substr($0, 4)
+        # greedy: survives checkout dirs that contain a /crates/ segment; repo-internal paths carry no second one
         sub(/^.*\/crates\//, "crates/", p)
         if (p ~ /^crates\/devdocs-store\/src\//) {
             s = "devdocs-store"

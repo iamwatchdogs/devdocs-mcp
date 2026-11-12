@@ -21,8 +21,13 @@ use devdocs_retrieve::wiring;
 use devdocs_store::Store;
 use rmcp::ServiceExt;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ErrorData, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, Implementation,
+    ServerCapabilities, ServerConfig,
+};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -328,5 +333,26 @@ impl rmcp::ServerHandler for DevdocsServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("devdocs", env!("CARGO_PKG_VERSION")))
             .with_instructions(SERVER_INSTRUCTIONS)
+    }
+
+    // Hand-written instead of the `tool_handler` macro's generated
+    // `call_tool` (the macro's `has_method` guard then only generates
+    // `list_tools`/`get_tool`): this override intercepts the router's
+    // deserialization-failure result and reshapes it into the error
+    // envelope (docs/implementation/08 §MCP adapter). The `?` keeps the
+    // unknown-tool `INVALID_PARAMS` protocol error, and the catch-all
+    // arm passes rmcp's `#[non_exhaustive]` future variants through.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let tcc = ToolCallContext::new(self, request, context);
+        match self.tool_router.call(tcc).await? {
+            CallToolResponse::Complete(result) => Ok(CallToolResponse::Complete(
+                error::reshape_argument_error(result),
+            )),
+            other => Ok(other),
+        }
     }
 }

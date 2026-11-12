@@ -18,15 +18,15 @@ use serde_json::Value;
 /// tool-level error result whose text starts with this prefix. The
 /// constant is private in rmcp 3.9.0 (`src/handler/server/router/tool.rs`
 /// `TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX`) and duplicated here; if
-/// an rmcp bump renames it, the schema test fails loudly
-/// (`crates/devdocs-mcp/tests/schema.rs`).
+/// an rmcp bump renames it, the schema test fails at the next run of
+/// `just test` (`crates/devdocs-mcp/tests/schema.rs`).
 const TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX: &str = "failed to deserialize parameters:";
 
 /// Reshapes the router's deserialization-failure result into the error
 /// envelope: the raw rmcp text moves into `detail` unchanged, so the
 /// caller keeps the deserialization diagnosis, and the stable `USAGE`
 /// code replaces the free-form message, so every recoverable MCP
-/// failure speaks one shape (docs/implementation/08 §MCP adapter).
+/// failure carries one shape (docs/implementation/08 §MCP adapter).
 pub(crate) fn reshape_argument_error(result: CallToolResult) -> CallToolResult {
     if result.is_error != Some(true) {
         return result;
@@ -51,6 +51,9 @@ pub(crate) fn reshape_argument_error(result: CallToolResult) -> CallToolResult {
         Ok(json) => CallToolResult::error(vec![ContentBlock::text(json)]),
         // defensive: serializing a field-only struct cannot fail; the
         // arm keeps the router result intact instead of a panic site.
+        // Unlike `tool_error`, which escalates to a protocol error, the
+        // router text is foreign input, so a reshape bug keeps the raw
+        // text rather than a protocol error.
         Err(_) => result,
     }
 }

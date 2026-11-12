@@ -227,4 +227,4 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 
 A non-SHA pin that names no tag emits `error: USAGE` (exit 1); `GIT_PIN_NOT_TAG` appears only as the prefix of the `detail` string, not as an error code.
 
-The MCP adapter maps malformed tool arguments onto `USAGE`; the envelope `detail` carries the rmcp deserialization message. Reusing `USAGE` is deliberate: no new code, and no exit-code ripple in docs/implementation/05 §Error model.
+The MCP adapter maps malformed tool arguments onto `USAGE`; the envelope `detail` carries the rmcp deserialization message. Reusing `USAGE` is deliberate: no new code, and no exit-code change in docs/implementation/05 §Error model.

@@ -347,8 +347,8 @@ impl rmcp::ServerHandler for DevdocsServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let tcc = ToolCallContext::new(self, request, context);
-        match self.tool_router.call(tcc).await? {
+        let tool_context = ToolCallContext::new(self, request, context);
+        match self.tool_router.call(tool_context).await? {
             CallToolResponse::Complete(result) => Ok(CallToolResponse::Complete(
                 error::reshape_argument_error(result),
             )),

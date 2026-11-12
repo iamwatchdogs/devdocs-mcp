@@ -297,21 +297,25 @@ async fn an_unknown_tool_is_a_protocol_error() {
 }
 
 /// Malformed arguments return a tool-level error whose text is the error
-/// envelope JSON with the `USAGE` code (docs/implementation/08 §MCP
-/// adapter). The test pins the missing required field and the
-/// wrong-typed one, and that the rmcp deserialization diagnosis survives
-/// in `detail`: when an rmcp bump renames its private deserialization
-/// prefix, this envelope parse fails loudly (the workspace declares rmcp
-/// 3.8.0, the lockfile resolves 3.9.0 — docs/implementation/08 §MCP
-/// adapter).
+/// envelope JSON with the `USAGE` code and a non-empty `detail` context
+/// (docs/implementation/08 §MCP adapter). The test pins the missing
+/// required field and the wrong-typed one on `search_docs`, and the
+/// missing required field on `open_doc`: when an rmcp bump renames its
+/// private deserialization prefix, the envelope parse fails at the next
+/// run of `just test` (the workspace declares rmcp 3.8.0, the lockfile
+/// resolves 3.9.0 — docs/implementation/08 §MCP adapter).
 #[tokio::test]
 async fn malformed_arguments_return_the_error_envelope() {
     let env = setup();
     let client = connect(&env).await;
-    for args in [json!({}), json!({"query": 42})] {
+    for (name, args) in [
+        ("search_docs", json!({})),
+        ("search_docs", json!({"query": 42})),
+        ("open_doc", json!({})),
+    ] {
         let args: JsonObject = args.as_object().unwrap().clone();
         let result = client
-            .call_tool(CallToolRequestParams::new("search_docs").with_arguments(args))
+            .call_tool(CallToolRequestParams::new(name).with_arguments(args))
             .await
             .expect("malformed arguments must not fail the protocol");
         assert_eq!(result.is_error, Some(true));
@@ -320,6 +324,9 @@ async fn malformed_arguments_return_the_error_envelope() {
             serde_json::from_str(text).expect("the tool error text must be the envelope JSON");
         assert_eq!(envelope.error, "USAGE", "text: {text}");
         assert!(envelope.hint.is_some(), "text: {text}");
-        assert!(envelope.detail.is_some(), "text: {text}");
+        assert!(
+            !envelope.detail.unwrap_or_default().is_empty(),
+            "text: {text}"
+        );
     }
 }

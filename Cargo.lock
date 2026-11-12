@@ -1019,6 +1019,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "devdocs-eval",
  "devdocs-ingest",
  "devdocs-mcp",
  "devdocs-model",

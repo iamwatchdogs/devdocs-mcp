@@ -98,6 +98,13 @@ pub enum Error {
     /// The token budget was consumed with no deliverable content. Exit 4.
     #[error("budget exceeded")]
     BudgetExceeded,
+    /// An eval run completed, but a gate is FAIL or INCONCLUSIVE. Exit 2
+    /// (docs/implementation/14 §Harness flow).
+    #[error("eval gate failure: {detail}")]
+    EvalGate {
+        /// The gates that blocked, named in one line.
+        detail: String,
+    },
 }
 
 impl Error {
@@ -107,7 +114,7 @@ impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::ConfigInvalid { .. } => 1,
-            Self::NoResult { .. } => 2,
+            Self::NoResult { .. } | Self::EvalGate { .. } => 2,
             Self::Upstream { .. } => 3,
             Self::BudgetExceeded => 4,
         }
@@ -136,6 +143,7 @@ impl Error {
                 UpstreamCode::HashMismatch => "HASH_MISMATCH",
             },
             Self::BudgetExceeded => "BUDGET_EXCEEDED",
+            Self::EvalGate { .. } => "EVAL_GATE",
         }
     }
 
@@ -157,6 +165,7 @@ impl Error {
             },
             Self::Upstream { .. } => Some("run: devdocs sync [library]"),
             Self::BudgetExceeded => Some("raise --max-tokens"),
+            Self::EvalGate { .. } => Some("read the run report; it names the failing gates"),
         }
     }
 
@@ -167,7 +176,8 @@ impl Error {
         let detail = match self {
             Self::Usage(detail)
             | Self::ConfigInvalid { reason: detail, .. }
-            | Self::Upstream { detail, .. } => Some(detail.clone()),
+            | Self::Upstream { detail, .. }
+            | Self::EvalGate { detail } => Some(detail.clone()),
             Self::NoResult { .. } | Self::BudgetExceeded => None,
         };
         ErrorEnvelope {
@@ -226,7 +236,7 @@ mod tests {
     /// (docs/implementation/05 §Error model).
     #[test]
     fn error_maps_to_documented_exit_codes() {
-        let cases: [(Error, i32); 5] = [
+        let cases: [(Error, i32); 6] = [
             (Error::Usage("bad flag".to_owned()), 1),
             (
                 Error::ConfigInvalid {
@@ -249,6 +259,12 @@ mod tests {
                 3,
             ),
             (Error::BudgetExceeded, 4),
+            (
+                Error::EvalGate {
+                    detail: "hit@5 (FAIL)".to_owned(),
+                },
+                2,
+            ),
         ];
         for (error, expected) in cases {
             assert_eq!(error.exit_code(), expected, "exit code for {error:?}");
@@ -295,6 +311,9 @@ mod tests {
                 detail: String::new(),
             },
             Error::BudgetExceeded,
+            Error::EvalGate {
+                detail: String::new(),
+            },
         ];
         let expected = [
             "USAGE",
@@ -308,11 +327,12 @@ mod tests {
             "UPSTREAM_ERROR",
             "HASH_MISMATCH",
             "BUDGET_EXCEEDED",
+            "EVAL_GATE",
         ];
         for (error, code) in codes.iter().zip(expected) {
             assert_eq!(error.code(), code);
         }
-        assert_eq!(codes.iter().map(Error::code).collect::<Vec<_>>().len(), 11);
+        assert_eq!(codes.iter().map(Error::code).collect::<Vec<_>>().len(), 12);
     }
 
     /// A license-blocked miss keeps exit 2 (`NoResult`) and carries the
@@ -403,5 +423,22 @@ mod tests {
 
         let usage = Error::Usage("bad flag".to_owned()).to_envelope();
         assert_eq!(usage.key_path, None);
+    }
+
+    /// A blocked gate table is `EVAL_GATE` on exit 2: the detail names the
+    /// blocked gates, and no `miss_reason` or `key_path` joins
+    /// (docs/implementation/14 §Harness flow).
+    #[test]
+    fn eval_gate_carries_the_blocked_gates_as_detail() {
+        let error = Error::EvalGate {
+            detail: "hit@5 (FAIL), Retrieval failures (INCONCLUSIVE)".to_owned(),
+        };
+        assert_eq!(error.exit_code(), 2);
+        assert_eq!(error.code(), "EVAL_GATE");
+        let json = error.to_envelope().to_json_string().unwrap();
+        assert_eq!(
+            json,
+            r#"{"error":"EVAL_GATE","hint":"read the run report; it names the failing gates","detail":"hit@5 (FAIL), Retrieval failures (INCONCLUSIVE)"}"#
+        );
     }
 }

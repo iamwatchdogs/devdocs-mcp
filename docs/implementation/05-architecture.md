@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-11-12T02:00:00Z
+timestamp: 2026-11-12T23:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -40,7 +40,7 @@ The corpus is the product. The adapters are swappable (research: architecture.md
 
 ```text
 devdocs (bin)      → devdocs-mcp, devdocs-retrieve, devdocs-ingest,
-                     devdocs-model, devdocs-store
+                     devdocs-eval, devdocs-model, devdocs-store
 devdocs-mcp        → devdocs-retrieve, devdocs-model, devdocs-store
 devdocs-eval (bin) → devdocs-retrieve, devdocs-model, devdocs-store
 devdocs-retrieve   → devdocs-model, devdocs-store
@@ -153,7 +153,7 @@ The result shape matches the evidence contract in the research bundle (research:
 |---|---|---|
 | 0 | Success (a hit, or a completed operation) | — |
 | 1 | Usage or configuration error | clap parse failure (remapped from clap's default 2), bad config file |
-| 2 | No result. Valid query, empty index or no match | retrieve returns `Miss` |
+| 2 | No result. Valid query, empty index or no match; an eval run with a gate FAIL or INCONCLUSIVE | retrieve returns `Miss`; the eval gate table ([14](14-benchmark-eval.md)) |
 | 3 | Upstream error. Fetch, network, git, or parse failure | ingest fetch guard, adapters |
 | 4 | Budget exceeded with no deliverable content | retrieve budget packer |
 

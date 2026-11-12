@@ -736,6 +736,55 @@ pub fn run_db_migrate(config: &Config, force: bool) -> Result<serde_json::Value,
     }))
 }
 
+/// Runs `devdocs eval run <suite>` (docs/implementation/14 §Harness flow):
+/// proxies to the eval harness with the same flags. Returns the completed
+/// run outcome for the CLI edge to print; gate failures are not returned
+/// here — the outcome carries the gate table, and the CLI edge maps a
+/// blocked table to [`Error::EvalGate`].
+///
+/// # Errors
+/// [`Error::Usage`] for harness input errors (a broken suite, a manual
+/// grader — harness exit 1); [`Error::Upstream`] for the operational
+/// harness exits (store, subprocess, retrieval, I/O, serialization —
+/// harness exit 3).
+pub fn run_eval_run(
+    suite: &str,
+    db: Option<&std::path::Path>,
+    golden_dir: Option<&std::path::Path>,
+    runs_dir: Option<&std::path::Path>,
+    devdocs_bin: Option<&std::path::Path>,
+) -> Result<devdocs_eval::run::RunOutcome, Error> {
+    let options = devdocs_eval::run::RunOptions {
+        suite: suite.to_owned(),
+        db: db.map(std::path::Path::to_path_buf),
+        golden_dir: golden_dir.map(std::path::Path::to_path_buf),
+        runs_dir: runs_dir.map(std::path::Path::to_path_buf),
+        devdocs_bin: devdocs_bin.map(std::path::Path::to_path_buf),
+    };
+    devdocs_eval::run::run(&options).map_err(|e| map_eval_error(&e))
+}
+
+/// Maps the harness error to the CLI edge error (docs/implementation/14
+/// §Harness flow): the harness exit-1 input errors are `USAGE` here, the
+/// exit-3 operational errors are `UPSTREAM_ERROR`. The harness display
+/// line carries the narrative (suite, line, path), so it is the detail.
+fn map_eval_error(error: &devdocs_eval::error::EvalError) -> Error {
+    use devdocs_eval::error::EvalError;
+
+    let detail = error.to_string();
+    match error {
+        EvalError::InvalidSuite { .. } | EvalError::SuiteParse { .. } => Error::Usage(detail),
+        EvalError::Store(_)
+        | EvalError::Subprocess(_)
+        | EvalError::Retrieve(_)
+        | EvalError::Io { .. }
+        | EvalError::Serialize { .. } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail,
+        },
+    }
+}
+
 /// Runs `devdocs mcp --transport stdio` (docs/implementation/08 §MCP
 /// adapter): serves the three MCP tools over the stdio JSON-RPC stream
 /// until the client disconnects. Nothing prints on stdout — stdout carries

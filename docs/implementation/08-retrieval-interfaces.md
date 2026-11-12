@@ -215,7 +215,7 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 
 | Code | Exit | Meaning |
 |---|---|---|
-| `USAGE` | 1 | Bad flags or config |
+| `USAGE` | 1 | Bad flags, config, or MCP tool arguments |
 | `CONFIG_INVALID` | 1 | Config file failed validation |
 | `NO_RESULT` | 2 | Valid query, nothing served |
 | `PKG_NOT_INDEXED` | 2 | Library or version absent from an explicitly named request. Hint names the add command. A lockfile- or mention-named absent library falls through to the fallback search instead |

@@ -300,7 +300,8 @@ async fn an_unknown_tool_is_a_protocol_error() {
 /// envelope JSON with the `USAGE` code and a non-empty `detail` context
 /// (docs/implementation/08 §MCP adapter). The test pins the missing
 /// required field and the wrong-typed one on `search_docs`, and the
-/// missing required field on `open_doc`: when an rmcp bump renames its
+/// missing required field on `open_doc` and `verify_doc`: when an rmcp
+/// bump renames its
 /// private deserialization prefix, the envelope parse fails at the next
 /// run of `just test` (the workspace declares rmcp 3.8.0, the lockfile
 /// resolves 3.9.0 — docs/implementation/08 §MCP adapter).
@@ -312,6 +313,7 @@ async fn malformed_arguments_return_the_error_envelope() {
         ("search_docs", json!({})),
         ("search_docs", json!({"query": 42})),
         ("open_doc", json!({})),
+        ("verify_doc", json!({})),
     ] {
         let args: JsonObject = args.as_object().unwrap().clone();
         let result = client

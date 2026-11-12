@@ -68,10 +68,10 @@ pub async fn serve(config: &Config) -> Result<(), Error> {
         }
     };
     let server = DevdocsServer::new(store, config.clone());
-    // stdio_pipes drives the streams through the non-blocking pipe driver
-    // when the client spawned this process with pipes, and falls back to
-    // the blocking handles elsewhere (the workspace declares rmcp 3.8.0,
-    // the lockfile resolves 3.9.0 — docs/implementation/08 §MCP adapter).
+    // stdio_pipes drives the streams through the non-blocking pipe
+    // driver on Linux, and falls back to the blocking handles on other
+    // platforms (the workspace declares rmcp 3.8.0, the lockfile
+    // resolves 3.9.0 — docs/implementation/08 §MCP adapter).
     let running = match server.serve(rmcp::transport::stdio_pipes()).await {
         // rmcp reports a client that closes stdin before the initialize
         // handshake as `ConnectionClosed`: the transport receive side hit

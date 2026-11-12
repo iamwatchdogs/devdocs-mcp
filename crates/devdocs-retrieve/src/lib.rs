@@ -12,6 +12,7 @@ pub mod resolver;
 pub mod rung;
 pub mod serve;
 pub mod version;
+pub mod wiring;
 
 pub use budget::{Packed, pack};
 pub use error::{RetrieveError, UsageError};

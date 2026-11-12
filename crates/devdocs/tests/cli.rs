@@ -281,10 +281,13 @@ fn mcp_transport_rejects_unknown_values() {
             .contains("stdio")
     );
 
+    // The default transport serves: with no client ever speaking, stdin
+    // closes before the initialize handshake and the server ends
+    // normally — exit 0, and no error envelope on either stream.
     let (code, stdout, stderr) = output(env.cmd(), &["mcp"]);
     assert_eq!(code, 0, "stderr: {stderr}");
-    let value: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert_eq!(value["results"], serde_json::json!([]));
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "", "a clean close writes no error envelope");
 }
 
 /// `config validate` passes a well-formed file and exits 0.
@@ -1651,4 +1654,37 @@ fn transitions_sweep_a_passed_expiry_before_the_move() {
         lines.iter().all(|line| line.contains("auto:expiry")),
         "only the sweep lines remain: {lines:?}"
     );
+}
+
+/// `devdocs sync` is still the M1 placeholder: the empty result envelope
+/// on stdout, exit 0 (docs/implementation/13 §M1).
+#[test]
+fn sync_prints_the_placeholder_envelope() {
+    let env = Env::new();
+    let (code, stdout, stderr) = output(env.cmd(), &["sync"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not JSON: {stdout:?}: {e}"));
+    assert_eq!(envelope["results"], serde_json::json!([]));
+}
+
+/// The `run_mcp` transport guard is public-API behavior: a caller that
+/// skips clap gets the usage error instead of a silently started server
+/// (`run_mcp` in `crates/devdocs/src/commands.rs`). The guard fires
+/// before the runtime and the store open, so the call needs no seeded
+/// index.
+#[test]
+fn run_mcp_rejects_a_transport_other_than_stdio() {
+    let env = Env::new();
+    let mut config = devdocs_testkit::base_config();
+    config.index.path = env.root.join("data").join("docs.db");
+    match devdocs::commands::run_mcp(&config, "websocket") {
+        Err(devdocs_model::error::Error::Usage(detail)) => {
+            assert!(
+                detail.contains("only stdio is supported"),
+                "detail: {detail}"
+            );
+        }
+        other => panic!("expected a usage error, got: {other:?}"),
+    }
 }

@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing and its `crates` environment policy, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-11-04T14:00:00Z
+timestamp: 2026-11-12T20:14:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -53,7 +53,7 @@ jobs:
   msrv:       # toolchain 1.90.0, runs `just msrv`
   features:   # runs `just features` (3 feature states of the devdocs binary)
   deny:       # EmbarkStudios/cargo-deny-action
-  coverage:   # cargo-llvm-cov + codecov upload (token: secrets.CODECOV_TOKEN)
+  coverage:   # cargo-llvm-cov + just coverage-gate + codecov upload (token: secrets.CODECOV_TOKEN)
   docs:       # runs `just docs` (rustdoc -D warnings)
   gate:       # aggregate check: needs every job above; require only "gate"
               # in branch protection (matrix legs publish per-OS check names)
@@ -69,7 +69,7 @@ Notes:
 - The composite action's install-action tools (`just`, `cargo-nextest`, `cargo-llvm-cov`) and audit.yml's (`cargo-audit`, `cargo-machete`) deliberately float at latest: Renovate cannot bump install-action inputs, so a pin would go stale silently, and security scanners must see new releases. The release-critical toolchain (`cargo-zigbuild@0.24.0` + `ziglang==0.17.0`) is pinned where it is used; those two pins are human-maintained (no manager covers install-action inputs or inline pip pins) — review them at each release rehearsal. The Rust toolchain has a single source of truth: `rust-toolchain.toml`. The composite action resolves the channel from it when a caller omits `toolchain` (dtolnay/rust-toolchain does not read the file itself), and release.yml/publish.yml resolve the channel from the file with a dedicated step. Only the `msrv` job passes an explicit toolchain (1.90.0, the workspace `rust-version`). Renovate is configured to leave toolchain inputs alone (dep `rust` disabled) — an auto-bumped release/publish compiler desynchronized from the CI-validated one would erode the release gate; a toolchain bump edits `rust-toolchain.toml` only.
 - The `msrv` recipe validates the real lock file against toolchain 1.90 (the workspace `rust-version` in `Cargo.toml`; do not restate the literal here — this file references it).
 - The coverage job necessarily re-runs the full suite: instrumented builds cannot share the nextest cache profile. `cargo llvm-cov` accepts nextest as its runner if a speed-up is ever needed.
-- codecov uploads carry `token: ${{ secrets.CODECOV_TOKEN }}` (optional secret, not in the setup list): codecov-action v4+ supports tokenless uploads only from fork PRs to public repos, so an unset secret degrades main-branch uploads to a logged failure — which does not fail the job (`fail_ci_if_error` is unset).
+- codecov uploads carry `token: ${{ secrets.CODECOV_TOKEN }}` (optional secret, not in the setup list): codecov-action v4+ supports tokenless uploads only from fork PRs to public repos, so an unset secret degrades main-branch uploads to a logged failure — which does not fail the job (`fail_ci_if_error` is unset). The coverage job runs `just coverage-gate` after `just coverage`, before the upload. The root `codecov.yml` scopes its project statuses to the gated paths at the 80% floors and keeps the patch status informational; the whole-project status is off ([04](04-testing-strategy.md) §Coverage) — the enforced gates stay the crate-level line-coverage floors, not the codecov diff.
 - The `features` recipe will compile the embeddings backend (ort) once the feature flags forward to the store crate; today they are empty no-ops (README "Scaffold deviations"), so the cache cost is currently bounded by compilation alone.
 
 ## release.yml (binaries)

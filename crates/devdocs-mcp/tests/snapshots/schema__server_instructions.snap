@@ -1,0 +1,7 @@
+---
+source: crates/devdocs-mcp/tests/schema.rs
+expression: instructions
+---
+devdocs serves version-pinned official docs from a local index.
+search_docs: one concept per query. open_doc: read a section by ref from search_docs results only.
+Stop after 3 searches per question. verify_doc confirms a citation before you rely on it.

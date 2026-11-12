@@ -10,26 +10,9 @@
 
 mod common;
 
-use common::{indexed_doc, indexed_env, indexed_env_at_index, output};
+use common::{indexed_doc, indexed_env, indexed_env_at_index, output, strip_served_at};
 use devdocs_model::ResultEnvelope;
 use serde_json::Value;
-
-/// The bytes of one search run, with the `served_at` entry cut at the
-/// string level — the wall-clock field is the only run-varying value in
-/// the envelope (docs/implementation/13 §M4: "byte-identity excludes the
-/// `served_at` wall-clock field"). The entry and the comma before it go,
-/// so the rest stays valid JSON.
-fn strip_served_at(raw: &str) -> String {
-    let json = raw.trim();
-    // The entry is the envelope's last field, so the last occurrence of
-    // the key is the top-level one.
-    let key = "\"served_at\":\"";
-    let at = json.rfind(key).expect("envelope carries served_at");
-    let value_starts = at + key.len();
-    let value_ends = value_starts + json[value_starts..].find('"').expect("value closes");
-    let head = json[..at].strip_suffix(',').unwrap_or(&json[..at]);
-    format!("{head}{}", &json[value_ends + 1..])
-}
 
 /// One fixture query snapshots to the exact `--json` envelope
 /// (docs/implementation/13 §M4: "Snapshot the exact JSON for one fixture

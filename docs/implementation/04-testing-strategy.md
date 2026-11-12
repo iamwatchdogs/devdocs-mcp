@@ -3,7 +3,7 @@ type: guide
 title: Testing Strategy
 description: The test frameworks, the test pyramid, fixture strategy, coverage and mutation policy for devdocs. Framework versions verified 2026-10-28.
 tags: [devdocs, testing, nextest, insta, proptest, coverage]
-timestamp: 2026-11-03T00:00:00Z
+timestamp: 2026-11-12T20:14:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -43,7 +43,7 @@ cargo binstall cargo-nextest cargo-llvm-cov cargo-mutants cargo-deny cargo-audit
 | Unit | `#[cfg(test)]` modules in each crate | hundreds | Pure logic: parsers, guards, fusion, chunk math |
 | Integration | `crates/*/tests/` | tens | Crate boundaries: store migrations, ingest adapters, retrieve queries |
 | CLI end-to-end | `crates/devdocs/tests/` | ~30 | Real binary, real temp DB, exit codes, JSON output, non-TTY rules |
-| Contract | `crates/devdocs-mcp/tests/` | ~10 | MCP protocol through an in-process rmcp client against the server |
+| Contract | `crates/devdocs-mcp/tests/` + `crates/devdocs/tests/` | ~20 | MCP protocol through an in-process rmcp client against the server. The identical-results gate compares the tools against the spawned CLI on a 50-query corpus |
 | Golden set | `crates/devdocs-eval` + `eval/golden/` | 45+ questions | Retrieval quality gates (see [14](14-benchmark-eval.md)) |
 | Benchmarks | `crates/devdocs-retrieve/benches/` | ~8 | p50/p95 of query paths, segmentation throughput |
 | Mutation | scheduled, not per-PR | — | Survival rate on parsers and fusion |
@@ -56,7 +56,7 @@ cargo binstall cargo-nextest cargo-llvm-cov cargo-mutants cargo-deny cargo-audit
 | devdocs-store | Migration up-and-down steps on a temp DB. FTS5 query behaviors (bm25 weights, snippet, tokenizer options). WAL and locking behavior |
 | devdocs-ingest | URL guard properties. Adapter detection. llms.txt v2 parsing. Segmentation snapshots. Symbol extraction per grammar. Dedup logic. Injection filter rules. License state machine transitions |
 | devdocs-retrieve | Version resolution per lockfile format. RRF fusion ordering. Budget packing. Fallback ladder. Result shape snapshots |
-| devdocs-mcp | Tool schemas match the documented JSON. Tool calls return the same results as the CLI for identical queries (the identical-results gate) |
+| devdocs-mcp | Tool schemas, annotations, and instructions match the documented JSON. Tool errors carry the CLI error envelope. The identical-results gate lives in the `devdocs` crate (`devdocs/tests/mcp_contract.rs`) because it spawns the CLI binary |
 | devdocs | Exit codes 0/1/2/3/4. `--json` output. Non-TTY behavior. `--max-tokens` truncation flags |
 | devdocs-eval | Metric math (hit at 5, symbol recall, percentiles) against hand-computed fixtures |
 
@@ -93,9 +93,10 @@ One clarification since the 80-token segmentation overlap landed: adjacent chunk
 
 ## Coverage
 
-- Command: `just coverage` produces `lcov.info` through cargo-llvm-cov.
-- Gate: line coverage at or above 80% for `devdocs-store`, `devdocs-retrieve`, and the guard modules of `devdocs-ingest`. No gate on glue code and the CLI layer.
+- Command: `just coverage` produces `lcov.info` through cargo-llvm-cov. `just coverage-gate` parses that report and fails below the floors — no extra build.
+- Gate: line coverage at or above 80% for `devdocs-store`, `devdocs-retrieve`, and the guard modules of `devdocs-ingest`. No gate on glue code and the CLI layer. CI enforces the gate: the coverage job runs `just coverage-gate` after `just coverage`.
 - CI uploads to Codecov. The badge lives in the README at M9. Coverage is a signal, not a target: a mutant-surviving line at 100% coverage is still a bug.
+- The Codecov statuses follow this policy (`codecov.yml`): the project statuses are scoped to the gated paths at the 80% floors above, and the whole-project status is off — glue code and the CLI layer can never fail it. The patch status is informational — it reports the diff coverage but never fails the check; a hard diff gate would push test-only code for the documented defensive arms, which are unreachable through the public surface.
 
 ## Mutation testing
 

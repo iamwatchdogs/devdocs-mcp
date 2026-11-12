@@ -164,6 +164,57 @@ coverage:
         exit 1; \
     fi
 
+# awk program for coverage-gate: sums LH/LF per docs/04 gated scope. Kept in
+# an assignment so the recipe hands awk real newlines, not a joined one-liner.
+coverage_gate_awk := '
+    /^SF:/ {
+        p = substr($0, 4)
+        # greedy: survives checkout dirs that contain a /crates/ segment; repo-internal paths carry no second one
+        sub(/^.*\/crates\//, "crates/", p)
+        if (p ~ /^crates\/devdocs-store\/src\//) {
+            s = "devdocs-store"
+        } else if (p ~ /^crates\/devdocs-retrieve\/src\//) {
+            s = "devdocs-retrieve"
+        } else if (p == "crates/devdocs-ingest/src/guard.rs") {
+            s = "ingest-guard"
+        } else {
+            s = ""
+        }
+    }
+    /^LF:/ && s != "" { lf[s] += substr($0, 4) }
+    /^LH:/ && s != "" { lh[s] += substr($0, 4) }
+    END {
+        split("devdocs-store devdocs-retrieve ingest-guard", names, " ")
+        fail = 0
+        for (i = 1; i <= 3; i++) {
+            name = names[i]
+            if (lf[name] == 0) {
+                printf "coverage-gate: FAIL %s — no LF records in lcov.info (did the scope paths move?)\n", name
+                fail = 1
+                continue
+            }
+            pct = 100 * lh[name] / lf[name]
+            printf "coverage-gate: %-14s %5.1f%% (floor 80%%)\n", name, pct
+            if (pct < 80) {
+                printf "coverage-gate: FAIL %s at %.1f%% is below the 80%% floor (docs/implementation/04 §Coverage)\n", name, pct
+                fail = 1
+            }
+        }
+        if (fail) exit 1
+    }
+'
+
+# Enforce the docs/implementation/04 §Coverage floors against the lcov.info
+# that `just coverage` produced: 80% line coverage on devdocs-store,
+# devdocs-retrieve, and the devdocs-ingest guard module. Parses the existing
+# report — no rebuild. Glue code and the CLI layer carry no floor.
+coverage-gate:
+    @if [ ! -f lcov.info ]; then \
+        echo "lcov.info not found at the repo root: run 'just coverage' first"; \
+        exit 1; \
+    fi
+    @awk '{{coverage_gate_awk}}' lcov.info
+
 # Check the workspace against the MSRV toolchain.
 msrv:
     @if rustup toolchain list | grep -q '^1\.90'; then \

@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-11-11T00:00:00Z
+timestamp: 2026-11-12T02:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -16,7 +16,7 @@ Four layers, one core, three thin adapters (research: architecture.md). The crat
 
 ```text
 ┌────────────────────────────────────────────────────────────┐
-│ L4 SERVE     devdocs (CLI)      devdocs-mcp (2–3 tools)    │
+│ L4 SERVE     devdocs (CLI)      devdocs-mcp (3 tools)      │
 │              thin wrappers; identical results per query     │
 ├────────────────────────────────────────────────────────────┤
 │ L3 RETRIEVE  devdocs-retrieve                               │
@@ -39,17 +39,22 @@ The corpus is the product. The adapters are swappable (research: architecture.md
 ## Crate graph
 
 ```text
-                 devdocs (bin)
-                /   |   \      \
-               v    v    v      v
-        devdocs-mcp  devdocs-retrieve  devdocs-ingest  devdocs-eval (bin)
-               \        |             /        |
-                v       v            v         v
-              devdocs-store ←—— devdocs-model ——→ (external types only)
-                                 (devdocs-testkit is a dev-dependency)
+devdocs (bin)      → devdocs-mcp, devdocs-retrieve, devdocs-ingest,
+                     devdocs-model, devdocs-store
+devdocs-mcp        → devdocs-retrieve, devdocs-model, devdocs-store
+devdocs-eval (bin) → devdocs-retrieve, devdocs-model, devdocs-store
+devdocs-retrieve   → devdocs-model, devdocs-store
+devdocs-ingest     → devdocs-model, devdocs-store
+devdocs-store      → devdocs-model
+devdocs-model      → (external types only)
+(devdocs-testkit   → devdocs-model, devdocs-store; devdocs, devdocs-eval,
+                     devdocs-ingest, devdocs-mcp, devdocs-retrieve, and
+                     devdocs-store list it as a dev-dependency)
 ```
 
-Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
+The list draws the `[dependencies]` edges of the manifests; the testkit line adds its dev-dependency facts. Dependency rules are in [02](02-project-scaffolding.md). Two rules matter most: `devdocs-model` depends on no workspace crate, and `devdocs-retrieve` never reads through the ingest code.
+
+The `wiring` module of `devdocs-retrieve` holds the steps the edges share: the store open, the error maps, and the attribution step. The CLI commands and the MCP tools call it, so both edges serve identical envelopes ([08](08-retrieval-interfaces.md) §MCP adapter).
 
 The `context-chunker` and `context-file` crates are internal helpers outside this graph. No devdocs crate depends on them and they depend on no devdocs crate ([02](02-project-scaffolding.md)).
 
@@ -164,7 +169,7 @@ Error codes are stable UPPER_SNAKE strings. A new code is a minor release. The f
 
 ## Concurrency model
 
-- tokio multi-thread runtime. The CLI builds it with `#[tokio::main]`.
+- tokio current-thread runtime, one per command. The CLI builds each runtime with `tokio::runtime::Builder::new_current_thread()` and drives it with `block_on`. The MCP server runs on one of these runtimes; its blocking store work runs in `spawn_blocking`.
 - rusqlite is synchronous. All store access runs inside `tokio::task::spawn_blocking` behind `devdocs_store::Store`, which wraps a `Mutex<Connection>`.
 - One writer at a time. The DB opens with WAL mode. Readers and the writer share the single connection. Ingest jobs serialize on the store mutex. Concurrency needs stay modest by design (single user, local DB).
 - Fetch concurrency defaults to 4 with a semaphore. The config caps it at 16.

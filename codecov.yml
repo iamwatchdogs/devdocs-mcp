@@ -1,0 +1,28 @@
+# Codecov statuses follow docs/implementation/04 §Coverage. The project
+# statuses carry the docs/04 floors: 80% line coverage on devdocs-store,
+# devdocs-retrieve, and the devdocs-ingest guard module. `default: false`
+# removes the whole-project status, so glue code and the CLI layer stay
+# outside every gate. CI also runs `just coverage-gate`, which parses the
+# lcov.info and fails below the same floors. The patch status stays
+# informational: the adapter's documented defensive arms are unreachable
+# through the public surface, so a hard diff gate would push test-only
+# code instead of real tests.
+coverage:
+  status:
+    project:
+      default: false
+      store:
+        target: 80%
+        paths:
+          - crates/devdocs-store
+      retrieve:
+        target: 80%
+        paths:
+          - crates/devdocs-retrieve
+      ingest-guard:
+        target: 80%
+        paths:
+          - crates/devdocs-ingest/src/guard.rs
+    patch:
+      default:
+        informational: true

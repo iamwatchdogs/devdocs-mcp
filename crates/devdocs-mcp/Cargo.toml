@@ -7,6 +7,29 @@ license.workspace = true
 repository.workspace = true
 description = "MCP server adapter for devdocs"
 
+[dependencies]
+devdocs-model.workspace = true
+devdocs-retrieve.workspace = true
+devdocs-store.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The tool handlers run the sync store behind spawn_blocking
+# (.agents/instructions/async-and-performance.instruction.md).
+tokio.workspace = true
+
+[dev-dependencies]
+devdocs-testkit.workspace = true
+insta.workspace = true
+# The in-process contract tests drive a client against the server; the
+# client-side service needs this feature (docs/implementation/04:
+# contract tests live in this crate).
+rmcp = { workspace = true, features = ["client"] }
+# The verify test writes the hash the verify path re-derives, the same
+# raw-connection shape the other crates' tests use.
+rusqlite.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

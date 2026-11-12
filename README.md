@@ -13,7 +13,7 @@ A local documentation server for coding agents. It keeps a documentation index i
 
 ## What works today
 
-You can build the CLI from source. You can run the config commands, and you can load a documentation source into the local index with `devdocs add --fixture`. You cannot query the index yet. Retrieval, symbols, and the MCP server land in later milestones (docs/implementation/12).
+You can build the CLI from source. You can run the config commands, and you can load a documentation source into the local index with `devdocs add --fixture`. You can query the index: `devdocs search`, `devdocs symbol`, `devdocs open`, and `devdocs verify` serve retrieval results, and `devdocs mcp` serves the same index over MCP.
 
 ## Build
 

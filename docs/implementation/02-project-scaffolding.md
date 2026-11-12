@@ -3,7 +3,7 @@ type: guide
 title: Project Scaffolding
 description: The exact commands, file tree, Cargo workspace, and config files that create the devdocs repository. Run the steps in order from an empty directory.
 tags: [devdocs, scaffolding, cargo, workspace]
-timestamp: 2026-11-02T00:00:00Z
+timestamp: 2026-11-13T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -235,7 +235,7 @@ The crate graph is acyclic. Enforce it in review with this table. The `context-c
 | devdocs-store | model | ingest, retrieve, cli |
 | devdocs-ingest | model, store | retrieve, mcp, cli |
 | devdocs-retrieve | model, store | ingest, mcp, cli |
-| devdocs-mcp | model, retrieve | store internals, ingest |
+| devdocs-mcp | model, retrieve, store | ingest |
 | devdocs | model, store, ingest, retrieve, mcp | (binary. May depend on all) |
 | devdocs-eval | model, store, retrieve | ingest internals, mcp |
 | devdocs-testkit | model, store | (dev-dependency only) |
@@ -318,6 +318,7 @@ The committed `justfile` at the repository root is the source of truth for the r
 | `docs` | `cargo doc` with warnings denied |
 | `deny`, `audit`, `machete` | Dependency checks. Missing tools fail loudly |
 | `coverage` | `cargo llvm-cov` to `lcov.info` |
+| `coverage-gate` | Parses `lcov.info`, fails below the docs/04 floors; no rebuild |
 | `msrv` | `cargo +<MSRV> check` against the workspace `rust-version` toolchain |
 | `features` | Build `devdocs` in every feature state CI checks |
 | `eval` | Eval harness smoke run until the harness lands ([14](14-benchmark-eval.md)) |

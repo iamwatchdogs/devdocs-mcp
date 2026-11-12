@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-11T00:00:00Z
+timestamp: 2026-11-12T18:05:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -141,6 +141,8 @@ Commands:
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
 
+`devdocs mcp` serves until the client closes stdin; the server then exits 0 with no error output, also when stdin closes before the initialize handshake.
+
 `add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; a non-SHA pin that names no tag fails as a `USAGE` error (exit 1, `GIT_PIN_NOT_TAG`) from the tag fetch; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
 
 Contract properties (research: architecture.md §L4, GEM §5 checklist):
@@ -176,7 +178,7 @@ Bare `devdocs skill` installs with the default path. Install writes `SKILL.md` i
 
 ## MCP adapter
 
-Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Block goose and Apollo). Features: `server`, `transport-io` (stdio), `macros`, `schemars`. Three tools, not more (research: architecture.md §L4):
+Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Block goose and Apollo). Features: `server`, `transport-io` (stdio), `macros`, `schemars`. The lockfile resolves 3.9.0. The reason: an exact `3.8.0` pin fails `cargo deny` on RUSTSEC-2026-0462, unbounded HTTP response buffering in the Streamable HTTP clients. Three tools, not more (research: architecture.md §L4):
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -184,7 +186,7 @@ Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Blo
 | `open_doc` | `ref` (string, required. Must come from `search_docs`), `max_tokens?` | One section, bounded |
 | `verify_doc` | `ref` (string, required) | `{"valid": bool, "content_hash": "..."}` |
 
-Tool annotations (MCP spec 2026-07-28. Untrusted hints, set honestly): `readOnlyHint = true`, `destructiveHint = false`, `idempotentHint = true`, `openWorldHint = false`.
+Tool annotations (MCP spec 2026-07-28. Untrusted hints, set honestly): `readOnlyHint = false` on all three tools (a read can record the expiry transition, docs/implementation/07 §Expiry sweep), `destructiveHint = false`, `idempotentHint = true` (a repeated sweep converges), `openWorldHint = false`.
 
 Server instructions text (kept short, discriminative. Description quality is a measured failure source, research: retrieval-design.md §3.6):
 
@@ -194,10 +196,18 @@ search_docs: one concept per query. open_doc: read a section by ref from search_
 Stop after 3 searches per question. verify_doc confirms a citation before you rely on it.
 ```
 
+Settled semantics:
+
+The `detail` parameter trims each item in the MCP layer. The retrieve core stays unchanged. Omitted or `full` serves the exact CLI envelope, so byte-identity applies. `summary` drops the `examples` field per item. `name` keeps only `ref`, `title`, `served_version`, and `version_status` per item. The envelope-level fields stay in all variants.
+
+Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. An unknown tool stays a JSON-RPC protocol error: the rmcp router answers `INVALID_PARAMS` before any handler runs. Malformed arguments surface as the tool-level error result the same router builds from the deserialization failure. No new error code.
+
+The MCP path serves with an empty project context and never walks lockfiles. The CLI keeps the lockfile walk (§Version resolution). No tool carries a cursor parameter. Pagination stays a CLI feature (`--cursor C`, §CLI contract).
+
 Gates:
 
-- The MCP path and the CLI path must produce identical results for the same query against the same DB. The contract test in [04](04-testing-strategy.md) enforces it (research: architecture.md Phase 2 gate).
-- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1).
+- The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field, when both sides run with an empty project context. The gate runs the CLI in a clean cwd with no lockfiles; a CLI run from a directory with lockfiles can differ, because the CLI resolves versions from lockfiles (§Version resolution) and the MCP path never walks them (§MCP adapter). The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
+- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2585 bytes. The schema test holds it under a 6000-byte ceiling.
 
 ## Error codes
 

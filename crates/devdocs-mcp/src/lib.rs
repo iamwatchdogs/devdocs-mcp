@@ -44,7 +44,27 @@ pub const SERVER_INSTRUCTIONS: &str = "devdocs serves version-pinned official do
 /// [`Error::Upstream`] when the store cannot open or migrate, the rmcp
 /// server cannot start, or the serve loop fails.
 pub async fn serve(config: &Config) -> Result<(), Error> {
-    let store = wiring::open_store(config, false)?;
+    // The store is sync SQLite behind a Mutex: async code reaches it
+    // only inside spawn_blocking
+    // (.agents/instructions/async-and-performance.instruction.md); the
+    // closure takes an owned config because spawn_blocking needs 'static.
+    let blocking_config = config.clone();
+    let store = match tokio::task::spawn_blocking(move || {
+        wiring::open_store(&blocking_config, false)
+    })
+    .await
+    {
+        Ok(Ok(store)) => store,
+        Ok(Err(err)) => return Err(err),
+        // defensive: the block touches no unwinding state; the arm keeps
+        // a panicked worker a startup failure, not a hang.
+        Err(join) => {
+            return Err(Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                detail: format!("the store open task failed: {join}"),
+            });
+        }
+    };
     let server = DevdocsServer::new(store, config.clone());
     // stdio_pipes drives the streams through the non-blocking pipe driver
     // when the client spawned this process with pipes, and falls back to

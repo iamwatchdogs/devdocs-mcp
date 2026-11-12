@@ -10,13 +10,16 @@ mod common;
 use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 /// The watchdog timeout: a stuck server fails the test instead of
 /// hanging the runner.
 const WATCHDOG: Duration = Duration::from_secs(60);
+
+/// The shutdown poll interval: how often shutdown checks the child exit.
+const POLL: Duration = Duration::from_millis(100);
 
 /// One live MCP stdio session against the spawned binary.
 struct Session {
@@ -147,15 +150,32 @@ impl Session {
             assert_eq!(value["jsonrpc"], "2.0", "not a JSON-RPC message: {line:?}");
             drained.push(value);
         }
-        let code = self
-            .child
-            .lock()
-            .unwrap()
-            .wait()
-            .expect("the child waits")
-            .code()
-            .unwrap_or(-1);
-        // wait() reaped the child, so stderr is at EOF and the drain
+        // Poll the exit and release the lock between polls: a blocking
+        // wait under the mutex would keep the watchdog from its kill.
+        let deadline = Instant::now() + WATCHDOG;
+        let code = loop {
+            if let Some(status) = self
+                .child
+                .lock()
+                .unwrap()
+                .try_wait()
+                .expect("the child polls")
+            {
+                break status.code().unwrap_or(-1);
+            }
+            if Instant::now() >= deadline {
+                let _ = self.child.lock().unwrap().kill();
+                let status = self
+                    .child
+                    .lock()
+                    .unwrap()
+                    .wait()
+                    .expect("the killed child waits");
+                break status.code().unwrap_or(-1);
+            }
+            std::thread::sleep(POLL);
+        };
+        // The child is reaped here, so stderr is at EOF and the drain
         // thread can no longer gain new bytes: join it before reading
         // the buffer, so shutdown never returns partial stderr.
         if let Some(handle) = self.stderr_thread.take() {

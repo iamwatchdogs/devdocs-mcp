@@ -64,3 +64,19 @@ pub(crate) fn success_result(json: String) -> Result<CallToolResult, ErrorData> 
 pub(crate) fn internal(detail: String) -> ErrorData {
     ErrorData::internal_error(detail, None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::internal;
+    use rmcp::model::ErrorCode;
+
+    // The protocol-level internal error carries the JSON-RPC -32603
+    // code and the detail as the message; no tool data flows through it.
+    #[test]
+    fn internal_carries_the_json_rpc_internal_error_code() {
+        let error = internal(String::from("the search task failed: boom"));
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(error.message, "the search task failed: boom");
+        assert_eq!(error.data, None);
+    }
+}

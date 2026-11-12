@@ -304,7 +304,11 @@ fn mcp_stdin_io_error_before_init_is_upstream() {
     );
     assert!(out.stdout.is_empty(), "stdout is protocol-only");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("UPSTREAM_ERROR"), "stderr: {stderr}");
+    // Logs share stderr with the envelope: the envelope is its last line.
+    let envelope: Value =
+        serde_json::from_str(stderr.trim().lines().last().expect("the envelope line"))
+            .expect("the error envelope parses");
+    assert_eq!(envelope["error"], json!("UPSTREAM_ERROR"));
 }
 
 /// The startup migration hook: the serve path opens the store and runs

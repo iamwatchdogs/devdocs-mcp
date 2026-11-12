@@ -3,7 +3,7 @@ type: guide
 title: Testing Strategy
 description: The test frameworks, the test pyramid, fixture strategy, coverage and mutation policy for devdocs. Framework versions verified 2026-10-28.
 tags: [devdocs, testing, nextest, insta, proptest, coverage]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-12T03:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -43,7 +43,7 @@ cargo binstall cargo-nextest cargo-llvm-cov cargo-mutants cargo-deny cargo-audit
 | Unit | `#[cfg(test)]` modules in each crate | hundreds | Pure logic: parsers, guards, fusion, chunk math |
 | Integration | `crates/*/tests/` | tens | Crate boundaries: store migrations, ingest adapters, retrieve queries |
 | CLI end-to-end | `crates/devdocs/tests/` | ~30 | Real binary, real temp DB, exit codes, JSON output, non-TTY rules |
-| Contract | `crates/devdocs-mcp/tests/` + `crates/devdocs/tests/` | ~10 | MCP protocol through an in-process rmcp client against the server. The identical-results gate compares the tools against the spawned CLI on a 50-query corpus |
+| Contract | `crates/devdocs-mcp/tests/` + `crates/devdocs/tests/` | ~20 | MCP protocol through an in-process rmcp client against the server. The identical-results gate compares the tools against the spawned CLI on a 50-query corpus |
 | Golden set | `crates/devdocs-eval` + `eval/golden/` | 45+ questions | Retrieval quality gates (see [14](14-benchmark-eval.md)) |
 | Benchmarks | `crates/devdocs-retrieve/benches/` | ~8 | p50/p95 of query paths, segmentation throughput |
 | Mutation | scheduled, not per-PR | — | Survival rate on parsers and fusion |

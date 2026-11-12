@@ -207,15 +207,28 @@ impl Gate {
             common::strip_served_at(&stdout),
             "{label}: the envelopes must be byte-identical except served_at"
         );
+        let value = serde_json::from_str::<Value>(&text).expect("the text parses");
         let structured = result
             .structured_content
             .clone()
             .expect("structured content");
         assert_eq!(
-            structured,
-            serde_json::from_str::<Value>(&text).expect("the text parses"),
+            structured, value,
             "{label}: the structured content is the text JSON"
         );
+        // The budgeted corpus entries carry a 15-token budget the rank-1
+        // chunk exceeds, so the page must show the budget-and-resume gate
+        // (docs/implementation/08 §CLI contract): truncated with a
+        // non-empty resume cursor.
+        if entry.max_tokens.is_some() {
+            assert_eq!(value["truncated"], json!(true), "{label}: {value}");
+            assert!(
+                value["next_cursor"]
+                    .as_str()
+                    .is_some_and(|cursor| !cursor.is_empty()),
+                "{label}: {value}"
+            );
+        }
     }
 
     /// The miss comparison: the CLI answers on stderr with the error

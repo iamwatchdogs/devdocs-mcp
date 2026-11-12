@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-12T02:00:00Z
+timestamp: 2026-11-12T17:29:38Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -186,7 +186,7 @@ Implemented with rmcp 3.8.0 (verified 2026-10-28. Official Rust SDK, used by Blo
 | `open_doc` | `ref` (string, required. Must come from `search_docs`), `max_tokens?` | One section, bounded |
 | `verify_doc` | `ref` (string, required) | `{"valid": bool, "content_hash": "..."}` |
 
-Tool annotations (MCP spec 2026-07-28. Untrusted hints, set honestly): `readOnlyHint = true`, `destructiveHint = false`, `idempotentHint = true`, `openWorldHint = false`.
+Tool annotations (MCP spec 2026-07-28. Untrusted hints, set honestly): `readOnlyHint = false` on all three tools (a read can record the expiry transition, docs/implementation/07 §Expiry sweep), `destructiveHint = false`, `idempotentHint = true` (a repeated sweep converges), `openWorldHint = false`.
 
 Server instructions text (kept short, discriminative. Description quality is a measured failure source, research: retrieval-design.md §3.6):
 
@@ -207,7 +207,7 @@ The MCP path serves with an empty project context and never walks lockfiles. The
 Gates:
 
 - The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field. The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
-- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2582 bytes. The schema test holds it under a 6000-byte ceiling.
+- The tool surface stays under the 10%-of-context deferral threshold: three tools with compact schemas cost a few hundred tokens (research: interfaces.md §1). The compact `tools/list` JSON measured 2585 bytes. The schema test holds it under a 6000-byte ceiling.
 
 ## Error codes
 

@@ -159,8 +159,10 @@ impl DevdocsServer {
     #[tool(
         name = "search_docs",
         description = "Search the version-pinned official docs in the local index. One concept per query. Read a result with open_doc.",
+        // Not read-only: the read can record the expiry transition
+        // (docs/implementation/07 §Expiry sweep).
         annotations(
-            read_only_hint = true,
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false,
@@ -220,8 +222,10 @@ impl DevdocsServer {
     #[tool(
         name = "open_doc",
         description = "Read one section by ref. Refs come only from search_docs results. The result carries the section text bounded by the token budget.",
+        // Not read-only: the read can record the expiry transition
+        // (docs/implementation/07 §Expiry sweep).
         annotations(
-            read_only_hint = true,
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false,
@@ -265,8 +269,10 @@ impl DevdocsServer {
     #[tool(
         name = "verify_doc",
         description = "Confirm a citation before you rely on it. Refs come only from search_docs results. Returns the valid flag and the content hash.",
+        // Not read-only: the read can record the expiry transition
+        // (docs/implementation/07 §Expiry sweep).
         annotations(
-            read_only_hint = true,
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false,

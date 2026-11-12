@@ -26,7 +26,7 @@ const TOOL_SURFACE_MAX_BYTES: usize = 6000;
 
 /// The measured tool-surface byte count docs/implementation/08 quotes.
 /// Update the doc and this constant together.
-const TOOL_SURFACE_MEASURED_BYTES: usize = 2582;
+const TOOL_SURFACE_MEASURED_BYTES: usize = 2585;
 
 /// A seeded index in a temp dir with a config pointing at it. The store
 /// carries one `acme` source at `approved_index` with one chunk under
@@ -124,9 +124,10 @@ async fn the_tools_list_matches_the_schema_snapshot() {
 }
 
 /// Every tool carries all four annotations with the honest values
-/// (docs/implementation/08 §MCP adapter): read-only, not destructive,
-/// idempotent, closed world. The spec defaults are the inverse, so a
-/// missing field would flip the meaning.
+/// (docs/implementation/08 §MCP adapter): not read-only (a read can
+/// record the expiry transition), not destructive, idempotent, closed
+/// world. The spec defaults are the inverse, so a missing field would
+/// flip the meaning.
 #[tokio::test]
 async fn every_tool_carries_all_four_annotations() {
     let env = setup();
@@ -137,7 +138,7 @@ async fn every_tool_carries_all_four_annotations() {
         let annotations = tool.annotations.as_ref().unwrap_or_else(|| {
             panic!("tool {} carries no annotations", tool.name);
         });
-        assert_eq!(annotations.read_only_hint, Some(true), "{}", tool.name);
+        assert_eq!(annotations.read_only_hint, Some(false), "{}", tool.name);
         assert_eq!(annotations.destructive_hint, Some(false), "{}", tool.name);
         assert_eq!(annotations.idempotent_hint, Some(true), "{}", tool.name);
         assert_eq!(annotations.open_world_hint, Some(false), "{}", tool.name);

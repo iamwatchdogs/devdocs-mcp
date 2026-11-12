@@ -24,6 +24,7 @@ struct Session {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr_text: Arc<Mutex<String>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Session {
@@ -40,7 +41,7 @@ impl Session {
         let mut stderr: ChildStderr = child.stderr.take().expect("stderr piped");
         let stderr_text = Arc::new(Mutex::new(String::new()));
         let sink = Arc::clone(&stderr_text);
-        std::thread::spawn(move || {
+        let stderr_thread = std::thread::spawn(move || {
             let mut buffer = Vec::new();
             let _ = stderr.read_to_end(&mut buffer);
             *sink.lock().unwrap() = String::from_utf8_lossy(&buffer).into_owned();
@@ -56,6 +57,7 @@ impl Session {
             stdin,
             stdout,
             stderr_text,
+            stderr_thread: Some(stderr_thread),
         }
     }
 
@@ -129,21 +131,21 @@ impl Session {
     /// Closes stdin and waits for the exit. The drain reads stdout to
     /// EOF; every leftover line must also parse as a JSON-RPC message,
     /// so non-JSON bytes cannot hide after the last response. Returns
-    /// the exit code and the collected stderr.
-    fn shutdown(mut self) -> (i32, String) {
+    /// the exit code, the collected stderr, and the drained JSON-RPC
+    /// messages the server sent without being asked.
+    fn shutdown(mut self) -> (i32, String, Vec<Value>) {
         drop(self.stdin);
+        let mut drained = Vec::new();
         loop {
             let mut line = String::new();
             let read = self.stdout.read_line(&mut line).expect("stdout drain");
             if read == 0 {
                 break;
             }
-            if line.trim().is_empty() {
-                continue;
-            }
             let value: Value = serde_json::from_str(line.trim())
                 .unwrap_or_else(|e| panic!("stdout carried a non-JSON line {line:?}: {e}"));
             assert_eq!(value["jsonrpc"], "2.0", "not a JSON-RPC message: {line:?}");
+            drained.push(value);
         }
         let code = self
             .child
@@ -153,8 +155,14 @@ impl Session {
             .expect("the child waits")
             .code()
             .unwrap_or(-1);
+        // wait() reaped the child, so stderr is at EOF and the drain
+        // thread can no longer gain new bytes: join it before reading
+        // the buffer, so shutdown never returns partial stderr.
+        if let Some(handle) = self.stderr_thread.take() {
+            handle.join().expect("the stderr drain joins");
+        }
         let stderr = std::mem::take(&mut *self.stderr_text.lock().unwrap());
-        (code, stderr)
+        (code, stderr, drained)
     }
 }
 
@@ -224,8 +232,12 @@ fn mcp_stdio_serves_the_protocol_on_stdout_only() {
         assert_eq!(envelope["error"], json!("USAGE"), "{tool}");
     }
 
-    let (code, _stderr) = session.shutdown();
+    let (code, _stderr, drained) = session.shutdown();
     assert_eq!(code, 0, "the server exits cleanly when stdin closes");
+    assert!(
+        drained.is_empty(),
+        "no unsolicited protocol messages may ride along: {drained:?}"
+    );
 }
 
 /// A client that closes stdin before the initialize handshake ends the
@@ -235,11 +247,15 @@ fn mcp_stdio_serves_the_protocol_on_stdout_only() {
 fn mcp_pre_init_stdin_close_exits_cleanly() {
     let env = common::Env::new();
     let session = Session::spawn(&env);
-    let (code, stderr) = session.shutdown();
+    let (code, stderr, drained) = session.shutdown();
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
         !stderr.contains("UPSTREAM_ERROR"),
         "the close must carry no error envelope: {stderr}"
+    );
+    assert!(
+        drained.is_empty(),
+        "nothing may appear on the protocol stream before initialization: {drained:?}"
     );
 }
 
@@ -259,8 +275,12 @@ fn mcp_startup_runs_the_store_migrations() {
         "tools/list answers"
     );
 
-    let (code, stderr) = session.shutdown();
+    let (code, stderr, drained) = session.shutdown();
     assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        drained.is_empty(),
+        "no unsolicited protocol messages may ride along: {drained:?}"
+    );
 
     // The index file sits at the data root the config resolves to, and
     // the schema ran every shipped migration (the same floor `db

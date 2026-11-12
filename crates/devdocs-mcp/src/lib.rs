@@ -11,6 +11,8 @@ pub mod detail;
 // The error helpers expose no public items: only the tool handlers in
 // this crate call them, so the module stays crate-private.
 pub(crate) mod error;
+// The stdin guard serves the stdio transport only: see the module doc.
+mod stdin_error;
 
 use std::sync::Arc;
 
@@ -77,12 +79,28 @@ pub async fn serve(config: &Config) -> Result<(), Error> {
     // driver on Linux, and falls back to the blocking handles on other
     // platforms (the workspace declares rmcp 3.8.0, the lockfile
     // resolves 3.9.0 — docs/implementation/08 §MCP adapter).
-    let running = match server.serve(rmcp::transport::stdio_pipes()).await {
+    // rmcp reports EOF and read errors the same way (`ConnectionClosed`),
+    // so the guard captures the stdin read error out-of-band and the
+    // `ConnectionClosed` arm tells the two cases apart.
+    let (reader, writer) = rmcp::transport::stdio_pipes();
+    let stdin_error: stdin_error::StdinErrorSlot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let guarded_reader = stdin_error::GuardedStdin::new(reader, Arc::clone(&stdin_error));
+    let running = match server.serve((guarded_reader, writer)).await {
         // rmcp reports a client that closes stdin before the initialize
         // handshake as `ConnectionClosed`: the transport receive side hit
-        // end of stream. A client that closes the pipe ends the server
-        // normally, so this is a clean exit, not an upstream error.
-        Err(rmcp::service::ServerInitializeError::ConnectionClosed(_)) => return Ok(()),
+        // end of stream — a read error lands there too, so the slot
+        // decides. A client that closes the pipe ends the server
+        // normally: clean exit, not an upstream error.
+        Err(rmcp::service::ServerInitializeError::ConnectionClosed(_)) => {
+            let captured = stdin_error.lock().ok().and_then(|mut guard| guard.take());
+            if let Some(e) = captured {
+                return Err(Error::Upstream {
+                    code: UpstreamCode::UpstreamError,
+                    detail: format!("stdin read failed before the initialize handshake: {e}"),
+                });
+            }
+            return Ok(());
+        }
         Ok(running) => running,
         Err(e) => {
             return Err(Error::Upstream {

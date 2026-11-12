@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-07T08:00:00Z
+timestamp: 2026-11-13T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -100,9 +100,9 @@ A FAIL blocks the phase transition ([12](12-roadmap-milestones.md)). An INCONCLU
 
 Each run writes:
 
-- `results.json` — one row per question per run: id, rank list, timings, per-metric score, index build hash (library versions and commit shas of the corpus used).
+- `results.json` — one row per question per run: id, rank list, timings, per-metric score, plus a `corpus` array: one row per indexed source (library, version, kind, origin_url) with its `commit_sha` (`null` for sources that record none, docs/implementation/06 §Schema).
 - `report.md` — the gate table plus per-task-type breakdown.
-- `manifest.json` — tool version, DB file hash, suite hash, host, date. A third party can reconstruct the denominator from it (research: benchmark-protocol.md Step 4 criterion).
+- `manifest.json` — tool version, DB file hash, suite hash, host (os, arch, core count, CPU model when the platform reports one), a mirror of the `corpus` array, date. A third party can reconstruct the denominator from it without the database (research: benchmark-protocol.md Step 4 criterion).
 
 The corpus identity matters: every result names the exact corpus it ran against. A gate claim without the manifest is not a claim.
 

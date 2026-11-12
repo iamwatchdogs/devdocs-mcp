@@ -4,8 +4,10 @@
 //! "The corpus identity matters: every result names the exact corpus it ran
 //! against. A gate claim without the manifest is not a claim."
 
+use std::num::NonZeroUsize;
 use std::path::Path;
 
+use devdocs_model::CorpusEntry;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -85,6 +87,9 @@ pub struct ResultsDocument<'a> {
     pub db_hash: &'a str,
     /// SHA-256 hex of the suite file bytes.
     pub suite_hash: &'a str,
+    /// The exact corpus the run executed against: one row per indexed
+    /// source (docs/implementation/14 §Run artifacts).
+    pub corpus: &'a [CorpusEntry],
     /// One row per question.
     pub questions: &'a [QuestionResult],
 }
@@ -96,6 +101,58 @@ pub struct Host {
     pub os: &'static str,
     /// The CPU architecture.
     pub arch: &'static str,
+    /// The logical core count the process sees.
+    pub cores: usize,
+    /// The CPU model string, when the platform reports one.
+    pub cpu: Option<String>,
+}
+
+impl Host {
+    /// The host the run executes on: OS and arch from the compile-time
+    /// constants, cores from `available_parallelism`, and the CPU model
+    /// from the platform probe.
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            cores: std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
+            cpu: detect_cpu(),
+        }
+    }
+}
+
+/// The CPU model the manifest records: the first `model name` line of
+/// `/proc/cpuinfo` on Linux, `sysctl machdep.cpu.brand_string` on macOS
+/// (`hw.model` on Apple Silicon, where the brand oid does not exist), and
+/// `None` on the other platforms or when the probe fails.
+fn detect_cpu() -> Option<String> {
+    match std::env::consts::OS {
+        "linux" => {
+            let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+            info.lines()
+                .find(|line| line.starts_with("model name"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, model)| model.trim().to_owned())
+        }
+        "macos" => {
+            let oid = match std::env::consts::ARCH {
+                "x86_64" => "machdep.cpu.brand_string",
+                _ => "hw.model",
+            };
+            let output = std::process::Command::new("sysctl")
+                .arg("-n")
+                .arg(oid)
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let model = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+            (!model.is_empty()).then_some(model)
+        }
+        _ => None,
+    }
 }
 
 /// The `manifest.json` document: enough to reconstruct the denominator
@@ -112,6 +169,10 @@ pub struct Manifest<'a> {
     pub db_hash: &'a str,
     /// The host the run executed on.
     pub host: Host,
+    /// The exact corpus the run executed against, mirroring
+    /// `results.json` so a third party can reconstruct the denominator
+    /// without the database (docs/implementation/14 §Run artifacts).
+    pub corpus: &'a [CorpusEntry],
     /// The run date, RFC 3339 UTC.
     pub date: &'a str,
     /// The question count.
@@ -529,6 +590,18 @@ mod tests {
             db_hash: &db_hash,
         };
         insta::assert_snapshot!("render_report_fixture", render_report(&input));
+    }
+
+    #[test]
+    fn the_host_records_cores_and_an_optional_cpu() {
+        let host = super::Host::current();
+        assert!(host.cores > 0, "{host:?}");
+        let value = serde_json::to_value(&host).unwrap();
+        assert!(value["cores"].as_u64().unwrap() > 0, "{value}");
+        assert!(
+            value["cpu"].is_null() || value["cpu"].is_string(),
+            "{value}"
+        );
     }
 
     #[test]

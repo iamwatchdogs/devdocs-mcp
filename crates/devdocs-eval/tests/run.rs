@@ -74,6 +74,49 @@ fn a_run_scores_and_writes_parseable_artifacts() {
 }
 
 #[test]
+fn the_artifacts_name_the_corpus_and_the_host() {
+    let (_dir, _db, outcome) = run_fixture();
+
+    // One corpus row per distinct source: the llms_txt carrier without a
+    // commit sha and the git row with one (docs/implementation/14 §Run
+    // artifacts, docs/implementation/06 §Schema).
+    let results: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("results.json")).unwrap(),
+    )
+    .unwrap();
+    let corpus = results["corpus"].as_array().unwrap();
+    assert_eq!(corpus.len(), 2, "{corpus:?}");
+    let git = corpus
+        .iter()
+        .find(|entry| entry["kind"] == "git")
+        .expect("the git source row");
+    assert_eq!(git["library"], serde_json::json!("test-lib"));
+    assert_eq!(git["version"], serde_json::json!("1.0.0"));
+    assert_eq!(
+        git["origin_url"],
+        serde_json::json!("https://example.test/test-lib.git")
+    );
+    assert_eq!(git["commit_sha"], serde_json::json!(common::GIT_SHA));
+    let llms = corpus
+        .iter()
+        .find(|entry| entry["kind"] == "llms_txt")
+        .expect("the llms_txt source row");
+    assert_eq!(llms["commit_sha"], serde_json::Value::Null);
+
+    // The manifest mirrors the corpus and records the host spec.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["corpus"], results["corpus"]);
+    let host = &manifest["host"];
+    assert_eq!(host["os"].as_str().unwrap(), std::env::consts::OS);
+    assert_eq!(host["arch"].as_str().unwrap(), std::env::consts::ARCH);
+    assert!(host["cores"].as_u64().unwrap() > 0);
+    assert!(host["cpu"].is_null() || host["cpu"].is_string());
+}
+
+#[test]
 fn a_run_renders_the_report_and_judges_the_gates() {
     let (_dir, _db, outcome) = run_fixture();
 

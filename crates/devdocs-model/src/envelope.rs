@@ -129,6 +129,26 @@ pub struct SourceSummary {
     pub commit_sha: Option<String>,
 }
 
+/// One corpus row the run artifacts carry: the source identity the
+/// retrieval ran against (docs/implementation/14 §Run artifacts). The
+/// `(library, version, kind, origin_url)` key is UNIQUE in the store
+/// (docs/implementation/06 §Schema).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CorpusEntry {
+    /// The library name, for example `next.js`.
+    pub library: String,
+    /// The exact version, for example `16.2.9`.
+    pub version: String,
+    /// The origin adapter that produced the content, for example
+    /// `llms_txt`.
+    pub kind: String,
+    /// The origin URL the content was captured from.
+    pub origin_url: String,
+    /// The commit the content was captured at; `null` when the adapter
+    /// records none (`llms_txt` sources, docs/implementation/06 §Schema).
+    pub commit_sha: Option<String>,
+}
+
 /// One `devdocs source list` entry: the declarative `[sources.<name>]`
 /// config entry joined with the authoritative store state
 /// (docs/implementation/07 §License gate).

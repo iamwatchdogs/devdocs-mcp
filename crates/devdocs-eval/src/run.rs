@@ -6,6 +6,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use devdocs_model::CorpusEntry;
 use devdocs_store::Store;
 use sha2::{Digest, Sha256};
 
@@ -77,6 +78,9 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
 
     let mut passes = in_process_pass(&store, &suite)?;
     let p95_ms = subprocess_pass(options, &db_path, &suite, &mut passes.rows)?;
+    // Read the corpus last, so the artifacts name the sources the hashed
+    // database file holds (the read-path sweep can mutate license state).
+    let corpus = store.list_corpus()?;
     drop(store);
 
     let metrics = SuiteMetrics::new(&passes.graded);
@@ -91,6 +95,7 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
         gates: &gate_rows,
         db_hash: &db_hash,
         baseline_path: &baseline_path,
+        corpus: &corpus,
     };
     write_artifacts(&run_dir, &bundle, &passes)?;
 
@@ -251,6 +256,8 @@ struct RunData<'a> {
     db_hash: &'a str,
     /// The baseline record the report and manifest carry.
     baseline_path: &'a Path,
+    /// The indexed sources the run executed against.
+    corpus: &'a [CorpusEntry],
 }
 
 /// Writes `results.json`, `manifest.json`, and `report.md` into the run
@@ -287,6 +294,7 @@ fn write_results(
         tool_version: env!("CARGO_PKG_VERSION"),
         db_hash: data.db_hash,
         suite_hash: &data.suite.hash,
+        corpus: data.corpus,
         questions: rows,
     };
     report::write_artifact(
@@ -306,10 +314,8 @@ fn write_manifest(
         suite: &data.suite.name,
         suite_hash: &data.suite.hash,
         db_hash: data.db_hash,
-        host: Host {
-            os: std::env::consts::OS,
-            arch: std::env::consts::ARCH,
-        },
+        host: Host::current(),
+        corpus: data.corpus,
         date: data.date,
         questions: data.suite.questions.len(),
         baseline_hash,

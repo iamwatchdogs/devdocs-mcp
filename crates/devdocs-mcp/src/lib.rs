@@ -15,6 +15,7 @@ pub(crate) mod error;
 mod stdin_error;
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use devdocs_model::config::Config;
 use devdocs_model::error::{Error, UpstreamCode};
@@ -83,7 +84,7 @@ pub async fn serve(config: &Config) -> Result<(), Error> {
     // so the guard captures the stdin read error out-of-band and the
     // `ConnectionClosed` arm tells the two cases apart.
     let (reader, writer) = rmcp::transport::stdio_pipes();
-    let stdin_error: stdin_error::StdinErrorSlot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let stdin_error: stdin_error::StdinErrorSlot = Arc::new(Mutex::new(None));
     let guarded_reader = stdin_error::GuardedStdin::new(reader, Arc::clone(&stdin_error));
     let running = match server.serve((guarded_reader, writer)).await {
         // rmcp reports a client that closes stdin before the initialize

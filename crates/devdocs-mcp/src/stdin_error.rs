@@ -96,7 +96,8 @@ mod tests {
             inner: FailingReader,
             slot: Arc::clone(&slot),
         };
-        // Manual polling: std is 1.90-new enough for `Waker::noop`.
+        // Manual polling: `Waker::noop` is stable since 1.85, inside the
+        // 1.90 MSRV.
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
         let mut buf = [0_u8; 8];

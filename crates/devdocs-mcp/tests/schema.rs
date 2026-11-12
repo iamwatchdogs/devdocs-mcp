@@ -169,7 +169,10 @@ async fn search_docs_returns_the_result_envelope() {
     )
     .await;
     assert_eq!(result.is_error, Some(false));
-    let structured = result.structured_content.clone().unwrap_or_default();
+    let structured = result
+        .structured_content
+        .clone()
+        .expect("structured content");
     let text = &result.content.first().unwrap().as_text().unwrap().text;
     let envelope: ResultEnvelope = serde_json::from_str(text).unwrap();
     assert_eq!(envelope.results.len(), 1);
@@ -179,8 +182,13 @@ async fn search_docs_returns_the_result_envelope() {
     );
     assert_eq!(envelope.results[0].served_version, "1.0.0");
     assert_eq!(envelope.results[0].title, "Routing");
-    // The structured content is the same JSON the text carries.
-    assert_eq!(result.structured_content.unwrap(), structured);
+    // The structured content is the same JSON the text carries (the same
+    // comparison rule the identical-results gate applies).
+    assert_eq!(
+        structured,
+        serde_json::from_str::<Value>(text).expect("the text parses"),
+        "the structured content is the text JSON"
+    );
 }
 
 /// The `open_doc` tool with an unparseable ref returns a tool-level error
@@ -290,7 +298,11 @@ async fn an_unknown_tool_is_a_protocol_error() {
 /// Malformed arguments stay at the tool level, the split the rmcp router
 /// draws: it turns the deserialization failure into a tool error result,
 /// not a JSON-RPC error (docs/implementation/08 §MCP adapter). The test
-/// pins the missing required field and the wrong-typed one.
+/// pins the missing required field and the wrong-typed one. The pinned
+/// `failed to deserialize parameters:` prefix is rmcp's own string, not
+/// ours: an rmcp bump can change it, and the assertion fails on that bump
+/// (the workspace declares rmcp 3.8.0, the lockfile resolves 3.9.0 —
+/// docs/implementation/08 §MCP adapter).
 #[tokio::test]
 async fn malformed_arguments_stay_tool_level_errors() {
     let env = setup();

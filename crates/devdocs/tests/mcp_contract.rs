@@ -47,9 +47,9 @@ fn mcp_config(env: &Env) -> Config {
 /// seeded database.
 async fn connect(env: &Env) -> RunningService<RoleClient, ()> {
     let (client_transport, server_transport) = tokio::io::duplex(64 * 1024);
-    let store =
-        devdocs_retrieve::wiring::open_store(&mcp_config(env), false).expect("the env index opens");
-    let server = DevdocsServer::new(store, mcp_config(env));
+    let config = mcp_config(env);
+    let store = devdocs_retrieve::wiring::open_store(&config, false).expect("the env index opens");
+    let server = DevdocsServer::new(store, config);
     let _server_task = tokio::spawn(async move {
         let running = server.serve(server_transport).await.expect("server start");
         running.waiting().await.expect("server loop");

@@ -234,8 +234,9 @@ impl Gate {
     /// The miss comparison: the CLI answers on stderr with the error
     /// envelope, the MCP tool answers with a tool-level error whose text
     /// content is the same single-line JSON. The error envelope carries
-    /// no `served_at`, so the strings compare whole. Returns the MCP
-    /// text so a caller can pin the envelope's reason code.
+    /// no `served_at`, so the strings compare whole, and the `error`
+    /// code is the entry's `expected_error`. Returns the MCP text so a
+    /// caller can pin further envelope fields.
     async fn compare_miss(&self, label: &str, entry: &CorpusQuery) -> String {
         let result = self.mcp_call(entry).await;
         assert_eq!(result.is_error, Some(true), "{label}: a miss must fail");
@@ -250,6 +251,11 @@ impl Gate {
             stderr.trim(),
             "{label}: the miss envelopes must be byte-identical"
         );
+        let expected = entry
+            .expected_error
+            .expect("a miss entry carries its error code");
+        let envelope: Value = serde_json::from_str(text.trim()).expect("the envelope parses");
+        assert_eq!(envelope["error"], json!(expected), "{label}: {envelope}");
         text
     }
 

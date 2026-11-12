@@ -1,8 +1,9 @@
 //! The 50-query contract corpus for the identical-results gate
-//! (`mcp_contract.rs`): every entry names one query, its parameters, and
-//! the outcome both edges must agree on. The entries derive from the
-//! fixture bodies `common::contract_env` ingests, so every hit hits and
-//! every miss misses deterministically.
+//! (`mcp_contract.rs`): every entry names one query, its parameters, the
+//! outcome both edges must agree on, and the `error` code a miss must
+//! carry. The entries derive from the fixture bodies
+//! `common::contract_env` ingests, so every hit hits and every miss
+//! misses deterministically.
 
 /// The tool surface one corpus entry drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,8 @@ pub struct CorpusQuery {
     pub doc_ref: Option<&'static str>,
     /// The outcome both edges must agree on.
     pub outcome: Outcome,
+    /// The `error` code the miss envelope must carry; `None` for a hit.
+    pub expected_error: Option<&'static str>,
 }
 
 /// One `Search` hit with no scope: a plain phrase over the corpus.
@@ -60,6 +63,7 @@ const fn plain(query: &'static str) -> CorpusQuery {
         max_tokens: None,
         doc_ref: None,
         outcome: Outcome::Hit,
+        expected_error: None,
     }
 }
 
@@ -78,11 +82,17 @@ const fn scoped(
         max_tokens: None,
         doc_ref: None,
         outcome: Outcome::Hit,
+        expected_error: None,
     }
 }
 
-/// One `Search` that misses with the envelope both edges must echo.
-const fn miss(query: &'static str, library: Option<&'static str>) -> CorpusQuery {
+/// One `Search` that misses; `code` is the `error` field of the miss
+/// envelope both edges must echo.
+const fn miss(
+    query: &'static str,
+    library: Option<&'static str>,
+    code: &'static str,
+) -> CorpusQuery {
     CorpusQuery {
         kind: Kind::Search,
         query,
@@ -92,6 +102,7 @@ const fn miss(query: &'static str, library: Option<&'static str>) -> CorpusQuery
         max_tokens: None,
         doc_ref: None,
         outcome: Outcome::Miss,
+        expected_error: Some(code),
     }
 }
 
@@ -106,12 +117,17 @@ const fn budgeted(query: &'static str, max_tokens: u64) -> CorpusQuery {
         max_tokens: Some(max_tokens),
         doc_ref: None,
         outcome: Outcome::Hit,
+        expected_error: None,
     }
 }
 
 /// One `Open` that serves the section, or misses on a version the index
-/// does not carry.
-const fn open(doc_ref: &'static str, outcome: Outcome) -> CorpusQuery {
+/// does not carry; a miss carries its `error` code.
+const fn open(
+    doc_ref: &'static str,
+    outcome: Outcome,
+    expected_error: Option<&'static str>,
+) -> CorpusQuery {
     CorpusQuery {
         kind: Kind::Open,
         query: "",
@@ -121,6 +137,7 @@ const fn open(doc_ref: &'static str, outcome: Outcome) -> CorpusQuery {
         max_tokens: None,
         doc_ref: Some(doc_ref),
         outcome,
+        expected_error,
     }
 }
 
@@ -136,6 +153,7 @@ const fn detailed(query: &'static str, detail: &'static str) -> CorpusQuery {
         max_tokens: None,
         doc_ref: None,
         outcome: Outcome::Hit,
+        expected_error: None,
     }
 }
 
@@ -152,6 +170,7 @@ const fn verify(doc_ref: &'static str) -> CorpusQuery {
         max_tokens: None,
         doc_ref: Some(doc_ref),
         outcome: Outcome::Hit,
+        expected_error: None,
     }
 }
 
@@ -197,13 +216,13 @@ pub const CORPUS: [CorpusQuery; 50] = [
     scoped("makeWidget", "acme", Some("1.0")),
     scoped("paintPanel", "acme", Some("2.0")),
     // 3 license-refused searches: both edges answer `NOT_AVAILABLE`.
-    miss("blocked marker", Some("blocked")),
-    miss("expiring marker", Some("expiring")),
-    miss("denied marker", Some("denied")),
+    miss("blocked marker", Some("blocked"), "NOT_AVAILABLE"),
+    miss("expiring marker", Some("expiring"), "NOT_AVAILABLE"),
+    miss("denied marker", Some("denied"), "NOT_AVAILABLE"),
     // 3 gibberish searches: both edges answer `NO_RESULT`.
-    miss("zzz-nonexistent-thing", None),
-    miss("qqqq wwww", None),
-    miss("xyzzy plugh zorkmid", None),
+    miss("zzz-nonexistent-thing", None, "NO_RESULT"),
+    miss("qqqq wwww", None, "NO_RESULT"),
+    miss("xyzzy plugh zorkmid", None, "NO_RESULT"),
     // 3 budgeted searches: a tiny budget truncates the first page, and
     // the truncation state plus the resume cursor compare byte for byte.
     budgeted("quick start builds", 15),
@@ -211,17 +230,26 @@ pub const CORPUS: [CorpusQuery; 50] = [
     budgeted("makeWidget", 15),
     // 2 version-pinned opens that miss: the index does not carry the
     // pinned version, and both edges answer `PKG_NOT_INDEXED`.
-    open("docs://acme/v3.0/getting-started", Outcome::Miss),
-    open("docs://acme/v9.9/reference", Outcome::Miss),
+    open(
+        "docs://acme/v3.0/getting-started",
+        Outcome::Miss,
+        Some("PKG_NOT_INDEXED"),
+    ),
+    open(
+        "docs://acme/v9.9/reference",
+        Outcome::Miss,
+        Some("PKG_NOT_INDEXED"),
+    ),
     // 6 opens that serve.
-    open("docs://acme/v1.0/getting-started", Outcome::Hit),
-    open("docs://acme/v2.0/widgets", Outcome::Hit),
-    open("docs://acme/v1.0/install/upgrade", Outcome::Hit),
-    open("docs://acme/v2.0/reference/errors", Outcome::Hit),
-    open("docs://beta/v1.0/starter", Outcome::Hit),
+    open("docs://acme/v1.0/getting-started", Outcome::Hit, None),
+    open("docs://acme/v2.0/widgets", Outcome::Hit, None),
+    open("docs://acme/v1.0/install/upgrade", Outcome::Hit, None),
+    open("docs://acme/v2.0/reference/errors", Outcome::Hit, None),
+    open("docs://beta/v1.0/starter", Outcome::Hit, None),
     open(
         "docs://acme/v1.0/symbols/makewidget#makewidget",
         Outcome::Hit,
+        None,
     ),
     // 2 detail projections: MCP-only shape snapshots.
     detailed("quick start builds", "name"),

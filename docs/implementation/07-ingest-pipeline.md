@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-12T17:47:50Z
+timestamp: 2026-11-12T18:10:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -159,7 +159,7 @@ No state grants a full-document render. `open` serves spans within the token bud
 
 ### Expiry sweep
 
-`sources.license_expires_at` records the lapse date (migration 0004, docs/implementation/06). Every read path and the sync gate runs the sweep first: a row whose recorded expiry has passed and which does not already sit in a terminal refusal flips to `expired`, and the sweep appends one audit line with the operator `auto:expiry`. A row without an expiry never flips. A published row inherits the library's latest stored expiry date. A fresh library takes the date from the configured `expires` line. The sweep lapses the recorded date without an operator action. Rows already `denied`, `expired`, or `revoked` stay put. The boundary is 00:00 UTC of the recorded expiry date: the stored date-only value compares string-wise against the full RFC 3339 instant, so a row flips on the recorded date itself. The one sweep-skipping read path is `search_with_context` in `devdocs-retrieve`; the caller owns the sweep there, and the eval harness calls it because an eval run serves a fixed snapshot and must not write.
+`sources.license_expires_at` records the lapse date (migration 0004, docs/implementation/06). Every read path and the sync gate runs the sweep first: a row whose recorded expiry has passed and which does not already sit in a terminal refusal flips to `expired`, and the sweep appends one audit line with the operator `auto:expiry`. A row without an expiry never flips. A published row inherits the library's latest stored expiry date. A fresh library takes the date from the configured `expires` line. The sweep lapses the recorded date without an operator action. Rows already `denied`, `expired`, or `revoked` stay put. The boundary is 00:00 UTC of the recorded expiry date: the stored date-only value compares string-wise against the full RFC 3339 instant, so a row flips on the recorded date itself. The sweep-skipping read paths are `search_with_context` and its core `search_packed` in `devdocs-retrieve`; the caller owns the sweep there, and the eval harness calls `search_packed` because an eval run serves a fixed snapshot and must not write.
 
 ### Registry commands
 

@@ -24,9 +24,9 @@ const TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX: &str = "failed to deserialize 
 
 /// Reshapes the router's deserialization-failure result into the error
 /// envelope: the raw rmcp text moves into `detail` unchanged, so the
-/// caller keeps the raw rmcp text, and the stable `USAGE`
-/// code replaces the free-form message, so every recoverable MCP
-/// failure carries one shape (docs/implementation/08 §MCP adapter).
+/// caller keeps it. The stable `USAGE` code replaces the free-form
+/// message, so every recoverable MCP failure carries one shape
+/// (docs/implementation/08 §MCP adapter).
 pub(crate) fn reshape_argument_error(result: CallToolResult) -> CallToolResult {
     if result.is_error != Some(true) {
         return result;

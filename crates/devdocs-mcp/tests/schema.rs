@@ -301,10 +301,10 @@ async fn an_unknown_tool_is_a_protocol_error() {
 /// (docs/implementation/08 §MCP adapter). The test pins the missing
 /// required field and the wrong-typed one on `search_docs`, and the
 /// missing required field on `open_doc` and `verify_doc`: when an rmcp
-/// bump renames its
-/// private deserialization prefix, the envelope parse fails at the next
-/// run of `just test` (the workspace declares rmcp 3.8.0, the lockfile
-/// resolves 3.9.0 — docs/implementation/08 §MCP adapter).
+/// bump renames its private deserialization prefix, the envelope parse
+/// fails at the next run of `just test` (the workspace declares rmcp
+/// 3.8.0, the lockfile resolves 3.9.0 — docs/implementation/08 §MCP
+/// adapter).
 #[tokio::test]
 async fn malformed_arguments_return_the_error_envelope() {
     let env = setup();
@@ -325,7 +325,11 @@ async fn malformed_arguments_return_the_error_envelope() {
         let envelope: ErrorEnvelope =
             serde_json::from_str(text).expect("the tool error text must be the envelope JSON");
         assert_eq!(envelope.error, "USAGE", "text: {text}");
-        assert!(envelope.hint.is_some(), "text: {text}");
+        assert_eq!(
+            envelope.hint.as_deref(),
+            Some("match the tool schema in tools/list"),
+            "text: {text}"
+        );
         assert!(
             !envelope.detail.unwrap_or_default().is_empty(),
             "text: {text}"

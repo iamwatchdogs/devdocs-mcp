@@ -279,6 +279,34 @@ fn mcp_pre_init_stdin_close_exits_cleanly() {
     );
 }
 
+/// A broken stdin pipe before the initialize handshake is not a clean
+/// close: the server exits 3 with the standard `UPSTREAM_ERROR` envelope
+/// on stderr (docs/implementation/08 §CLI contract). `#[cfg(unix)]`
+/// because Windows cannot open a directory for read.
+#[cfg(unix)]
+#[test]
+fn mcp_stdin_io_error_before_init_is_upstream() {
+    // Bind stdin to a directory fd: `File::open` on a directory succeeds
+    // on unix and read(2) fails with EISDIR every time — a deterministic
+    // io error, no network, no sleeps.
+    let env = common::Env::new();
+    let dir = env.root.join("stdin-dir");
+    std::fs::create_dir_all(&dir).expect("test dir");
+    let stdin = std::fs::File::open(&dir).expect("a directory opens for read");
+    let mut cmd = env.std_cmd(&["mcp", "--transport", "stdio"]);
+    cmd.stdin(Stdio::from(stdin));
+    let out = cmd.output().expect("the binary runs");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty(), "stdout is protocol-only");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("UPSTREAM_ERROR"), "stderr: {stderr}");
+}
+
 /// The startup migration hook: the serve path opens the store and runs
 /// the migrations before the first tool call, so the index file exists
 /// under the data root with the shipped schema.

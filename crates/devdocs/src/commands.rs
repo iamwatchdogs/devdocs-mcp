@@ -289,15 +289,10 @@ pub fn run_add(
     }
 
     if effective_kind == "git" {
-        // `--fixture` replays recorded HTTP responses; the git adapter has
-        // no replay surface, so a silent drop would run against the network.
-        if fixture_dir.is_some() {
-            return Err(Error::Usage(
-                "--fixture replays HTTP recordings and does not apply to git sources".to_owned(),
-            ));
-        }
         // `--record-to` records the llms.txt fetch path only; a silent
-        // drop would run the networked clone with no recording.
+        // drop would run the networked clone with no recording. (`--fixture`
+        // applies: it replays a git source's committed fixture directory,
+        // docs/implementation/07 §Git adapter, fixture replay.)
         if record_to.is_some() {
             return Err(Error::Usage(
                 "--record-to records HTTP responses and does not apply to git sources".to_owned(),
@@ -317,7 +312,7 @@ pub fn run_add(
                 return Err(error);
             }
         };
-        return run_add_git(config, &store, &index_url, &grant.name, pin);
+        return run_add_git(config, &store, &index_url, &grant.name, pin, fixture_dir);
     }
 
     let store = wiring::open_store(config, false)?;
@@ -372,8 +367,10 @@ pub fn run_add(
 /// [`IngestJob::run_git`]'s `spawn_blocking` — not through the HTTP fetch
 /// guard, which does not govern the git transport
 /// (docs/implementation/07 §Git adapter) — and the version label is the
-/// pin itself. The store handle arrives already open: the license gate
-/// opened it, and a second open would migrate the same file twice.
+/// pin itself. A `fixture_dir` replays a committed fixture directory
+/// offline instead of cloning (docs/implementation/07 §Git adapter,
+/// fixture replay). The store handle arrives already open: the license
+/// gate opened it, and a second open would migrate the same file twice.
 ///
 /// # Errors
 /// [`Error`] for any ingest failure (`IngestJob::run_git` maps the whole
@@ -384,6 +381,7 @@ fn run_add_git(
     repo_url: &Url,
     library: &str,
     pin: &str,
+    fixture_dir: Option<&std::path::Path>,
 ) -> Result<serde_json::Value, Error> {
     let guard = devdocs_ingest::FetchGuard::from_fetch_config(&config.fetch);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -399,7 +397,10 @@ fn run_add_git(
     // temp dir stays inside DEVDOCS_HOME, a private directory the adapter
     // creates with mode 0700 when missing.
     let data_root = devdocs_model::config::data_root()?;
-    let job = IngestJob::new(config, &guard, None);
+    let mut job = IngestJob::new(config, &guard, None);
+    if let Some(fixture_dir) = fixture_dir {
+        job = job.with_git_fixture(fixture_dir);
+    }
     let result = runtime.block_on(job.run_git(
         Arc::clone(store),
         repo_url,

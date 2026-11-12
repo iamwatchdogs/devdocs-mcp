@@ -12,16 +12,21 @@
 //! registered path before exiting 130.
 //!
 //! The adapter is synchronous; the ingest pipeline wraps it in
-//! `spawn_blocking` (docs/implementation/07 §Git adapter).
+//! `spawn_blocking` (docs/implementation/07 §Git adapter). A committed
+//! fixture directory can replay a source offline: the replay skips the
+//! clone entirely and runs the same walk over a materialized tree
+//! (docs/implementation/07 §Git adapter, fixture replay).
 
 mod clone;
 mod command;
+mod fixture;
 mod temp;
 mod walk;
 
 pub(crate) use clone::is_commit_sha;
 pub use clone::{GitFetch, GitPlan, PinKind, plan};
 pub use command::request_shutdown;
+pub(crate) use fixture::replay;
 pub use temp::{TempClone, install_signal_cleanup};
 
 /// Test-only helpers shared by the submodule test modules: the default

@@ -204,6 +204,8 @@ Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — r
 
 The MCP path serves with an empty project context and never walks lockfiles. The CLI keeps the lockfile walk (§Version resolution). No tool carries a cursor parameter. Pagination stays a CLI feature (`--cursor C`, §CLI contract).
 
+rmcp folds a clean stdin EOF and a stdin read error into the same `ServerInitializeError::ConnectionClosed`. The adapter separates the two with a transport read guard on stdin; the exit behavior of each case is the §CLI contract.
+
 Gates:
 
 - The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field, when both sides run with an empty project context. The gate runs the CLI in a clean cwd with no lockfiles; a CLI run from a directory with lockfiles can differ, because the CLI resolves versions from lockfiles (§Version resolution) and the MCP path never walks them (§MCP adapter). The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).

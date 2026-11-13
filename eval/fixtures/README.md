@@ -22,6 +22,14 @@ shape `devdocs add --record-to` writes. Replay serves a response by exact
 URL and fails closed on a miss, so a manifest must record every page its
 rewritten index links.
 
+## Recording provenance
+
+The fixtures were recorded from the live llms.txt endpoints on
+2026-11-13. The next.js recording captured the docs nextjs.org served
+that day: the site served its then-current docs under the 16.2.9 corpus
+label, because llms.txt serves latest only and has no versioned
+endpoint. Real-network re-recording stays manual and labeled.
+
 ## Trim procedure
 
 The trim keeps only the keep-listed responses and rewrites each kept

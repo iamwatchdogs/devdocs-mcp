@@ -3,7 +3,7 @@ type: guide
 title: Roadmap and Milestones
 description: The phased roadmap for devdocs with concrete milestones, scope, acceptance criteria, and effort. Each phase gate matches the research validation gates.
 tags: [devdocs, roadmap, milestones, gates]
-timestamp: 2026-11-13T23:59:00Z
+timestamp: 2026-11-14T01:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -46,7 +46,7 @@ Total to the Phase 1 gate (M0–M10): about 27 working days. Phases 2 and 3 add 
 
 Status note (2026-11-06): M5 is implemented. Its partial gate waits for the fixture corpus: the pilot golden set exists, the fixture DB behind it does not, so the pilot run reports placeholder zeros until the corpus lands ([14](14-benchmark-eval.md)). The ≥ 0.95 symbol-recall criterion stands.
 
-Status note (2026-11-13): M10 is implemented. The golden set holds 48 questions across 3 libraries (next.js 16.2.9, zod 4.6.7, serde 1.0.229) and all 8 task types, and the fixture corpus is committed: next.js and zod recorded via llms.txt, serde via git-tag fixture replay ([14](14-benchmark-eval.md) §Fixture corpus). The official gate run is PASS on every Phase 1 row (symbol recall 1.0, hit@5 1.0, p95 46.6 ms, version correctness 1.0, cost $0). The Retrieval-failures row stays INCONCLUSIVE and moves to M11 with the M4 baseline measurement. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report with the demo transcripts lives at `eval/reports/2026-11-13-pilot/`.
+Status note (2026-11-13): M10 is implemented. The golden set holds 48 questions across 3 libraries (next.js 16.2.9, zod 4.6.7, serde 1.0.229) and all 8 task types, and the fixture corpus is committed: next.js and zod recorded via llms.txt, serde via git fixture replay at recorded commit `7fc3b4c` (a materialized tree plus a commit-sha file, not a tag checkout) ([14](14-benchmark-eval.md) §Fixture corpus). The official gate run is PASS on every Phase 1 row (symbol recall 1.0, hit@5 1.0, p95 48.9 ms, version correctness 1.0, cost $0). The Retrieval-failures row stays INCONCLUSIVE and moves to M11 with the M4 baseline measurement. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report with the demo transcripts lives at `eval/reports/2026-11-13-pilot/`.
 
 ## Definition of done
 

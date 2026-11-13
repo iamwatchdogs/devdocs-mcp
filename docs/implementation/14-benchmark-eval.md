@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-13T18:32:00Z
+timestamp: 2026-11-14T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -137,7 +137,7 @@ Committed gate reports live under the tracked path `eval/reports/<date>-<suite>/
 
 The implemented mechanics:
 
-1. The eval gate job runs the full default suite in PR CI against the fixture-rebuilt database (`just eval-corpus` first, `just eval-ci` second — `eval-ci` runs `just eval`, permits the accepted exit 2, and fails only when a gate row that was PASS in the tracked report regresses), fully offline, and is a required check. A regression blocks merges to `main`, and therefore blocks any release PR, same as a failing test. Two limits apply: the block passes through the `gate` aggregate job, so it blocks as required only when branch protection requires `gate` — a repository settings step, not code; and a PR whose paths filter skips `eval/**` gets no eval check on that PR — the weekly canary covers those changes.
+1. The eval gate job runs the full default suite in PR CI against the fixture-rebuilt database (`just eval-corpus` first, `just eval-ci` second — `eval-ci` runs `just eval`, permits the accepted exit 2, and fails only when a gate row that was PASS in the tracked report regresses), fully offline, and is a required check. A regression blocks merges to `main`, and therefore blocks any release PR, same as a failing test. Three limits apply: the block passes through the `gate` aggregate job, so it blocks as required only when branch protection requires `gate` — a repository settings step, not code; a PR whose paths filter skips `eval/**` gets no eval check on that PR — the weekly canary covers those changes; and fork pull requests skip the job entirely, so a fork checkout never executes on a self-hosted runner once `EVAL_RUNS_ON` opts one in.
 2. A weekly scheduled workflow (cron) re-runs the suite as a canary: it fails `main` and files an issue. Scheduled runs are canaries, not PR checks.
 3. The fixture database is rebuilt from the committed recorded fixtures (`just eval-corpus`), fully offline, on every gate run.
 4. Real-network re-recording stays manual and labeled: `eval/fixtures/README.md` documents the recording and trim steps.

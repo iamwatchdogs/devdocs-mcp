@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing and its `crates` environment policy, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-11-13T23:59:00Z
+timestamp: 2026-11-14T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -59,7 +59,9 @@ jobs:
   eval:       # runs `just eval-corpus && just eval-ci` — the offline eval
               # regression gate (docs 14 §Regression gate); runner is
               # vars.EVAL_RUNS_ON || 'ubuntu-latest' so a self-hosted
-              # reference machine can be opted in via a repo variable
+              # reference machine can be opted in via a repo variable;
+              # skipped on fork PRs — a fork checkout must never execute
+              # on a self-hosted runner
   gate:       # aggregate check: needs every job above; require only "gate"
               # in branch protection (matrix legs publish per-OS check names)
   commits:    # PR-only: validates the PR title against the Conventional

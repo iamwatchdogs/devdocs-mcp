@@ -178,6 +178,10 @@ jobs:
     # 400 ms against ~45 ms measured locally, so shared-runner noise is
     # unlikely to flip the row — accepted risk for the shared-runner default.
     runs-on: ${{ vars.EVAL_RUNS_ON || 'ubuntu-latest' }}
+    # Self-hosted-runner guard: once EVAL_RUNS_ON names a self-hosted
+    # machine, a fork PR would otherwise execute arbitrary checkout code on
+    # it. Skip fork PRs entirely — same-repo PRs and push/schedule runs run.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

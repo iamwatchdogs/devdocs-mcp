@@ -7,13 +7,25 @@ the latest fresh run under eval/runs/. The accepted INCONCLUSIVE row
 the check, whichever way it reads.
 
 Exit 0 = no regression, 1 = regression, 2 = structural error (a missing
-report or run dir, an unparseable gate table).
+report or run dir, an unparseable gate table, a gate set that is not
+exactly the six expected names).
 """
 
 import sys
 from pathlib import Path
 
 STATUSES = {"PASS", "FAIL", "INCONCLUSIVE"}
+# The six gate names the tracked report's table carries. A table missing
+# one (or carrying a renamed one) must fail structurally, not silently
+# compare a subset.
+EXPECTED_GATES = {
+    "Symbol recall",
+    "hit@5",
+    "p95 latency",
+    "Cost per 1,000 queries",
+    "Retrieval failures",
+    "Version correctness",
+}
 DEFAULT_BASELINE = Path("eval/reports/2026-11-13-pilot/report.md")
 RUNS = Path("eval/runs")
 
@@ -48,6 +60,13 @@ def main():
     if not baseline or not fresh:
         print(f"error: gate table parse failed (baseline={bool(baseline)}, fresh={bool(fresh)})", file=sys.stderr)
         return 2
+    for label, table in (("baseline", baseline), ("fresh", fresh)):
+        missing = EXPECTED_GATES - set(table)
+        extra = set(table) - EXPECTED_GATES
+        if missing or extra:
+            print(f"error: {label} gate table does not carry exactly the expected gates"
+                  f" (missing={sorted(missing)}, unexpected={sorted(extra)})", file=sys.stderr)
+            return 2
 
     print(f"baseline: {baseline_path}")
     print(f"fresh:    {fresh_path}")

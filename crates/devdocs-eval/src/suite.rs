@@ -183,6 +183,12 @@ pub struct SuiteMeta {
     pub curated_at: String,
     /// One-line description of the suite.
     pub description: String,
+    /// Disclosure of the curation bias the suite carries, when it does:
+    /// the FTS all-token AND rung forces keyword-dense, document-derived
+    /// query forms, so hit@5 partly reflects curation; natural-language
+    /// failure-rate measurement is Phase 2 work (docs/implementation/13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curation_bias: Option<String>,
 }
 
 /// A parsed and validated golden suite.
@@ -567,7 +573,29 @@ mod tests {
         let suite = Suite::load(&path, "meta").unwrap();
         assert_eq!(suite.questions.len(), 1);
         assert_eq!(suite.meta.as_ref().unwrap().curation_minutes, 30);
+        assert_eq!(suite.meta.as_ref().unwrap().curation_bias, None);
         assert_eq!(suite.hash.len(), 64);
+    }
+
+    #[test]
+    fn the_meta_sidecar_accepts_the_curation_bias_disclosure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.jsonl");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&valid_question()).unwrap() + "\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("meta.meta.json"),
+            r#"{"curation_minutes":30,"curated_at":"2026-11-02","description":"d","curation_bias":"keyword-dense query forms are required by the FTS all-token AND rung"}"#,
+        )
+        .unwrap();
+        let suite = Suite::load(&path, "meta").unwrap();
+        assert_eq!(
+            suite.meta.as_ref().unwrap().curation_bias.as_deref(),
+            Some("keyword-dense query forms are required by the FTS all-token AND rung")
+        );
     }
 
     #[test]

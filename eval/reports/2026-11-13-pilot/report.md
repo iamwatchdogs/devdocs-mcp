@@ -4,14 +4,20 @@ Reproducibility header (the tracked record of the official M10 gate run. The
 run artifacts in `eval/runs/` are gitignored scratch, this file is the
 permanent copy):
 
-- Run date: 2026-11-13 (`eval/runs/2026-11-13-pilot-9`, produced by
+- Run date: 2026-11-13 (`eval/runs/2026-11-13-pilot-7`, produced by
   `just eval-corpus && just eval`. `just eval` exited 2 by design, see
   Triage).
 - Harness version: `devdocs-eval 0.1.0` (`manifest.json` field `tool`).
-- Repo git SHA at run time: `5291fdc` (branch `m10-phase1-gate`).
-- Suite hash: `f60b00cd38a5c5630c8d2cae109e3430d4bc2626a8ee6cbe912bbe10d31a1ed6`
-- Database hash: `efc9c912176e5ca48e902138daf570f88363e18176bc33f7b84fa8084fd3facf`
-  (the fixture-rebuilt `eval/runs/corpus.db`, offline).
+- Repo git SHA at run time: `61cebd7` (branch `m10-phase1-gate`; the run
+  executed with the de-echo question rewrites as the working tree, and the
+  commit carrying this report lands on top).
+- Question rewrites: five echoed questions (verbatim doc sentences or bare
+  keyword lists) were rewritten into real question form before this run;
+  see `eval/golden/pilot.meta.json` (`curation_bias`) and Limitations.
+- Suite hash: `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c`
+- Database hash: `b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a`
+  (the fixture-rebuilt `eval/runs/corpus.db`, offline; see Limitations —
+  the db hash is not a reproducibility target).
 - Corpus (from `manifest.json`):
 
   | Library | Version | Kind | Commit |
@@ -35,7 +41,7 @@ reproducibility header above implement that reporting style).
 |---|---|---|---|---|
 | Symbol recall | 1.000 (5/5) | ≥ 0.95 | 1 | PASS |
 | hit@5 | 1.000 (39/39) | ≥ 0.8 | 1 | PASS |
-| p95 latency | 46.6 ms (subprocess, after one warmup; placeholder CLI before M4) | < 400 ms | 1 | PASS |
+| p95 latency | 48.9 ms (subprocess, after one warmup; placeholder CLI before M4) | < 400 ms | 1 | PASS |
 | Cost per 1,000 queries | $0.00 | ≤ $0.20 frontier-class | 3 | PASS |
 | Retrieval failures | 0.000 (M4 baseline pending) | −49% vs the M4 baseline | 2 | INCONCLUSIVE |
 | Version correctness | 1.000 (44/44) | ≥ 0.99 | 1 | PASS |
@@ -77,7 +83,7 @@ rank-1 in-process hit. `—` marks an abstention.
 | nextjs-router-push-001 | exact_api | ref_match | pass | docs://next.js/v16.2.9/router object/router.push/Resetting state after navigation#Page |
 | nextjs-error-digest-001 | exact_api | ref_match | pass | docs://next.js/v16.2.9/Reference/Props/error.digest |
 | nextjs-mdx-frontmatter-001 | how_to | ref_match | pass | docs://next.js/v16.2.9/Frontmatter#Page |
-| nextjs-docker-deploy-001 | agent_task | ref_match | pass | docs://next.js/v16.2.9/Docker/Templates |
+| nextjs-docker-deploy-001 | agent_task | ref_match | pass | docs://next.js/v16.2.9/ |
 | nextjs-caching-usecache-interleaving-001 | how_to | ref_match | pass | docs://next.js/v16.2.9/Examples/Interleaving#Page |
 | nextjs-route-cors-001 | how_to | ref_match | pass | docs://next.js/v16.2.9/Examples/CORS#allowedOrigins |
 | nextjs-auth-authorization-001 | discovery | ref_match | pass | docs://next.js/v16.2.9/Authorization |
@@ -120,6 +126,26 @@ page changed for this run. Until the M4 baseline lands, `just eval` exits 2
 on the finished run by design: the recipe reports the honest state of the
 gate table instead of a green exit.
 
+## Limitations
+
+- Keyword-dense query form and curation bias: the FTS all-token AND rung
+  serves a query only when every query token appears in one indexed chunk.
+  The questions must stay keyword-dense and document-derived, so hit@5 of
+  1.000 partly reflects curation, not retrieval quality alone. Several
+  questions remain bare keyword or symbol lookups where no longer natural
+  phrasing survives that rung. Natural-language failure-rate measurement
+  is Phase 2 work (docs/implementation/13, M11).
+- The poisoned question (nextjs-poisoned-tsconfig-001) grades ref_match:
+  the grader cannot detect poisoned advice being served. The grader is
+  blind to this failure mode; grader work to close the gap is tracked.
+- The manifest db_hash is the run's own database identity and is not
+  expected to reproduce byte-identically on a rebuild (sqlite rebuild-time
+  state). Reproducibility is judged on suite_hash plus the gate table.
+- The next.js corpus was recorded from nextjs.org/docs/llms.txt as served
+  on 2026-11-13; the site served its then-current docs under the 16.2.9
+  corpus label (llms.txt serves latest only, no versioned endpoint).
+- p95 is threshold-judged; the specific number is host noise.
+
 ## Phase 0 baseline (pre-devdocs docs workflow)
 
 - recorded: 2026-11-02
@@ -133,7 +159,7 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 
 ## Corpus
 
-- suite: pilot — sha256 f60b00cd38a5c5630c8d2cae109e3430d4bc2626a8ee6cbe912bbe10d31a1ed6
-- database: sha256 efc9c912176e5ca48e902138daf570f88363e18176bc33f7b84fa8084fd3facf
+- suite: pilot — sha256 87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c
+- database: sha256 b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a
 - pipeline: Phase 0 stub — one FTS5 rung through devdocs-store; the hybrid pipeline replaces it at M4 (docs/implementation/13)
 - CLI search path: placeholder until M4. The p95 row times process start and dispatch only.

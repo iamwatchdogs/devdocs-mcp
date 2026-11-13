@@ -51,7 +51,7 @@ Field rules:
 
 Build a 20-question suite across 3 libraries before writing retrieval code. This calibrates curation effort and produces the baseline the gates need (research: architecture.md Phase 0). Suggested start: Next.js, Zod, and one library the project's own lockfiles use. Include at least 2 `unanswerable` questions. Record curation minutes in the run report. The research protocol treats that cost as a measurement, not trivia.
 
-Status (2026-11-13): the pilot suite is curated (`eval/golden/pilot.jsonl`, 20 questions, `pilot.meta.json`) and the fixture corpus behind it is committed (§Fixture corpus): `just eval-corpus` rebuilds the corpus database offline from the recorded fixtures, and `just eval` grades the suite against it with real numbers (the Phase 1 gate run, [12](12-roadmap-milestones.md)).
+Status (2026-11-13): the pilot suite is curated (`eval/golden/pilot.jsonl`, 48 questions, `pilot.meta.json`) and the fixture corpus behind it is committed (§Fixture corpus): `just eval-corpus` rebuilds the corpus database offline from the recorded fixtures, and `just eval` grades the suite against it with real numbers (the Phase 1 gate run, [12](12-roadmap-milestones.md)).
 
 ## Fixture corpus
 

@@ -3,7 +3,7 @@ type: guide
 title: CI/CD and Release
 description: The GitHub Actions workflows (CI, release, publish, audits, and the security workflows: CodeQL, Scorecard, dependency review, zizmor), the release build matrix, the crates.io publish path with trusted publishing and its `crates` environment policy, and the versioning policy. Action versions digest-pinned 2026-10-30.
 tags: [devdocs, ci, github-actions, release, crates-io, security]
-timestamp: 2026-11-12T20:14:00Z
+timestamp: 2026-11-13T23:59:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -12,11 +12,12 @@ derives-from: [docs/research]
 
 ## Workflows
 
-Eight workflows:
+Nine workflows:
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| `ci.yml` | Rust workspace/build/config paths on push to `main` and pull requests; manual dispatch | fmt, lint, tests (3 OS), doc tests, msrv, features, deny, coverage, docs |
+| `ci.yml` | Rust workspace/build/config paths on push to `main` and pull requests; manual dispatch | fmt, lint, tests (3 OS), doc tests, msrv, features, deny, coverage, docs, eval |
+| `eval-weekly.yml` | weekly cron (Mondays 06:00 UTC) + manual dispatch | eval regression canary on `main`; files a labeled issue on failure |
 | `release.yml` | push of `v*.*.*` tags | binary build matrix, build provenance attestation, GitHub release |
 | `publish.yml` | publication of a GitHub release; manual dispatch with an existing release tag | crates.io publish for the released version: no PR, no version bump, no tag |
 | `audit.yml` | daily + weekly schedules, manual dispatch | cargo-deny + cargo-audit daily, cargo-machete weekly |
@@ -55,6 +56,10 @@ jobs:
   deny:       # EmbarkStudios/cargo-deny-action
   coverage:   # cargo-llvm-cov + just coverage-gate + codecov upload (token: secrets.CODECOV_TOKEN)
   docs:       # runs `just docs` (rustdoc -D warnings)
+  eval:       # runs `just eval-corpus && just eval-ci` — the offline eval
+              # regression gate (docs 14 §Regression gate); runner is
+              # vars.EVAL_RUNS_ON || 'ubuntu-latest' so a self-hosted
+              # reference machine can be opted in via a repo variable
   gate:       # aggregate check: needs every job above; require only "gate"
               # in branch protection (matrix legs publish per-OS check names)
   commits:    # PR-only: validates the PR title against the Conventional

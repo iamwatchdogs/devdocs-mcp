@@ -1,0 +1,95 @@
+name: eval-weekly
+
+# Weekly eval canary (docs/implementation/14 §Regression gate): re-runs the
+# pilot suite as a scheduled canary on main. Canaries are not PR checks —
+# a failure fails main and files an issue.
+on:
+  schedule:
+    # Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialized (cancel-in-progress: false): scheduled runs are canaries, so an
+# in-flight run reports its result instead of being silently cancelled.
+concurrency:
+  group: eval-weekly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  eval:
+    # Opt a self-hosted reference machine in via the EVAL_RUNS_ON repo
+    # variable; shared runners stay the default.
+    runs-on: ${{ vars.EVAL_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-rust
+        with:
+          tools: just
+      - run: just eval-corpus
+      - run: just eval-ci
+      # Upload the run artifacts even on a regression so the issue triage can
+      # read the gate table and manifest without re-running the suite.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: eval-run
+          path: eval/runs/*pilot*/
+          if-no-files-found: error
+
+  report:
+    needs: [eval]
+    # Scheduled runs only: a failing manual dispatch is seen in the Actions
+    # UI by the person who ran it and must not open tracker issues. Same
+    # dedup shape as audit.yml's report job.
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const date = new Date().toISOString().slice(0, 10);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "area:eval",
+              per_page: 100,
+            });
+            const found = existing.find((issue) => issue.title.startsWith("Eval canary failed"));
+            const body = [
+              "The weekly eval canary regressed a gate row that was PASS in the tracked report.",
+              "",
+              `Run: ${runUrl}`,
+              "",
+              "Reproduce locally with `just eval-corpus && just eval-ci` and compare against `eval/reports/2026-11-13-pilot/report.md` (docs/implementation/14 §Regression gate).",
+            ].join("\n");
+            if (found) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: found.number,
+                body: `Recurrence (${date}). ${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `Eval canary failed (${date})`,
+                labels: ["ready-for-agent", "phase-1", "area:eval"],
+                body,
+              });
+            }

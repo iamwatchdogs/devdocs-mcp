@@ -262,6 +262,17 @@ eval:
     fi
     cargo run --locked -p devdocs-eval -- run pilot --db eval/runs/corpus.db
 
+# The CI-facing eval gate (docs/implementation/14 §Regression gate): run the
+# suite, then compare the fresh gate table against the committed tracked
+# report with eval/regression_check.py. `just eval` exits 2 by design while
+# the Retrieval-failures row is INCONCLUSIVE (its M4 baseline is M11 work);
+# that accepted exit is tolerated here — the recipe fails only when a gate
+# row that was PASS in the tracked report regresses.
+eval-ci:
+    @just eval || [ "$?" -eq 2 ]
+    @echo "just eval exit code accepted (0 = all gates PASS, 2 = the accepted INCONCLUSIVE row)"
+    @python3 eval/regression_check.py
+
 # Public API break detection between releases.
 semver:
     @if command -v cargo-semver-checks >/dev/null 2>&1; then \

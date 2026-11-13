@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-13T23:30:00Z
+timestamp: 2026-11-13T23:59:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -131,13 +131,17 @@ Each run writes:
 
 The corpus identity matters: every result names the exact corpus it ran against. A gate claim without the manifest is not a claim.
 
+Committed gate reports live under the tracked path `eval/reports/<date>-<suite>/` — the path carries the date, and the report carries the harness version in its reproducibility header (run date, `manifest.json` tool version, repo git SHA at run time, suite hash, database hash, corpus rows, question count, curation record). `eval/runs/` stays gitignored scratch. Every tracked report references the run dir it records, and the harness-rendered body sits intact below the header. The Phase 1 report is `eval/reports/2026-11-13-pilot/` with the CLI demo (`demo-cli.md`) and the MCP spot-check (`demo-mcp.md`) beside it.
+
 ## Regression gate
 
-Before any re-indexed content ships from an ingest change:
+The implemented mechanics:
 
-1. Run the affected libraries' suites. The new index must not regress hit@5 or symbol recall on them.
-2. Run the full default suite on a schedule (weekly in CI, on a self-hosted runner with the fixture DB rebuilt from recorded fixtures. Real-network rebuilds stay manual `#[ignore]`-style, run per release).
-3. A regression blocks the release PR, same as a failing test.
+1. The eval gate job runs the full default suite in PR CI against the fixture-rebuilt database (`just eval-corpus` first, `just eval` second), fully offline, and is a required check. A regression blocks merges to `main`, and therefore blocks any release PR, same as a failing test.
+2. A weekly scheduled workflow (cron) re-runs the suite as a canary: it fails `main` and files an issue. Scheduled runs are canaries, not PR checks.
+3. The fixture database is rebuilt from the committed recorded fixtures (`just eval-corpus`), fully offline, on every gate run.
+4. Real-network re-recording stays manual and labeled: `eval/fixtures/README.md` documents the recording and trim steps.
+5. An exit 2 with a documented triage in the tracked report is an accepted state, never a license to widen a threshold. The Phase 1 report carries the accepted INCONCLUSIVE on the Retrieval-failures row (its M4 baseline measurement is M11 work).
 
 This reproduces Context7's benchmark loop locally: questions score the index, and bad content fails the gate before it serves (research: architecture.md §L3, context7-internals.md).
 

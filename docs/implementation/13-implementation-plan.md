@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-13T23:59:00Z
+timestamp: 2026-11-14T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -165,7 +165,7 @@ All three steps landed on 2026-11-12. The settled shape lives in [08](08-retriev
 2. Run the harness. Produce the gate report.
 3. Fix what the gate surfaces. Re-run. The gate table must show PASS or a documented triage before Phase 2 starts.
 
-All three steps landed on 2026-11-13. The golden set holds 48 questions across next.js 16.2.9, zod 4.6.7 (recorded via llms.txt), and serde 1.0.229 (git-tag fixture replay), covering all 8 task types. The official gate run (`just eval-corpus && just eval`, run dir `2026-11-13-pilot-9`) reads PASS on every Phase 1 row — symbol recall 1.000, hit@5 1.000, p95 46.6 ms, version correctness 1.000, cost $0 — with the Retrieval-failures row INCONCLUSIVE (the −49% gate needs the M4 baseline measurement, step 4 of M11 below) and `just eval` exiting 2 by design until that baseline lands. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report, the CLI demo, and the MCP spot-check live at `eval/reports/2026-11-13-pilot/`.
+All three steps landed on 2026-11-13. The golden set holds 48 questions across next.js 16.2.9, zod 4.6.7 (recorded via llms.txt), and serde 1.0.229 (git-tag fixture replay), covering all 8 task types. The official gate run (`just eval-corpus && just eval`, run dir `2026-11-13-pilot-7`) reads PASS on every Phase 1 row — symbol recall 1.000, hit@5 1.000, p95 48.9 ms, version correctness 1.000, cost $0 — with the Retrieval-failures row INCONCLUSIVE (the −49% gate needs the M4 baseline measurement, step 4 of M11 below) and `just eval` exiting 2 by design until that baseline lands. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report, the CLI demo, and the MCP spot-check live at `eval/reports/2026-11-13-pilot/`.
 
 ## M11 — Quality pass (4 days)
 

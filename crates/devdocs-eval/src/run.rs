@@ -35,6 +35,10 @@ pub struct RunOptions {
     pub runs_dir: Option<PathBuf>,
     /// The `devdocs` binary for the subprocess pass; located when absent.
     pub devdocs_bin: Option<PathBuf>,
+    /// The config file the spawned `devdocs search` loads, so the run
+    /// stays hermetic against the operator's user config
+    /// (docs/implementation/14 §Regression gate).
+    pub config: Option<PathBuf>,
 }
 
 /// What a completed run reports.
@@ -227,12 +231,13 @@ fn subprocess_pass(
     rows: &mut [QuestionResult],
 ) -> Result<f64, EvalError> {
     let bin = subprocess::locate_devdocs(options.devdocs_bin.as_deref())?;
+    let config = options.config.as_deref();
     // One warmup call; the cold start is excluded (docs/implementation/14).
-    let warmup = subprocess::run_once(&bin, db_path, &suite.questions[0])?;
+    let warmup = subprocess::run_once(&bin, db_path, config, &suite.questions[0])?;
     check_exit(warmup, "warmup")?;
     let mut samples = Vec::with_capacity(rows.len());
     for (row, question) in rows.iter_mut().zip(&suite.questions) {
-        let sample = subprocess::run_once(&bin, db_path, question)?;
+        let sample = subprocess::run_once(&bin, db_path, config, question)?;
         check_exit(sample, &question.id)?;
         samples.push(sample.wall_ms);
         row.subprocess = sample;
@@ -550,6 +555,7 @@ mod tests {
             golden_dir: None,
             runs_dir: None,
             devdocs_bin: None,
+            config: None,
         });
         std::env::set_current_dir(previous).unwrap();
         let err = outcome.unwrap_err();

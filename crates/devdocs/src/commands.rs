@@ -753,6 +753,7 @@ pub fn run_eval_run(
     golden_dir: Option<&std::path::Path>,
     runs_dir: Option<&std::path::Path>,
     devdocs_bin: Option<&std::path::Path>,
+    config: Option<&std::path::Path>,
 ) -> Result<devdocs_eval::run::RunOutcome, Error> {
     let options = devdocs_eval::run::RunOptions {
         suite: suite.to_owned(),
@@ -760,6 +761,7 @@ pub fn run_eval_run(
         golden_dir: golden_dir.map(std::path::Path::to_path_buf),
         runs_dir: runs_dir.map(std::path::Path::to_path_buf),
         devdocs_bin: devdocs_bin.map(std::path::Path::to_path_buf),
+        config: config.map(std::path::Path::to_path_buf),
     };
     devdocs_eval::run::run(&options).map_err(|e| map_eval_error(&e))
 }

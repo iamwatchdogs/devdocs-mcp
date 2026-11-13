@@ -260,7 +260,7 @@ eval:
         echo "eval/runs/corpus.db is missing: run 'just eval-corpus' first (offline, no network)"; \
         exit 1; \
     fi
-    cargo run --locked -p devdocs-eval -- run pilot --db eval/runs/corpus.db
+    cargo run --locked -p devdocs-eval -- run pilot --db eval/runs/corpus.db --config eval/corpus.toml
 
 # The CI-facing eval gate (docs/implementation/14 §Regression gate): run the
 # suite, then compare the fresh gate table against the committed tracked

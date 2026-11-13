@@ -9,6 +9,14 @@ timeout_ms = 60000
 max_bytes = 20971520
 user_agent = "devdocs/0.1"
 
+[search]
+# Pin the search knobs at the documented defaults, so the harness's
+# spawned `devdocs search --config eval/corpus.toml` never grades against
+# the operator's user config (docs/implementation/14 §Regression gate).
+max_tokens_default = 2000
+limit_default = 8
+rrf_k = 60
+
 [sources."next.js"]
 kind = "llms_txt"
 url = "https://nextjs.org/docs/llms.txt"

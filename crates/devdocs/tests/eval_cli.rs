@@ -234,3 +234,70 @@ fn the_plain_run_prints_the_gate_table_and_exits_two() {
     assert!(stdout.contains("gate failure"), "{stdout}");
     assert!(!stdout.contains("all gates PASS"), "{stdout}");
 }
+
+/// A stub `devdocs` whose every invocation records its argument vector,
+/// one argument per line. The harness accepts exit 0 as a valid timed
+/// call, so the subprocess pass runs to completion against the stub.
+#[cfg(unix)]
+fn argv_recorder(dir: &Path, name: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let args_file = dir.join(format!("{name}.args"));
+    let bin = dir.join(name);
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nexit 0\n",
+            args_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    args_file
+}
+
+/// The global `--config` flag reaches the harness and the spawned
+/// `devdocs search`: the subprocess argument vector carries `--config`
+/// with the flag's path (docs/implementation/14 §Regression gate — the
+/// spawned search must not grade against the operator's user config).
+#[test]
+#[cfg(unix)]
+fn the_global_config_flag_reaches_the_subprocess_spawn() {
+    let env = Env::new();
+    let db = env.root.join("fixture.db");
+    seed_fixture_db(&db);
+    write_suite(&env, "fixture");
+    let config = env.root.join("probe.toml");
+    std::fs::write(
+        &config,
+        "[fetch]\nuser_agent = \"eval-config-passthrough-probe/0.1\"\n",
+    )
+    .unwrap();
+    let args_file = argv_recorder(&env.root, "devdocs-stub");
+
+    let mut args: Vec<String> = vec![
+        String::from("eval"),
+        String::from("run"),
+        String::from("fixture"),
+        String::from("--db"),
+        db.display().to_string(),
+        String::from("--config"),
+        config.display().to_string(),
+        String::from("--golden-dir"),
+        env.root.join("golden").display().to_string(),
+        String::from("--runs-dir"),
+        env.root.join("runs").display().to_string(),
+        String::from("--devdocs-bin"),
+        env.root.join("devdocs-stub").display().to_string(),
+    ];
+    args.insert(0, String::from("--json"));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, stdout, stderr) = output(env.cmd(), &refs);
+    let _ = (code, stdout, stderr);
+
+    let spawn_args = std::fs::read_to_string(&args_file).unwrap();
+    assert!(spawn_args.contains("--config\n"), "{spawn_args}");
+    assert!(
+        spawn_args.contains(config.to_str().unwrap()),
+        "{spawn_args}"
+    );
+}

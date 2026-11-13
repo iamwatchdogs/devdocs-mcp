@@ -482,6 +482,7 @@ fn run_eval_command(cli: &Cli, op: &EvalOp) -> Result<(), Error> {
         golden_dir.as_deref(),
         runs_dir.as_deref(),
         devdocs_bin.as_deref(),
+        cli.config.as_deref(),
     )?;
     if cli.json {
         print_line(&serde_json::json!({

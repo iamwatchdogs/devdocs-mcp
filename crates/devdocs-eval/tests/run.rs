@@ -24,6 +24,7 @@ fn run_fixture() -> (
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     (dir, db, outcome)
@@ -165,6 +166,7 @@ fn an_invalid_suite_is_input_error_exit_one() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -187,6 +189,7 @@ fn a_manual_grader_suite_is_refused() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -215,6 +218,7 @@ fn a_failing_subprocess_call_fails_the_run() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(failing_bin(dir.path())),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 3, "{err}");
@@ -231,6 +235,7 @@ fn a_second_run_of_one_suite_gets_its_own_directory() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(dir.path().join("runs")),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     };
     let first = run(&options(db.clone())).unwrap();
     let second = run(&options(db)).unwrap();
@@ -258,6 +263,7 @@ fn a_suite_resolves_by_name_from_the_golden_dir() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     assert_eq!(outcome.metrics.failure_rate.total, 3);
@@ -275,6 +281,7 @@ fn a_direct_suite_path_without_the_jsonl_suffix_keeps_its_stem() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     // The manifest names the suite after the file stem.
@@ -307,6 +314,7 @@ fn a_baseline_record_reaches_the_manifest_and_the_report() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     let manifest: serde_json::Value = serde_json::from_str(

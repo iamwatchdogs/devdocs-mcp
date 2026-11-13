@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-14T00:00:00Z
+timestamp: 2026-11-14T00:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -79,7 +79,7 @@ gate at `approved_index`. `just eval` grades against that database.
 ## Harness flow
 
 ```text
-devdocs-eval [--json] run <suite> [--db PATH]
+devdocs-eval [--json] run <suite> [--db PATH] [--config PATH]
   1. load suite, validate every question (version pinned, refs well-formed)
   2. for each question: run the retrieve pipeline, record hits, ranks, timings
   3. score per question, aggregate per task_type and overall
@@ -87,7 +87,7 @@ devdocs-eval [--json] run <suite> [--db PATH]
   5. print the gate table; exit 0 when all gates PASS, 2 on any FAIL
 ```
 
-`--json` is a top-level flag and precedes the subcommand. The harness binary is `devdocs-eval`. The CLI subcommand wiring landed at M10 ([12](12-roadmap-milestones.md)): `devdocs eval run` proxies to it with the same flags. At the CLI edge, the harness input errors surface as the `USAGE` envelope (exit 1) and the operational failures as `UPSTREAM_ERROR` (exit 3), per docs/implementation/05 §Error model. A completed run with a blocked gate table prints it to stdout first, then the `EVAL_GATE` envelope (exit 2, docs/implementation/08 §Error codes). Exit codes: 0 every gate PASS; 1 invalid input (a broken suite, an unknown flag); 2 any gate FAIL or INCONCLUSIVE; 3 operational failure (a missing `devdocs` binary, I/O, a `devdocs search` call that exits 1, 3, or 4, or overshoots its 30-second deadline). Exit 2 is a valid timed miss (docs/implementation/08 §Error codes).
+`--json` is a top-level flag and precedes the subcommand. The harness binary is `devdocs-eval`. The CLI subcommand wiring landed at M10 ([12](12-roadmap-milestones.md)): `devdocs eval run` proxies to it with the same flags (`--db` and `--config` arrive on the global flag layer). A set `--config` is forwarded into every spawned `devdocs search` call, so the run stays hermetic against the operator's user config; `just eval` passes `eval/corpus.toml`, whose `[search]` section pins the search knobs at the documented defaults. At the CLI edge, the harness input errors surface as the `USAGE` envelope (exit 1) and the operational failures as `UPSTREAM_ERROR` (exit 3), per docs/implementation/05 §Error model. A completed run with a blocked gate table prints it to stdout first, then the `EVAL_GATE` envelope (exit 2, docs/implementation/08 §Error codes). Exit codes: 0 every gate PASS; 1 invalid input (a broken suite, an unknown flag); 2 any gate FAIL or INCONCLUSIVE; 3 operational failure (a missing `devdocs` binary, I/O, a `devdocs search` call that exits 1, 3, or 4, or overshoots its 30-second deadline). Exit 2 is a valid timed miss (docs/implementation/08 §Error codes).
 
 Timing note: the harness measures the in-process pipeline plus, in a second pass, the CLI subprocess end-to-end. The p95 gate is judged on the subprocess pass, cold-start excluded after one warmup call. Since M4 the timed call is the live search: an exit 0 (results served) or exit 2 (a valid query that served nothing, docs/implementation/08 §Error codes) contributes its wall time to the gate; any other exit, or a stall past the deadline, fails the run with exit 3 instead of contributing its wall time.
 

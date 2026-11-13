@@ -59,12 +59,13 @@ pub struct RunOutcome {
 /// Runs one suite end-to-end.
 ///
 /// # Errors
-/// [`EvalError::InvalidSuite`] or [`EvalError::SuiteParse`] for bad input
-/// (exit 1); [`EvalError::Store`], [`EvalError::Subprocess`], and
+/// [`EvalError::InvalidSuite`], [`EvalError::SuiteParse`], or
+/// [`EvalError::InvalidConfig`] for bad input (exit 1);
+/// [`EvalError::Store`], [`EvalError::Subprocess`], and
 /// [`EvalError::Io`] for operational failures (exit 3).
 pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     if let Some(config) = options.config.as_deref() {
-        validate_config(config, &options.suite)?;
+        validate_config(config)?;
     }
     let (golden_dir, runs_root, baseline_path) = resolve_dirs(options)?;
     let suite = load_suite(&golden_dir, &options.suite)?;
@@ -142,10 +143,9 @@ fn load_suite(golden_dir: &Path, requested: &str) -> Result<Suite, EvalError> {
 /// Refuses a `--config` path that does not name a readable file, at run
 /// start: the spawned `devdocs search` would otherwise carry the failure
 /// only after the pipeline pass and the warmup already spent work.
-fn validate_config(config: &Path, suite: &str) -> Result<(), EvalError> {
+fn validate_config(config: &Path) -> Result<(), EvalError> {
     if std::fs::File::open(config).is_err() {
-        return Err(EvalError::InvalidSuite {
-            suite: suite.to_owned(),
+        return Err(EvalError::InvalidConfig {
             reason: format!(
                 "config file {} does not exist or is not readable",
                 config.display()
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_config_file_is_input_error() {
+    fn a_missing_config_file_is_a_config_input_error() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("absent.toml");
         // The validation runs before the directory resolution, so the run
@@ -571,7 +571,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err.exit_code(), 1, "{err}");
-        assert!(matches!(err, EvalError::InvalidSuite { .. }), "{err}");
+        assert!(matches!(err, EvalError::InvalidConfig { .. }), "{err}");
         let message = err.to_string();
         assert!(message.contains("config file"), "{message}");
         assert!(message.contains(config.to_str().unwrap()), "{message}");

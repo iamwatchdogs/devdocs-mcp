@@ -744,7 +744,8 @@ pub fn run_db_migrate(config: &Config, force: bool) -> Result<serde_json::Value,
 ///
 /// # Errors
 /// [`Error::Usage`] for harness input errors (a broken suite, a manual
-/// grader — harness exit 1); [`Error::Upstream`] for the operational
+/// grader, an unreadable config — harness exit 1); [`Error::Upstream`]
+/// for the operational
 /// harness exits (store, subprocess, retrieval, I/O, serialization —
 /// harness exit 3).
 pub fn run_eval_run(
@@ -775,7 +776,9 @@ fn map_eval_error(error: &devdocs_eval::error::EvalError) -> Error {
 
     let detail = error.to_string();
     match error {
-        EvalError::InvalidSuite { .. } | EvalError::SuiteParse { .. } => Error::Usage(detail),
+        EvalError::InvalidSuite { .. }
+        | EvalError::SuiteParse { .. }
+        | EvalError::InvalidConfig { .. } => Error::Usage(detail),
         EvalError::Store(_)
         | EvalError::Subprocess(_)
         | EvalError::Retrieve(_)

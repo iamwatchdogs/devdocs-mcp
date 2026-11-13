@@ -304,3 +304,5 @@ ci:
     @just docs
     @just deny
     @just features
+    @just eval-corpus
+    @just eval-ci

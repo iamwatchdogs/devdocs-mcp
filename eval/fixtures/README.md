@@ -22,7 +22,7 @@ shape `devdocs add --record-to` writes. Replay serves a response by exact
 URL and fails closed on a miss, so a manifest must record every page its
 rewritten index links.
 
-## Recording provenance
+## Recording origin
 
 The fixtures were recorded from the live llms.txt endpoints on
 2026-11-13. The next.js recording captured the docs nextjs.org served

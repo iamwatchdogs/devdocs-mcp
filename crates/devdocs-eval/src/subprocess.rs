@@ -127,6 +127,18 @@ fn path_binary(path_var: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Removes every `DEVDOCS_*` variable from the child environment.
+///
+/// The env config layer merges *after* the `--config` layer
+/// (devdocs-model `Config::load`), so a `DEVDOCS_*` variable that leaks
+/// from the operator's environment would silently override the corpus
+/// config pin. The child needs no `DEVDOCS_*` variable, so all of them go.
+fn strip_devdocs_env(command: &mut Command, vars: impl Iterator<Item = (String, String)>) {
+    for (name, _) in vars.filter(|(name, _)| name.starts_with("DEVDOCS_")) {
+        command.env_remove(name);
+    }
+}
+
 /// The wall-time deadline one `devdocs search` call gets before the run
 /// treats it as stalled.
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -179,6 +191,7 @@ fn run_once_deadline(
         )
         .arg("--json")
         .arg("search");
+    strip_devdocs_env(&mut command, std::env::vars());
     let mut child = command
         .arg(&question.question)
         .arg("--library")
@@ -406,16 +419,74 @@ mod tests {
         assert!(message.contains("killed"), "{message}");
     }
 
-    /// A stub that records its argument vector, one argument per line.
+    /// A stub that records its argument vector, one argument per line,
+    /// and every `DEVDOCS_*` variable its environment still carries (one
+    /// `NAME=value` per line; the file exists but stays empty when the
+    /// environment carries none).
     #[cfg(unix)]
     fn argv_recorder(dir: &std::path::Path, name: &str) -> PathBuf {
         let args_file = dir.join(format!("{name}.args"));
+        let env_file = dir.join(format!("{name}.env"));
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nexit 0\n",
-            args_file.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nenv | grep '^DEVDOCS_' > {}\nexit 0\n",
+            args_file.display(),
+            env_file.display()
         );
         stub(dir, name, &body);
         args_file
+    }
+
+    /// The environment file the [`argv_recorder`] stub writes.
+    #[cfg(unix)]
+    fn recorded_env(dir: &std::path::Path, name: &str) -> PathBuf {
+        dir.join(format!("{name}.env"))
+    }
+
+    /// The `DEVDOCS_*` variables the child receives are gone: the unit
+    /// check drives [`super::strip_devdocs_env`] with a made-up
+    /// environment, the end-to-end check asserts the recorder stub — which
+    /// inherits the test process environment through the real spawn —
+    /// saw none (tests run one per process under nextest, so the test
+    /// process never carries a stray `DEVDOCS_*` variable that could
+    /// fake a pass).
+    #[test]
+    fn the_spawn_strips_the_devdocs_env_vars() {
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                ("DEVDOCS_SEARCH_RRF_K".to_owned(), "123".to_owned()),
+                (
+                    "DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT".to_owned(),
+                    "9000".to_owned(),
+                ),
+                ("PATH".to_owned(), "/bin".to_owned()),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            removed,
+            vec!["DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT", "DEVDOCS_SEARCH_RRF_K"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_child_sees_no_devdocs_env_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        run_once_deadline(&bin, &db, None, &question(), Duration::from_secs(1)).unwrap();
+        let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
+        assert!(env.is_empty(), "the child saw DEVDOCS_* variables: {env}");
     }
 
     #[cfg(unix)]

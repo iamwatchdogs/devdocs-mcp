@@ -63,6 +63,9 @@ pub struct RunOutcome {
 /// (exit 1); [`EvalError::Store`], [`EvalError::Subprocess`], and
 /// [`EvalError::Io`] for operational failures (exit 3).
 pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
+    if let Some(config) = options.config.as_deref() {
+        validate_config(config, &options.suite)?;
+    }
     let (golden_dir, runs_root, baseline_path) = resolve_dirs(options)?;
     let suite = load_suite(&golden_dir, &options.suite)?;
     refuse_manual_graders(&suite)?;
@@ -134,6 +137,22 @@ fn load_suite(golden_dir: &Path, requested: &str) -> Result<Suite, EvalError> {
         )
     };
     Suite::load(&suite_path, &suite_name)
+}
+
+/// Refuses a `--config` path that does not name a readable file, at run
+/// start: the spawned `devdocs search` would otherwise carry the failure
+/// only after the pipeline pass and the warmup already spent work.
+fn validate_config(config: &Path, suite: &str) -> Result<(), EvalError> {
+    if std::fs::File::open(config).is_err() {
+        return Err(EvalError::InvalidSuite {
+            suite: suite.to_owned(),
+            reason: format!(
+                "config file {} does not exist or is not readable",
+                config.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Refuses suites the harness cannot grade (docs/implementation/14: the
@@ -534,6 +553,28 @@ mod tests {
             std::fs::canonicalize(found.unwrap()).unwrap(),
             std::fs::canonicalize(dir.path()).unwrap().join("eval")
         );
+    }
+
+    #[test]
+    fn a_missing_config_file_is_input_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("absent.toml");
+        // The validation runs before the directory resolution, so the run
+        // needs no eval ancestor to reach it.
+        let err = run(&RunOptions {
+            suite: "pilot".to_owned(),
+            db: None,
+            golden_dir: None,
+            runs_dir: None,
+            devdocs_bin: None,
+            config: Some(config.clone()),
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 1, "{err}");
+        assert!(matches!(err, EvalError::InvalidSuite { .. }), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("config file"), "{message}");
+        assert!(message.contains(config.to_str().unwrap()), "{message}");
     }
 
     #[test]

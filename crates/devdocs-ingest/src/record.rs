@@ -66,6 +66,10 @@ impl Recorder {
     /// Writes `<dir>/manifest.json`: one JSON array of recorded responses,
     /// the serialization `FixtureSet::load` parses.
     ///
+    /// The body lands in a sibling `manifest.json.tmp` first and renames
+    /// onto the manifest, so a failed write never leaves a truncated
+    /// manifest behind (atomic-enough: same-directory rename).
+    ///
     /// # Errors
     /// [`IngestError::Fixture`] when the directory or the file cannot be
     /// written.
@@ -80,7 +84,12 @@ impl Recorder {
             path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
-        std::fs::write(&manifest, json).map_err(|e| IngestError::Fixture {
+        let tmp = dir.join("manifest.json.tmp");
+        std::fs::write(&tmp, json).map_err(|e| IngestError::Fixture {
+            path: tmp.display().to_string(),
+            message: e.to_string(),
+        })?;
+        std::fs::rename(&tmp, &manifest).map_err(|e| IngestError::Fixture {
             path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
@@ -155,6 +164,8 @@ mod tests {
             hit.headers.get("link").map(String::as_str),
             Some("<https://x/t.md>; rel=\"alternate\"")
         );
+        // The temp file renames away: only the manifest remains.
+        assert!(!dir.path().join("manifest.json.tmp").exists());
     }
 
     /// A redirect records the requested URL and the final URL, both

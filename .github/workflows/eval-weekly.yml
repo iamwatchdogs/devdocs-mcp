@@ -27,6 +27,11 @@ jobs:
     # variable; shared runners stay the default.
     runs-on: ${{ vars.EVAL_RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 30
+    outputs:
+      # The report job files the regression issue only when the gate itself
+      # failed — an artifact-upload failure fails the job but is not a
+      # gate regression.
+      gate_failed: ${{ steps.gate.outcome == 'failure' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,7 +40,8 @@ jobs:
         with:
           tools: just
       - run: just eval-corpus
-      - run: just eval-ci
+      - id: gate
+        run: just eval-ci
       # Upload the run artifacts even on a regression so the issue triage can
       # read the gate table and manifest without re-running the suite.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -47,10 +53,12 @@ jobs:
 
   report:
     needs: [eval]
-    # Scheduled runs only: a failing manual dispatch is seen in the Actions
-    # UI by the person who ran it and must not open tracker issues. Same
-    # dedup shape as audit.yml's report job.
-    if: failure() && github.event_name == 'schedule'
+    # Scheduled runs only, and only on a gate failure (the eval job's
+    # gate_failed output): a failing manual dispatch is seen in the Actions
+    # UI by the person who ran it and must not open tracker issues, and an
+    # artifact-upload failure is not a gate regression. Same dedup shape as
+    # audit.yml's report job.
+    if: needs.eval.outputs.gate_failed == 'true' && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

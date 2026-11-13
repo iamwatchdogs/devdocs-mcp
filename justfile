@@ -234,12 +234,33 @@ features:
     cargo check --locked -p devdocs-ingest --no-default-features
     cargo check --locked -p devdocs-ingest --features symbols
 
-# Run the default eval suite and print the gate table (docs/implementation/14).
-# A gate that is not PASS exits 2 — the honest state until the retrieval
-# core lands at M4.
+# Rebuild the gitignored eval corpus database from the committed fixtures,
+# fully offline (docs/implementation/14 §Fixture corpus). Each library's
+# first add bootstraps its license gate at approved_index; every call is
+# pinned to the corpus config and DB, so no user state is touched.
+eval-corpus:
+    cargo build --locked -p devdocs
+    rm -f eval/runs/corpus.db eval/runs/corpus.db-shm eval/runs/corpus.db-wal
+    mkdir -p eval/runs
+    DEVDOCS_HOME="$PWD/eval/runs/home" cargo run --locked -q -p devdocs -- \
+        --config eval/corpus.toml --db eval/runs/corpus.db \
+        add https://nextjs.org/docs/llms.txt --version 16.2.9 --fixture eval/fixtures/next.js/16.2.9
+    DEVDOCS_HOME="$PWD/eval/runs/home" cargo run --locked -q -p devdocs -- \
+        --config eval/corpus.toml --db eval/runs/corpus.db \
+        add https://zod.dev/llms.txt --version 4.6.7 --fixture eval/fixtures/zod/4.6.7
+    DEVDOCS_HOME="$PWD/eval/runs/home" cargo run --locked -q -p devdocs -- \
+        --config eval/corpus.toml --db eval/runs/corpus.db \
+        add https://github.com/serde-rs/serde --kind git --version 1.0.229 --fixture eval/fixtures/serde/1.0.229
+
+# Run the default eval suite against the corpus database and print the gate
+# table (docs/implementation/14). A gate that is not PASS exits 2.
 eval:
     cargo build --locked -p devdocs
-    cargo run -p devdocs-eval -- run pilot
+    @if [ ! -f eval/runs/corpus.db ]; then \
+        echo "eval/runs/corpus.db is missing: run 'just eval-corpus' first (offline, no network)"; \
+        exit 1; \
+    fi
+    cargo run --locked -p devdocs-eval -- run pilot --db eval/runs/corpus.db
 
 # Public API break detection between releases.
 semver:

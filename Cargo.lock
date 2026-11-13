@@ -1044,6 +1044,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "devdocs-ingest",
  "devdocs-model",
  "devdocs-retrieve",
  "devdocs-store",
@@ -1057,6 +1058,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
+ "url",
 ]
 
 [[package]]

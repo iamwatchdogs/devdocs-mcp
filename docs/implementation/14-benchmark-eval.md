@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-13T12:00:00Z
+timestamp: 2026-11-13T23:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -16,9 +16,11 @@ The research bundle states that no controlled docs-domain benchmark exists, and 
 
 - `crates/devdocs-eval` — the harness binary. Reads a suite, runs the retrieve crate, scores results, writes artifacts.
 - `eval/golden/*.jsonl` — golden question files, one suite per file. A `<suite>.meta.json` sidecar next to a suite records the curation minutes.
+- `eval/fixtures/` — the committed fixture corpus the suites grade against (§Fixture corpus).
 - `eval/runs/<date>-<suite>/` — run artifacts. Gitignored.
 - `eval/baseline/*.json` — the standing Phase 0 baseline records (schema rent, per-query cost of the current docs workflow) that each run report carries.
-- `just eval` — runs the default pilot suite through the harness binary and prints the gate table. A gate that is not PASS exits 2, so the recipe reports the honest state: until the fixture corpus lands, the gate numbers are placeholders (§Pilot, status note).
+- `just eval-corpus` — rebuilds the gitignored corpus database `eval/runs/corpus.db` from the committed fixtures, fully offline (§Fixture corpus).
+- `just eval` — runs the default pilot suite against the corpus database through the harness binary and prints the gate table. A gate that is not PASS exits 2, so the recipe reports the honest state.
 
 ## Golden-set format
 
@@ -49,7 +51,30 @@ Field rules:
 
 Build a 20-question suite across 3 libraries before writing retrieval code. This calibrates curation effort and produces the baseline the gates need (research: architecture.md Phase 0). Suggested start: Next.js, Zod, and one library the project's own lockfiles use. Include at least 2 `unanswerable` questions. Record curation minutes in the run report. The research protocol treats that cost as a measurement, not trivia.
 
-Status (2026-11-06): the pilot suite is curated (`eval/golden/pilot.jsonl`, 20 questions, `pilot.meta.json`). The fixture corpus behind it is not: the pilot runs against an empty migrated fixture DB, so a run reports placeholder zeros and the gates stay unjudged. The gate run uses real numbers once the corpus lands (the Phase 1 gate run, [12](12-roadmap-milestones.md)).
+Status (2026-11-13): the pilot suite is curated (`eval/golden/pilot.jsonl`, 20 questions, `pilot.meta.json`) and the fixture corpus behind it is committed (§Fixture corpus): `just eval-corpus` rebuilds the corpus database offline from the recorded fixtures, and `just eval` grades the suite against it with real numbers (the Phase 1 gate run, [12](12-roadmap-milestones.md)).
+
+## Fixture corpus
+
+`eval/fixtures/` holds the recorded fixtures the suites grade against: one
+recorded-response manifest per source version (the `devdocs add
+--record-to` shape), the serde git fixture, the keep list, and the trim
+tool. `eval/fixtures/README.md` documents the layout and the trim rules.
+
+The corpus comes from a real-network recording, and that step stays
+manual: run the add against the live source with `--record-to`, write the
+keep list (the index URLs plus every page a golden question pins), and
+trim with `eval/fixtures/trim.py`. The trim keeps only keep-listed
+responses and rewrites each kept llms.txt index body so it links only
+kept pages — the replay then fetches only listed pages, and every link
+resolves to a recorded response. The tool verifies both directions
+before it writes, and re-trimming a trimmed manifest is the identity.
+The committed `inventory.json` beside each manifest records the recorded
+statuses, the original body hashes, and the trimmed hashes.
+
+`just eval-corpus` rebuilds `eval/runs/corpus.db` offline from the
+committed fixtures: three `devdocs add` calls pinned to
+`eval/corpus.toml`, each library's first add bootstrapping its license
+gate at `approved_index`. `just eval` grades against that database.
 
 ## Harness flow
 

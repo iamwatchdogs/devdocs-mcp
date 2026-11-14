@@ -3,14 +3,60 @@
 //!
 //! Every recoverable failure returns the CLI error envelope JSON as a
 //! tool-level error result, so the caller sees the same single-line JSON
-//! the CLI prints on stderr. Only protocol-level failures — an unknown
-//! tool, malformed arguments, this adapter's own plumbing — surface as
+//! the CLI prints on stderr. Malformed arguments go through the same
+//! envelope: [`reshape_argument_error`] replaces the router's raw
+//! deserialization text with the `USAGE` envelope. Only protocol-level
+//! failures — an unknown tool, this adapter's own plumbing — surface as
 //! rmcp [`ErrorData`].
 
-use devdocs_model::error::Error;
+use devdocs_model::error::{Error, ErrorEnvelope};
 use devdocs_retrieve::wiring;
 use rmcp::model::{CallToolResult, ContentBlock, ErrorData};
 use serde_json::Value;
+
+/// The rmcp router turns a tool-argument deserialization failure into a
+/// tool-level error result whose text starts with this prefix. The
+/// constant is private in rmcp 3.9.0 (`src/handler/server/router/tool.rs`
+/// `TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX`) and duplicated here; if
+/// an rmcp bump renames it, the schema test fails at the next run of
+/// `just test` (`crates/devdocs-mcp/tests/schema.rs`).
+const TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX: &str = "failed to deserialize parameters:";
+
+/// Reshapes the router's deserialization-failure result into the error
+/// envelope: the raw rmcp text moves into `detail` unchanged, so the
+/// caller keeps it. The stable `USAGE` code replaces the free-form
+/// message, so every recoverable MCP failure carries one shape
+/// (docs/implementation/08 §MCP adapter).
+pub(crate) fn reshape_argument_error(result: CallToolResult) -> CallToolResult {
+    if result.is_error != Some(true) {
+        return result;
+    }
+    let Some(text) = result.content.first().and_then(ContentBlock::as_text) else {
+        return result;
+    };
+    if !text
+        .text
+        .starts_with(TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX)
+    {
+        return result;
+    }
+    let envelope = ErrorEnvelope {
+        error: String::from("USAGE"),
+        hint: Some(String::from("match the tool schema in tools/list")),
+        detail: Some(text.text.clone()),
+        miss_reason: None,
+        key_path: None,
+    };
+    match envelope.to_json_string() {
+        Ok(json) => CallToolResult::error(vec![ContentBlock::text(json)]),
+        // defensive: serializing a field-only struct cannot fail; the
+        // arm keeps the router result intact instead of a panic site.
+        // Unlike `tool_error`, which escalates to a protocol error, the
+        // router text is foreign input, so a reshape bug keeps the raw
+        // text rather than a protocol error.
+        Err(_) => result,
+    }
+}
 
 /// Maps one retrieval failure onto the tool-level error result carrying
 /// the CLI error envelope JSON.

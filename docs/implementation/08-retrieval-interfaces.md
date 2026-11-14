@@ -200,7 +200,7 @@ Settled semantics:
 
 The `detail` parameter trims each item in the MCP layer. The retrieve core stays unchanged. Omitted or `full` serves the exact CLI envelope, so byte-identity applies. `summary` drops the `examples` field per item. `name` keeps only `ref`, `title`, `served_version`, and `version_status` per item. The envelope-level fields stay in all variants.
 
-Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. An unknown tool stays a JSON-RPC protocol error: the rmcp router answers `INVALID_PARAMS` before any handler runs. Malformed arguments surface as the tool-level error result the same router builds from the deserialization failure. No new error code.
+Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. An unknown tool stays a JSON-RPC protocol error: the rmcp router answers `INVALID_PARAMS` before any handler runs. Malformed arguments return a tool-level error whose text is the error envelope JSON: the code is `USAGE`, the hint names the tool schema in `tools/list`, and the detail carries the rmcp deserialization message.
 
 The MCP path serves with an empty project context and never walks lockfiles. The CLI keeps the lockfile walk (§Version resolution). No tool carries a cursor parameter. Pagination stays a CLI feature (`--cursor C`, §CLI contract).
 
@@ -215,7 +215,7 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 
 | Code | Exit | Meaning |
 |---|---|---|
-| `USAGE` | 1 | Bad flags or config |
+| `USAGE` | 1 | Bad flags, config, or MCP tool arguments |
 | `CONFIG_INVALID` | 1 | Config file failed validation |
 | `NO_RESULT` | 2 | Valid query, nothing served |
 | `PKG_NOT_INDEXED` | 2 | Library or version absent from an explicitly named request. Hint names the add command. A lockfile- or mention-named absent library falls through to the fallback search instead |
@@ -227,3 +227,5 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 | `EVAL_GATE` | 2 | An eval run completed, but a gate is FAIL or INCONCLUSIVE. The detail names the blocked gates ([14](14-benchmark-eval.md) §Harness flow) |
 
 A non-SHA pin that names no tag emits `error: USAGE` (exit 1); `GIT_PIN_NOT_TAG` appears only as the prefix of the `detail` string, not as an error code.
+
+The MCP adapter maps malformed tool arguments onto `USAGE`; the envelope `detail` carries the rmcp deserialization message. Reusing `USAGE` is deliberate: no new code, and no exit-code change in docs/implementation/05 §Error model.

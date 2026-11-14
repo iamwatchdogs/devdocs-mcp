@@ -2,7 +2,7 @@ name: eval-weekly
 
 # Weekly eval canary (docs/implementation/14 §Regression gate): re-runs the
 # pilot suite as a scheduled canary on main. Canaries are not PR checks —
-# a failure fails main and files an issue.
+# any failure fails main, and a gate-regression failure also files an issue.
 on:
   schedule:
     # Mondays 06:00 UTC.

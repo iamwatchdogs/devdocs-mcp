@@ -11,6 +11,7 @@ on:
       - ".cargo/**"
       - ".config/**"
       - "deny.toml"
+      - "eval/**"
       - "justfile"
       - "lefthook.yml"
       - "rustfmt.toml"
@@ -25,6 +26,7 @@ on:
       - ".cargo/**"
       - ".config/**"
       - "deny.toml"
+      - "eval/**"
       - "justfile"
       - "lefthook.yml"
       - "rustfmt.toml"
@@ -167,6 +169,30 @@ jobs:
           tools: just
       - run: just docs
 
+  eval:
+    # Eval regression gate (docs/implementation/14 §Regression gate): the
+    # pilot suite runs fully offline against the fixture-rebuilt corpus DB.
+    # `just eval` exits 2 by design while the Retrieval-failures row is
+    # INCONCLUSIVE (M4 baseline is M11 work); eval-ci tolerates that and
+    # fails only on a real gate regression. p95 risk note: the threshold is
+    # 400 ms against ~45 ms measured locally, so shared-runner noise is
+    # unlikely to flip the row — accepted risk for the shared-runner default.
+    runs-on: ${{ vars.EVAL_RUNS_ON || 'ubuntu-latest' }}
+    # Self-hosted-runner guard: once EVAL_RUNS_ON names a self-hosted
+    # machine, a fork PR would otherwise execute arbitrary checkout code on
+    # it. Skip fork PRs entirely — same-repo PRs and push/schedule runs run.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-rust
+        with:
+          tools: just
+      - run: just eval-corpus
+      - run: just eval-ci
+
   commits:
     # The lefthook commit-msg hook runs only on developer machines; squash
     # merges land the PR title as the permanent commit subject. The CI gate
@@ -189,7 +215,7 @@ jobs:
     # per-OS check names (e.g. "test (ubuntu-latest)"), so enumerating them
     # in required checks silently desyncs when a job or matrix leg changes.
     # Require only "gate" instead.
-    needs: [fmt, lint, test, test-doc, msrv, features, deny, coverage, docs, commits]
+    needs: [fmt, lint, test, test-doc, msrv, features, deny, coverage, docs, eval, commits]
     if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 15

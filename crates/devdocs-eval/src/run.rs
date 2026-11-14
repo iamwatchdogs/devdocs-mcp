@@ -6,6 +6,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use devdocs_model::CorpusEntry;
 use devdocs_store::Store;
 use sha2::{Digest, Sha256};
 
@@ -34,6 +35,10 @@ pub struct RunOptions {
     pub runs_dir: Option<PathBuf>,
     /// The `devdocs` binary for the subprocess pass; located when absent.
     pub devdocs_bin: Option<PathBuf>,
+    /// The config file the spawned `devdocs search` loads, so the run
+    /// stays hermetic against the operator's user config
+    /// (docs/implementation/14 §Regression gate).
+    pub config: Option<PathBuf>,
 }
 
 /// What a completed run reports.
@@ -54,10 +59,14 @@ pub struct RunOutcome {
 /// Runs one suite end-to-end.
 ///
 /// # Errors
-/// [`EvalError::InvalidSuite`] or [`EvalError::SuiteParse`] for bad input
-/// (exit 1); [`EvalError::Store`], [`EvalError::Subprocess`], and
+/// [`EvalError::InvalidSuite`], [`EvalError::SuiteParse`], or
+/// [`EvalError::InvalidConfig`] for bad input (exit 1);
+/// [`EvalError::Store`], [`EvalError::Subprocess`], and
 /// [`EvalError::Io`] for operational failures (exit 3).
 pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
+    if let Some(config) = options.config.as_deref() {
+        validate_config(config)?;
+    }
     let (golden_dir, runs_root, baseline_path) = resolve_dirs(options)?;
     let suite = load_suite(&golden_dir, &options.suite)?;
     refuse_manual_graders(&suite)?;
@@ -77,6 +86,9 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
 
     let mut passes = in_process_pass(&store, &suite)?;
     let p95_ms = subprocess_pass(options, &db_path, &suite, &mut passes.rows)?;
+    // Read the corpus last, so the artifacts name the sources the hashed
+    // database file holds (the read-path sweep can mutate license state).
+    let corpus = store.list_corpus()?;
     drop(store);
 
     let metrics = SuiteMetrics::new(&passes.graded);
@@ -91,6 +103,7 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
         gates: &gate_rows,
         db_hash: &db_hash,
         baseline_path: &baseline_path,
+        corpus: &corpus,
     };
     write_artifacts(&run_dir, &bundle, &passes)?;
 
@@ -125,6 +138,21 @@ fn load_suite(golden_dir: &Path, requested: &str) -> Result<Suite, EvalError> {
         )
     };
     Suite::load(&suite_path, &suite_name)
+}
+
+/// Refuses a `--config` path that does not name a readable file, at run
+/// start: the spawned `devdocs search` would otherwise carry the failure
+/// only after the pipeline pass and the warmup already spent work.
+fn validate_config(config: &Path) -> Result<(), EvalError> {
+    if std::fs::File::open(config).is_err() {
+        return Err(EvalError::InvalidConfig {
+            reason: format!(
+                "config file {} does not exist or is not readable",
+                config.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Refuses suites the harness cannot grade (docs/implementation/14: the
@@ -222,12 +250,13 @@ fn subprocess_pass(
     rows: &mut [QuestionResult],
 ) -> Result<f64, EvalError> {
     let bin = subprocess::locate_devdocs(options.devdocs_bin.as_deref())?;
+    let config = options.config.as_deref();
     // One warmup call; the cold start is excluded (docs/implementation/14).
-    let warmup = subprocess::run_once(&bin, db_path, &suite.questions[0])?;
+    let warmup = subprocess::run_once(&bin, db_path, config, &suite.questions[0])?;
     check_exit(warmup, "warmup")?;
     let mut samples = Vec::with_capacity(rows.len());
     for (row, question) in rows.iter_mut().zip(&suite.questions) {
-        let sample = subprocess::run_once(&bin, db_path, question)?;
+        let sample = subprocess::run_once(&bin, db_path, config, question)?;
         check_exit(sample, &question.id)?;
         samples.push(sample.wall_ms);
         row.subprocess = sample;
@@ -251,6 +280,8 @@ struct RunData<'a> {
     db_hash: &'a str,
     /// The baseline record the report and manifest carry.
     baseline_path: &'a Path,
+    /// The indexed sources the run executed against.
+    corpus: &'a [CorpusEntry],
 }
 
 /// Writes `results.json`, `manifest.json`, and `report.md` into the run
@@ -287,6 +318,7 @@ fn write_results(
         tool_version: env!("CARGO_PKG_VERSION"),
         db_hash: data.db_hash,
         suite_hash: &data.suite.hash,
+        corpus: data.corpus,
         questions: rows,
     };
     report::write_artifact(
@@ -306,10 +338,8 @@ fn write_manifest(
         suite: &data.suite.name,
         suite_hash: &data.suite.hash,
         db_hash: data.db_hash,
-        host: Host {
-            os: std::env::consts::OS,
-            arch: std::env::consts::ARCH,
-        },
+        host: Host::current(),
+        corpus: data.corpus,
         date: data.date,
         questions: data.suite.questions.len(),
         baseline_hash,
@@ -526,6 +556,28 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_config_file_is_a_config_input_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("absent.toml");
+        // The validation runs before the directory resolution, so the run
+        // needs no eval ancestor to reach it.
+        let err = run(&RunOptions {
+            suite: "pilot".to_owned(),
+            db: None,
+            golden_dir: None,
+            runs_dir: None,
+            devdocs_bin: None,
+            config: Some(config.clone()),
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 1, "{err}");
+        assert!(matches!(err, EvalError::InvalidConfig { .. }), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("config file"), "{message}");
+        assert!(message.contains(config.to_str().unwrap()), "{message}");
+    }
+
+    #[test]
     fn a_run_without_an_eval_ancestor_or_golden_dir_is_input_error() {
         let _guard = process_lock();
         let dir = tempfile::tempdir().unwrap();
@@ -544,6 +596,7 @@ mod tests {
             golden_dir: None,
             runs_dir: None,
             devdocs_bin: None,
+            config: None,
         });
         std::env::set_current_dir(previous).unwrap();
         let err = outcome.unwrap_err();

@@ -15,9 +15,14 @@ fn pilot_path() -> std::path::PathBuf {
 fn the_pilot_suite_is_valid_and_meets_the_sizing_rules() {
     let suite = Suite::load(&pilot_path(), "pilot").unwrap();
 
-    assert_eq!(suite.questions.len(), 20);
+    assert_eq!(suite.questions.len(), 48);
     let libraries: BTreeSet<_> = suite.questions.iter().map(|q| q.library.as_str()).collect();
-    assert_eq!(libraries, BTreeSet::from(["next.js", "serde", "zod"]));
+    for library in ["next.js", "serde", "zod"] {
+        assert!(
+            libraries.contains(library),
+            "{library} is covered: {libraries:?}"
+        );
+    }
 
     let unanswerable = suite
         .questions

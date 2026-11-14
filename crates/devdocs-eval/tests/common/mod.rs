@@ -86,14 +86,28 @@ fn build_devdocs(profile_dir: &Path) {
     );
 }
 
+/// The commit sha the fixture's git source records.
+pub const GIT_SHA: &str = "abc123def456abc123def456abc123def456abc1";
+
 /// Builds a fixture database and a three-question suite: one answered, one
 /// unanswerable that abstains, and one whose only expected ref is absent.
+/// The database seeds two source rows: the `llms_txt` chunk carrier
+/// (commit sha null) and a `git` row (commit sha set) so the run
+/// artifacts name both corpus shapes.
 pub fn fixture(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let db_path = dir.join("fixture.db");
     let store = devdocs_testkit::open_migrated(&db_path).unwrap();
     drop(store);
     let conn = Connection::open(&db_path).unwrap();
     let source = devdocs_testkit::seed_source(&conn, "test-lib", true).unwrap();
+    conn.execute(
+        "INSERT INTO sources(library, version, kind, origin_url, commit_sha, license_status, \
+         fetched_at, active) \
+         VALUES ('test-lib', '1.0.0', 'git', 'https://example.test/test-lib.git', ?1, \
+                 'approved_index', '2026-01-01T00:00:00Z', 1)",
+        [GIT_SHA],
+    )
+    .unwrap();
     devdocs_testkit::seed_chunk(
         &conn,
         source,

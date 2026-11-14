@@ -29,6 +29,7 @@ use crate::events::IngestEvents;
 use crate::fixture::{FixtureSet, RecordedResponse};
 use crate::guard::FetchGuard;
 use crate::llms_txt::parse_llms_txt;
+use crate::record::Recorder;
 use crate::relations::PageRelations;
 use crate::segment::Segmenter;
 use crate::symbols::ExtractedSymbol;
@@ -109,19 +110,23 @@ impl From<&str> for GitPin {
 }
 
 /// One ingest run: the resolved config, the guard, the optional fixture
-/// replay set, and the git entry point's extra per-command config.
+/// replay set, the optional live-response recorder, the git entry point's
+/// extra per-command config, and the git fixture replay directory.
 #[derive(Clone)]
 pub struct IngestJob<'a> {
     config: &'a Config,
     guard: &'a FetchGuard,
     fixture: Option<&'a FixtureSet>,
+    recorder: Option<&'a Recorder>,
     extra_git_config: Vec<String>,
+    git_fixture: Option<&'a std::path::Path>,
 }
 
 impl std::fmt::Debug for IngestJob<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IngestJob")
             .field("fixture", &self.fixture.is_some())
+            .field("recorder", &self.recorder.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -134,8 +139,31 @@ impl<'a> IngestJob<'a> {
             config,
             guard,
             fixture,
+            recorder: None,
             extra_git_config: Vec::new(),
+            git_fixture: None,
         }
+    }
+
+    /// Replays the git entry point from a committed fixture directory
+    /// instead of cloning (docs/implementation/07 §Git adapter, fixture
+    /// replay). The replay skips the plan/clone/network stages entirely
+    /// and publishes the fixture's recorded commit SHA.
+    #[must_use]
+    pub fn with_git_fixture(mut self, dir: &'a std::path::Path) -> Self {
+        self.git_fixture = Some(dir);
+        self
+    }
+
+    /// Records every successful guard response the llms.txt entry fetches
+    /// into `recorder` ([`crate::record::Recorder`]), for a run the
+    /// caller later writes out as a replay fixture. The replay set and
+    /// the recorder are exclusive by construction at the CLI edge; both
+    /// set, the run replays and records nothing.
+    #[must_use]
+    pub fn with_recorder(mut self, recorder: &'a Recorder) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     /// Adds per-command `-c key=value` git config for the git entry point
@@ -182,7 +210,10 @@ impl<'a> IngestJob<'a> {
 
     /// Runs the git pipeline: gate, plan, clone and check the pin out,
     /// walk the docs, segment, publish
-    /// (docs/implementation/07 §Git adapter). The license gate is the same
+    /// (docs/implementation/07 §Git adapter). With
+    /// [`IngestJob::with_git_fixture`], the plan and clone are skipped and
+    /// the fixture's materialized tree replays instead, publishing the
+    /// fixture's recorded commit SHA. The license gate is the same
     /// deny-by-default gate the llms.txt entry runs — the registry entry
     /// must match `repo_url` exactly — and the published library identity
     /// is the registry name, as in [`IngestJob::run`].
@@ -254,7 +285,11 @@ impl<'a> IngestJob<'a> {
     /// timeout: the plan pins the URL as the single source of truth, the
     /// fetch echoes the same URL back (a mismatch fails as
     /// `GIT_URL_MISMATCH`), and the walk output joins the same
-    /// dedup/chrome/segment path the llms.txt corpus takes. Publishes
+    /// dedup/chrome/segment corpus path the llms.txt corpus takes. With a
+    /// fixture replay set ([`IngestJob::with_git_fixture`]), the plan and
+    /// clone are skipped entirely and the run walks the fixture's
+    /// materialized tree instead
+    /// (docs/implementation/07 §Git adapter, fixture replay). Publishes
     /// nothing.
     async fn prepare_git(
         &self,
@@ -270,7 +305,13 @@ impl<'a> IngestJob<'a> {
         let data_root = data_root.to_path_buf();
         let extensions = self.config.ingest.git_extensions.clone();
         let extra_config = self.extra_git_config.clone();
+        // The blocking closure is `'static`: the borrowed fixture dir
+        // clones to an owned path, the way the other captures clone.
+        let git_fixture = self.git_fixture.map(std::path::Path::to_path_buf);
         let fetched = tokio::task::spawn_blocking(move || {
+            if let Some(fixture_dir) = git_fixture.as_deref() {
+                return crate::git::replay(fixture_dir, &extensions);
+            }
             let git_plan = crate::git::plan(&url, &pin, &data_root)?;
             let extra: Vec<&str> = extra_config.iter().map(String::as_str).collect();
             git_plan.fetch_with(&url, &extensions, &extra)
@@ -341,9 +382,15 @@ impl<'a> IngestJob<'a> {
             };
         }
         match self.guard.get_with_link_headers(url).await {
-            Ok((bytes, _, _)) => Ok(String::from_utf8(bytes.to_vec())
-                .ok()
-                .filter(|body| !is_html_body(body))),
+            Ok((bytes, final_url, link_headers, status)) => {
+                let body = String::from_utf8(bytes.to_vec())
+                    .ok()
+                    .filter(|body| !is_html_body(body));
+                if let (Some(recorder), Some(body)) = (self.recorder, body.as_deref()) {
+                    recorder.record(url, &final_url, status.as_u16(), &link_headers, body);
+                }
+                Ok(body)
+            }
             Err(crate::guard::GuardError::Http { status, .. })
                 if matches!(status.as_u16(), 404 | 410) =>
             {
@@ -773,13 +820,16 @@ impl<'a> IngestJob<'a> {
             let link_headers = recorded.headers.get("link").cloned().into_iter().collect();
             return Ok((body, url.clone(), link_headers));
         }
-        let (bytes, final_url, link_headers) = self.guard.get_with_link_headers(url).await?;
-        String::from_utf8(bytes.to_vec())
-            .map(|body| (body, final_url, link_headers))
-            .map_err(|_| IngestError::LlmsTxtInvalid {
-                url: url.to_string(),
-                reason: String::from("the response is not valid UTF-8"),
-            })
+        let (bytes, final_url, link_headers, status) =
+            self.guard.get_with_link_headers(url).await?;
+        let body = String::from_utf8(bytes.to_vec()).map_err(|_| IngestError::LlmsTxtInvalid {
+            url: url.to_string(),
+            reason: String::from("the response is not valid UTF-8"),
+        })?;
+        if let Some(recorder) = self.recorder {
+            recorder.record(url, &final_url, status.as_u16(), &link_headers, &body);
+        }
+        Ok((body, final_url, link_headers))
     }
 
     /// Validates a recorded response against the replay contracts and

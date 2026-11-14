@@ -172,6 +172,28 @@ pub fn bare_mirror(source: &Path, dir: &Path) -> io::Result<PathBuf> {
     Ok(mirror)
 }
 
+/// Copies `source`'s working tree into `fixture`, skipping the `.git`
+/// entry: the materialized tree a git fixture replay walks
+/// (docs/implementation/07 §Git adapter, fixture replay). In-tree
+/// `.gitignore` and `.ignore` files copy too, because the replay walk
+/// honors them; the caller writes the fixture's `commit-sha` file.
+pub fn materialize(source: &Path, fixture: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name() == std::ffi::OsStr::new(".git") {
+            continue;
+        }
+        let target = fixture.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            materialize(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

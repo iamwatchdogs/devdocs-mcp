@@ -390,3 +390,138 @@ async fn a_second_git_run_republishes_the_generation() {
         "the provenance commit survives the republish"
     );
 }
+
+/// Builds a git fixture directory from `repo`: the materialized tag tree
+/// plus the `commit-sha` file naming the recorded commit
+/// (docs/implementation/07 §Git adapter, fixture replay).
+fn git_fixture(repo: &devdocs_testkit::git_repo::DocsRepo, dir: &Path) {
+    devdocs_testkit::git_repo::materialize(&repo.work_dir, dir).unwrap();
+    std::fs::write(dir.join("commit-sha"), format!("{}\n", repo.tag_sha)).unwrap();
+}
+
+/// A fixture replay publishes the identical outcome as the clone-based
+/// run of the same content — same pages, same chunks, same events, and
+/// the recorded SHA as the chunks' provenance. The materialized fixture
+/// dir carries no `.git`, so the replay walk pins `require_git(false)`
+/// (docs/implementation/07 §Git adapter, fixture replay).
+#[tokio::test]
+async fn git_fixture_replay_publishes_the_clone_run_identically() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+
+    let fixture_dir = tempdir().unwrap();
+    git_fixture(&repo, fixture_dir.path());
+
+    // The clone-based run, then the replay run over the same content.
+    let guard = guard(&config);
+    let cloned = IngestJob::new(&config, &guard, None)
+        .run_git(
+            Arc::clone(&store()),
+            &url,
+            "acme",
+            "v1.0.0",
+            GitPin::from("v1.0.0"),
+            tempdir().unwrap().path(),
+        )
+        .await
+        .unwrap();
+
+    let replay_store = store();
+    let replayed = IngestJob::new(&config, &guard, None)
+        .with_git_fixture(fixture_dir.path())
+        .run_git(
+            Arc::clone(&replay_store),
+            &url,
+            "acme",
+            "v1.0.0",
+            GitPin::from("v1.0.0"),
+            tempdir().unwrap().path(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(replayed, cloned, "the replay is the clone run");
+    // The replay never clones: the recorded SHA is the provenance, and
+    // the walk found the tree (an empty corpus would refuse).
+    assert_eq!(replayed.commit_sha.as_deref(), Some(repo.tag_sha.as_str()));
+    assert!(replayed.chunks > 0);
+    assert_commit_provenance(&replay_store, &url, &repo.tag_sha);
+}
+
+/// A replay over a fixture dir whose `commit-sha` file is missing fails
+/// as `Fixture` and publishes nothing
+/// (docs/implementation/07 §Git adapter, fixture replay).
+#[tokio::test]
+async fn git_fixture_replay_refuses_a_missing_commit_sha() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+    let fixture_dir = tempdir().unwrap();
+    devdocs_testkit::git_repo::materialize(&repo.work_dir, fixture_dir.path()).unwrap();
+
+    let db = tempdir().unwrap();
+    let db_path = db.path().join("docs.db");
+    let replay_store = Arc::new(devdocs_testkit::open_migrated(&db_path).unwrap());
+    let guard = guard(&config);
+    let error = IngestJob::new(&config, &guard, None)
+        .with_git_fixture(fixture_dir.path())
+        .run_git(
+            Arc::clone(&replay_store),
+            &url,
+            "acme",
+            "v1.0.0",
+            GitPin::from("v1.0.0"),
+            tempdir().unwrap().path(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, devdocs_ingest::IngestError::Fixture { .. }),
+        "{error:?}"
+    );
+    assert!(
+        replay_store.list_sources().unwrap().is_empty(),
+        "a refused replay must publish no source row"
+    );
+    assert!(
+        devdocs_testkit::read_chunks(&db_path).unwrap().is_empty(),
+        "a refused replay must publish no chunks"
+    );
+}
+
+/// A replay whose recorded value is not exactly 40 hex fails as
+/// `Fixture` (docs/implementation/07 §Git adapter, fixture replay).
+#[tokio::test]
+async fn git_fixture_replay_refuses_a_malformed_commit_sha() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+    let fixture_dir = tempdir().unwrap();
+    git_fixture(&repo, fixture_dir.path());
+    std::fs::write(fixture_dir.path().join("commit-sha"), "v1.0.0").unwrap();
+
+    let replay_store = store();
+    let guard = guard(&config);
+    let error = IngestJob::new(&config, &guard, None)
+        .with_git_fixture(fixture_dir.path())
+        .run_git(
+            Arc::clone(&replay_store),
+            &url,
+            "acme",
+            "v1.0.0",
+            GitPin::from("v1.0.0"),
+            tempdir().unwrap().path(),
+        )
+        .await
+        .unwrap_err();
+    match error {
+        devdocs_ingest::IngestError::Fixture { message, .. } => {
+            assert!(message.contains("40-hex"), "message: {message}");
+        }
+        other => panic!("expected Fixture, got {other:?}"),
+    }
+}

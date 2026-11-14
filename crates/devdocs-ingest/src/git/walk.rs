@@ -27,12 +27,27 @@ pub(crate) fn walk_docs(
     dir: &Path,
     extensions: &[String],
 ) -> Result<(Vec<PageDocument>, usize), IngestError> {
+    walk_docs_with(dir, extensions, true)
+}
+
+/// [`walk_docs`] over a directory that is not a clone root: the fixture
+/// replay passes `require_git(false)`, because a materialized tree has no
+/// `.git` — with the clone-path pin the walker would drop gitignore
+/// handling outside a repository, and files the tree's committed
+/// `.gitignore` filters would join the replay corpus
+/// (docs/implementation/07 §Git adapter, fixture replay). Every other
+/// walker pin stays identical.
+pub(crate) fn walk_docs_with(
+    dir: &Path,
+    extensions: &[String],
+    require_git: bool,
+) -> Result<(Vec<PageDocument>, usize), IngestError> {
     let allowlist: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
     // The walker keeps the `ignore` default of skipping hidden entries:
     // dot files and dot directories (`.github/`, `.config/mkdocs.yml`)
     // never reach the allowlist (docs/implementation/07 §Git adapter).
     //
-    // The walk honors only the clone's own in-tree `.gitignore` and
+    // The walk honors only the tree's own in-tree `.gitignore` and
     // `.ignore` rules. The host-level sources are pinned off
     // (`parents(false)`, `git_global(false)`, `git_exclude(false)`) for
     // pin determinism: an ancestor `.ignore`, the operator's global
@@ -41,7 +56,7 @@ pub(crate) fn walk_docs(
     // (`NoIngestablePages`). The global-gitignore path is not covered
     // in-repo: the matcher reads the host git config at runtime.
     let walker = ignore::WalkBuilder::new(dir)
-        .require_git(true)
+        .require_git(require_git)
         .follow_links(false)
         .parents(false)
         .git_global(false)
@@ -260,5 +275,34 @@ mod tests {
         let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
         assert!(paths.contains(&"README.md"), "paths: {paths:?}");
         assert!(paths.contains(&"docs/guide.md"), "paths: {paths:?}");
+    }
+
+    /// A materialized tree carries no `.git`. The fixture-replay pin
+    /// (`require_git(false)`) honors the tree's in-tree `.gitignore` the
+    /// same way the clone walk does inside the repository; the clone-path
+    /// pin (`require_git(true)`) would drop gitignore handling outside a
+    /// repository, and files the committed `.gitignore` filters would
+    /// join the replay corpus
+    /// (docs/implementation/07 §Git adapter, fixture replay).
+    #[test]
+    fn the_replay_pin_honors_gitignore_outside_a_repository() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "secret.md\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# docs\n").unwrap();
+        std::fs::write(dir.path().join("secret.md"), "# secret\n").unwrap();
+
+        let (docs, skipped) =
+            super::walk_docs_with(dir.path(), &default_extensions(), false).unwrap();
+        assert_eq!(skipped, 0);
+        let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(paths, ["README.md"], "the replay honors the gitignore");
+
+        let (unfiltered, _) =
+            super::walk_docs_with(dir.path(), &default_extensions(), true).unwrap();
+        let paths: Vec<&str> = unfiltered.iter().map(|d| d.path.as_str()).collect();
+        assert!(
+            paths.contains(&"secret.md"),
+            "the clone pin drops gitignore handling outside a repo: {paths:?}"
+        );
     }
 }

@@ -1,0 +1,36 @@
+# The eval fixture corpus configuration (docs/implementation/14 §Fixture
+# corpus): the three recorded sources the golden suites grade against.
+# Rebuild the corpus database offline with `just eval-corpus`; the adds
+# replay the committed fixtures under eval/fixtures/, never the network.
+
+[fetch]
+concurrency = 8
+timeout_ms = 60000
+max_bytes = 20971520
+user_agent = "devdocs/0.1"
+
+[search]
+# Pin the search knobs at the documented defaults, so the harness's
+# spawned `devdocs search --config eval/corpus.toml` never grades against
+# the operator's user config (docs/implementation/14 §Regression gate).
+max_tokens_default = 2000
+limit_default = 8
+rrf_k = 60
+
+[sources."next.js"]
+kind = "llms_txt"
+url = "https://nextjs.org/docs/llms.txt"
+license = "MIT"
+attribution = "docs (c) Vercel"
+
+[sources.zod]
+kind = "llms_txt"
+url = "https://zod.dev/llms.txt"
+license = "MIT"
+attribution = "docs (c) Zod contributors"
+
+[sources.serde]
+kind = "git"
+url = "https://github.com/serde-rs/serde"
+license = "MIT OR Apache-2.0"
+attribution = "serde (c) dtolnay and contributors"

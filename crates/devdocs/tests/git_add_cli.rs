@@ -172,10 +172,12 @@ fn add_git_without_a_version_is_a_usage_error() {
     assert!(!db.exists(), "a rejected add must not create the database");
 }
 
-/// `--fixture` replays HTTP recordings; a git add refuses it instead of
-/// silently running against the network.
+/// `--fixture` replays a git source from a committed fixture directory
+/// offline: the materialized tag tree plus the recorded `commit-sha`
+/// file publish the same content and the recorded commit SHA as the
+/// clone (docs/implementation/07 §Git adapter, fixture replay).
 #[test]
-fn add_git_refuses_a_fixture_replay() {
+fn add_git_fixture_replay_publishes_offline() {
     let env = Env::new();
     let repo_dir = env.root.join("repo");
     std::fs::create_dir_all(&repo_dir).expect("repo dir");
@@ -185,6 +187,9 @@ fn add_git_refuses_a_fixture_replay() {
     let db = env.root.join("docs.db");
     let fixture = env.root.join("fixture");
     std::fs::create_dir_all(&fixture).expect("fixture dir");
+    devdocs_testkit::git_repo::materialize(&repo.work_dir, &fixture).expect("materialized tree");
+    std::fs::write(fixture.join("commit-sha"), format!("{}\n", repo.tag_sha))
+        .expect("commit-sha file");
 
     let (code, stdout, stderr) = output(
         env.cmd(),
@@ -204,9 +209,47 @@ fn add_git_refuses_a_fixture_replay() {
             db.to_str().expect("db path"),
         ],
     );
-    assert_eq!(code, 1, "stdout: {stdout} stderr: {stderr}");
-    assert!(stderr.contains("--fixture"), "stderr: {stderr}");
-    assert!(!db.exists(), "a rejected add must not create the database");
+    assert_eq!(code, 0, "stdout: {stdout} stderr: {stderr}");
+    let added: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_added_report(&added, &repo.tag_sha);
+}
+
+/// A git fixture replay whose `commit-sha` file is missing fails as an
+/// upstream error (exit 3) naming the file
+/// (docs/implementation/07 §Git adapter, fixture replay).
+#[test]
+fn add_git_fixture_replay_refuses_a_missing_commit_sha() {
+    let env = Env::new();
+    let repo_dir = env.root.join("repo");
+    std::fs::create_dir_all(&repo_dir).expect("repo dir");
+    let repo = docs_repo(&repo_dir).expect("fixture repo");
+    let url = repo_url(&repo.work_dir);
+    let config = write_git_config(&env, &url);
+    let db = env.root.join("docs.db");
+    let fixture = env.root.join("fixture");
+    std::fs::create_dir_all(&fixture).expect("fixture dir");
+    devdocs_testkit::git_repo::materialize(&repo.work_dir, &fixture).expect("materialized tree");
+
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &[
+            "add",
+            &url,
+            "--version",
+            "v1.0.0",
+            "--kind",
+            "git",
+            "--fixture",
+            fixture.to_str().expect("fixture path"),
+            "--json",
+            "--config",
+            config.to_str().expect("config path"),
+            "--db",
+            db.to_str().expect("db path"),
+        ],
+    );
+    assert_eq!(code, 3, "stdout: {stdout} stderr: {stderr}");
+    assert!(stderr.contains("commit-sha"), "stderr: {stderr}");
 }
 
 /// The `[sources.<name>].kind` value is free-form config the CLI edge

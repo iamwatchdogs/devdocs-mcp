@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-13T00:00:00Z
+timestamp: 2026-11-14T00:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -122,7 +122,7 @@ Commands:
 
 | Command | Purpose |
 |---|---|
-| `devdocs add <source> [--version V] [--kind K]` | Ingest a source through the ladder |
+| `devdocs add <source> [--version V] [--kind K] [--fixture DIR] [--record-to DIR]` | Ingest a source through the ladder; `--fixture` replays offline (llms.txt: recorded responses, git: a materialized fixture tree, [07](07-ingest-pipeline.md) §Live-response recording and §Git adapter), `--record-to` records them |
 | `devdocs sync [library]` | Refresh stale approved sources |
 | `devdocs list [--json]` | List indexed libraries and versions |
 | `devdocs search "query" [--library L] [--version V] [--limit N] [--cursor C] [--max-tokens T] [--json]` | Hybrid search |
@@ -137,7 +137,7 @@ Commands:
 | `devdocs mcp [--transport stdio]` | Start the MCP server on stdio |
 | `devdocs db migrate|vacuum|stats|quarantine list` | Database operations |
 | `devdocs config init|show|validate|path` | Configuration operations |
-| `devdocs eval run <suite> [--json]` | Run a golden-set suite (see [14](14-benchmark-eval.md)) |
+| `devdocs eval run <suite> [--db PATH] [--config PATH] [--golden-dir DIR] [--runs-dir DIR] [--devdocs-bin PATH] [--json]` | Run a golden-set suite through the eval harness; prints the gate table, or the `--json` outcome object; exit 2 on any gate FAIL or INCONCLUSIVE ([14](14-benchmark-eval.md) §Harness flow) |
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
 
@@ -224,6 +224,7 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 | `BUDGET_EXCEEDED` | 4 | Budget consumed with no deliverable content |
 | `HASH_MISMATCH` | 3 | Index drifted. Re-sync suggested |
 | `NOT_AVAILABLE` | 2 | The license gate refused the source: `expired`, `revoked`, or `denied`. Carries `miss_reason: license_blocked`; the hint names `run: devdocs source list` |
+| `EVAL_GATE` | 2 | An eval run completed, but a gate is FAIL or INCONCLUSIVE. The detail names the blocked gates ([14](14-benchmark-eval.md) §Harness flow) |
 
 A non-SHA pin that names no tag emits `error: USAGE` (exit 1); `GIT_PIN_NOT_TAG` appears only as the prefix of the `detail` string, not as an error code.
 

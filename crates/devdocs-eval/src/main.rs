@@ -48,6 +48,10 @@ enum Command {
         /// The devdocs binary for the subprocess pass.
         #[arg(long, value_name = "PATH")]
         devdocs_bin: Option<PathBuf>,
+        /// The config file the spawned `devdocs search` loads, so the run
+        /// stays hermetic against the operator's user config.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
 }
 
@@ -59,6 +63,7 @@ fn main() -> ExitCode {
         golden_dir,
         runs_dir,
         devdocs_bin,
+        config,
     } = args.command;
     let options = RunOptions {
         suite,
@@ -66,6 +71,7 @@ fn main() -> ExitCode {
         golden_dir,
         runs_dir,
         devdocs_bin,
+        config,
     };
     match run(&options) {
         Ok(outcome) => {

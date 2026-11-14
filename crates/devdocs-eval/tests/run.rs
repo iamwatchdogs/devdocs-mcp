@@ -24,6 +24,7 @@ fn run_fixture() -> (
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     (dir, db, outcome)
@@ -74,6 +75,49 @@ fn a_run_scores_and_writes_parseable_artifacts() {
 }
 
 #[test]
+fn the_artifacts_name_the_corpus_and_the_host() {
+    let (_dir, _db, outcome) = run_fixture();
+
+    // One corpus row per distinct source: the llms_txt carrier without a
+    // commit sha and the git row with one (docs/implementation/14 §Run
+    // artifacts, docs/implementation/06 §Schema).
+    let results: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("results.json")).unwrap(),
+    )
+    .unwrap();
+    let corpus = results["corpus"].as_array().unwrap();
+    assert_eq!(corpus.len(), 2, "{corpus:?}");
+    let git = corpus
+        .iter()
+        .find(|entry| entry["kind"] == "git")
+        .expect("the git source row");
+    assert_eq!(git["library"], serde_json::json!("test-lib"));
+    assert_eq!(git["version"], serde_json::json!("1.0.0"));
+    assert_eq!(
+        git["origin_url"],
+        serde_json::json!("https://example.test/test-lib.git")
+    );
+    assert_eq!(git["commit_sha"], serde_json::json!(common::GIT_SHA));
+    let llms = corpus
+        .iter()
+        .find(|entry| entry["kind"] == "llms_txt")
+        .expect("the llms_txt source row");
+    assert_eq!(llms["commit_sha"], serde_json::Value::Null);
+
+    // The manifest mirrors the corpus and records the host spec.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["corpus"], results["corpus"]);
+    let host = &manifest["host"];
+    assert_eq!(host["os"].as_str().unwrap(), std::env::consts::OS);
+    assert_eq!(host["arch"].as_str().unwrap(), std::env::consts::ARCH);
+    assert!(host["cores"].as_u64().unwrap() > 0);
+    assert!(host["cpu"].is_null() || host["cpu"].is_string());
+}
+
+#[test]
 fn a_run_renders_the_report_and_judges_the_gates() {
     let (_dir, _db, outcome) = run_fixture();
 
@@ -88,8 +132,9 @@ fn a_run_renders_the_report_and_judges_the_gates() {
     assert!(md.contains("Phase 0 stub"));
 
     // Deterministic gates: hit@5 is 1/2 (the absent ref misses), symbol
-    // recall is 1/1, and version correctness is 2/3 (the abstention has no
-    // top hit). The absent ref keeps the table honest: not all PASS.
+    // recall is 1/1, and version correctness is 2/2 (the abstention leaves
+    // the denominator; both served top hits are on-pin). The absent ref
+    // keeps the table honest: not all PASS.
     let status = |name: &str| {
         outcome
             .gates
@@ -100,7 +145,7 @@ fn a_run_renders_the_report_and_judges_the_gates() {
     };
     assert_eq!(status("hit@5"), GateStatus::Fail);
     assert_eq!(status("Symbol recall"), GateStatus::Pass);
-    assert_eq!(status("Version correctness"), GateStatus::Fail);
+    assert_eq!(status("Version correctness"), GateStatus::Pass);
     assert_eq!(status("Cost per 1,000 queries"), GateStatus::Pass);
     assert!(!outcome.all_gates_pass);
 }
@@ -121,6 +166,7 @@ fn an_invalid_suite_is_input_error_exit_one() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -143,6 +189,7 @@ fn a_manual_grader_suite_is_refused() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -171,6 +218,7 @@ fn a_failing_subprocess_call_fails_the_run() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(failing_bin(dir.path())),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 3, "{err}");
@@ -187,6 +235,7 @@ fn a_second_run_of_one_suite_gets_its_own_directory() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(dir.path().join("runs")),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     };
     let first = run(&options(db.clone())).unwrap();
     let second = run(&options(db)).unwrap();
@@ -214,6 +263,7 @@ fn a_suite_resolves_by_name_from_the_golden_dir() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     assert_eq!(outcome.metrics.failure_rate.total, 3);
@@ -231,6 +281,7 @@ fn a_direct_suite_path_without_the_jsonl_suffix_keeps_its_stem() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     // The manifest names the suite after the file stem.
@@ -263,6 +314,7 @@ fn a_baseline_record_reaches_the_manifest_and_the_report() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     let manifest: serde_json::Value = serde_json::from_str(

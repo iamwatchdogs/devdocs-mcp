@@ -1,5 +1,6 @@
 {
-  "curation_minutes": 90,
-  "curated_at": "2026-11-02",
-  "description": "Phase 0 pilot: 20 questions across next.js 16.2.9, zod 4.6.7, and serde 1.0.229 (the project's own lockfile), covering all eight task-type categories with two unanswerable questions. Refs are section pins the fixture corpus resolves when ingestion lands."
+  "curation_minutes": 116,
+  "curated_at": "2026-11-13",
+  "description": "Pilot suite grown for the M10 Phase 1 gate run: 48 questions across next.js 16.2.9, zod 4.6.7, and serde 1.0.229 (the project's own lockfile), covering all eight task-type categories with four unanswerable questions. Refs pin the section-path segments the fixture corpus actually serves (raw breadcrumb trails, case-exact); serde's thin corpus (README only) grades through symbol pins. Every question verified PASS against the recorded corpus DB. Five echoed questions (verbatim doc sentences or bare keyword lists) were rewritten into real question form on 2026-11-13.",
+  "curation_bias": "The FTS all-token AND rung serves a query only when every query token appears in one indexed chunk, so the questions must stay keyword-dense and document-derived; several remain bare keyword or symbol lookups where no longer natural phrasing survives that rung. hit@5 of 1.000 therefore partly measures curation, not retrieval quality alone. Measuring the failure rate on natural-language questions is Phase 2 work (docs/implementation/13, M11)."
 }

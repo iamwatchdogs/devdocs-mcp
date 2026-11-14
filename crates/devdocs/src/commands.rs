@@ -247,7 +247,17 @@ pub fn run_add(
     version: Option<&str>,
     kind: Option<&str>,
     fixture_dir: Option<&std::path::Path>,
+    record_to: Option<&std::path::Path>,
 ) -> Result<serde_json::Value, Error> {
+    // The replay set and the recorder are opposites — one reads recorded
+    // responses, the other writes them — so carrying both is a broken
+    // invocation, refused before anything else runs.
+    if fixture_dir.is_some() && record_to.is_some() {
+        return Err(Error::Usage(
+            "--fixture replays recorded responses and --record-to records them; pass one, not both"
+                .to_owned(),
+        ));
+    }
     let index_url = Url::parse(source).map_err(|e| Error::Usage(format!("bad source URL: {e}")))?;
 
     // 1. The license gate: deny by default. The unregistered refusal runs
@@ -279,11 +289,13 @@ pub fn run_add(
     }
 
     if effective_kind == "git" {
-        // `--fixture` replays recorded HTTP responses; the git adapter has
-        // no replay surface, so a silent drop would run against the network.
-        if fixture_dir.is_some() {
+        // `--record-to` records the llms.txt fetch path only; a silent
+        // drop would run the networked clone with no recording. (`--fixture`
+        // applies: it replays a git source's committed fixture directory,
+        // docs/implementation/07 §Git adapter, fixture replay.)
+        if record_to.is_some() {
             return Err(Error::Usage(
-                "--fixture replays HTTP recordings and does not apply to git sources".to_owned(),
+                "--record-to records HTTP responses and does not apply to git sources".to_owned(),
             ));
         }
         // The pin must be explicit: there is no "latest" tag to resolve.
@@ -300,7 +312,7 @@ pub fn run_add(
                 return Err(error);
             }
         };
-        return run_add_git(config, &store, &index_url, &grant.name, pin);
+        return run_add_git(config, &store, &index_url, &grant.name, pin, fixture_dir);
     }
 
     let store = wiring::open_store(config, false)?;
@@ -329,13 +341,24 @@ pub fn run_add(
             detail: format!("cannot start the async runtime: {e}"),
         })?;
 
+    // The recorder captures the run's live responses for a later replay;
+    // the manifest is written only after the run succeeds.
+    let recorder = record_to.map(|_| devdocs_ingest::Recorder::new());
     let version = version.unwrap_or("latest");
     let job = IngestJob::new(config, &guard, fixture.as_ref());
+    let job = match &recorder {
+        Some(recorder) => job.with_recorder(recorder),
+        None => job,
+    };
     let result = runtime.block_on(job.run(Arc::clone(&store), &index_url, &grant.name, version));
     // A run that hit the total cap can leave its in-flight segmentation
     // blocking task running; do not wait for it when the runtime drops.
     runtime.shutdown_background();
     let outcome = result.map_err(map_ingest_error)?;
+    if let (Some(recorder), Some(dir)) = (&recorder, record_to) {
+        recorder.write(dir).map_err(map_ingest_error)?;
+        tracing::info!(dir = %dir.display(), "recorded the ingest responses");
+    }
     add_report(&outcome)
 }
 
@@ -344,8 +367,10 @@ pub fn run_add(
 /// [`IngestJob::run_git`]'s `spawn_blocking` — not through the HTTP fetch
 /// guard, which does not govern the git transport
 /// (docs/implementation/07 §Git adapter) — and the version label is the
-/// pin itself. The store handle arrives already open: the license gate
-/// opened it, and a second open would migrate the same file twice.
+/// pin itself. A `fixture_dir` replays a committed fixture directory
+/// offline instead of cloning (docs/implementation/07 §Git adapter,
+/// fixture replay). The store handle arrives already open: the license
+/// gate opened it, and a second open would migrate the same file twice.
 ///
 /// # Errors
 /// [`Error`] for any ingest failure (`IngestJob::run_git` maps the whole
@@ -356,6 +381,7 @@ fn run_add_git(
     repo_url: &Url,
     library: &str,
     pin: &str,
+    fixture_dir: Option<&std::path::Path>,
 ) -> Result<serde_json::Value, Error> {
     let guard = devdocs_ingest::FetchGuard::from_fetch_config(&config.fetch);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -371,7 +397,10 @@ fn run_add_git(
     // temp dir stays inside DEVDOCS_HOME, a private directory the adapter
     // creates with mode 0700 when missing.
     let data_root = devdocs_model::config::data_root()?;
-    let job = IngestJob::new(config, &guard, None);
+    let mut job = IngestJob::new(config, &guard, None);
+    if let Some(fixture_dir) = fixture_dir {
+        job = job.with_git_fixture(fixture_dir);
+    }
     let result = runtime.block_on(job.run_git(
         Arc::clone(store),
         repo_url,
@@ -705,6 +734,60 @@ pub fn run_db_migrate(config: &Config, force: bool) -> Result<serde_json::Value,
         "schema_version": version,
         "forced": force,
     }))
+}
+
+/// Runs `devdocs eval run <suite>` (docs/implementation/14 §Harness flow):
+/// proxies to the eval harness with the same flags. Returns the completed
+/// run outcome for the CLI edge to print; gate failures are not returned
+/// here — the outcome carries the gate table, and the CLI edge maps a
+/// blocked table to [`Error::EvalGate`].
+///
+/// # Errors
+/// [`Error::Usage`] for harness input errors (a broken suite, a manual
+/// grader, an unreadable config — harness exit 1); [`Error::Upstream`]
+/// for the operational
+/// harness exits (store, subprocess, retrieval, I/O, serialization —
+/// harness exit 3).
+pub fn run_eval_run(
+    suite: &str,
+    db: Option<&std::path::Path>,
+    golden_dir: Option<&std::path::Path>,
+    runs_dir: Option<&std::path::Path>,
+    devdocs_bin: Option<&std::path::Path>,
+    config: Option<&std::path::Path>,
+) -> Result<devdocs_eval::run::RunOutcome, Error> {
+    let options = devdocs_eval::run::RunOptions {
+        suite: suite.to_owned(),
+        db: db.map(std::path::Path::to_path_buf),
+        golden_dir: golden_dir.map(std::path::Path::to_path_buf),
+        runs_dir: runs_dir.map(std::path::Path::to_path_buf),
+        devdocs_bin: devdocs_bin.map(std::path::Path::to_path_buf),
+        config: config.map(std::path::Path::to_path_buf),
+    };
+    devdocs_eval::run::run(&options).map_err(|e| map_eval_error(&e))
+}
+
+/// Maps the harness error to the CLI edge error (docs/implementation/14
+/// §Harness flow): the harness exit-1 input errors are `USAGE` here, the
+/// exit-3 operational errors are `UPSTREAM_ERROR`. The harness display
+/// line carries the narrative (suite, line, path), so it is the detail.
+fn map_eval_error(error: &devdocs_eval::error::EvalError) -> Error {
+    use devdocs_eval::error::EvalError;
+
+    let detail = error.to_string();
+    match error {
+        EvalError::InvalidSuite { .. }
+        | EvalError::SuiteParse { .. }
+        | EvalError::InvalidConfig { .. } => Error::Usage(detail),
+        EvalError::Store(_)
+        | EvalError::Subprocess(_)
+        | EvalError::Retrieve(_)
+        | EvalError::Io { .. }
+        | EvalError::Serialize { .. } => Error::Upstream {
+            code: UpstreamCode::UpstreamError,
+            detail,
+        },
+    }
 }
 
 /// Runs `devdocs mcp --transport stdio` (docs/implementation/08 §MCP

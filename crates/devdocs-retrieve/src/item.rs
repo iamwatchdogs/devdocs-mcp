@@ -82,11 +82,7 @@ pub fn derive_ref(hit: &Hit) -> String {
         hit.section_path.iter().map(|s| segment(s)).collect()
     };
     let mut ref_ = format!("docs://{}/v{}/", hit.library, hit.version);
-    if let Some(page) = hit
-        .page_url
-        .as_deref()
-        .and_then(devdocs_model::docref::page_path)
-    {
+    if let Some(page) = hit.page_path() {
         ref_.push_str(&page);
         ref_.push('@');
     }
@@ -156,11 +152,7 @@ pub fn hex(bytes: &[u8]) -> String {
 fn page_matches(hit: &Hit, pinned: Option<&str>) -> bool {
     match pinned {
         None => true,
-        Some(page) => hit
-            .page_url
-            .as_deref()
-            .and_then(devdocs_model::docref::page_path)
-            .is_some_and(|hit_page| hit_page == page),
+        Some(page) => hit.page_path().is_some_and(|hit_page| hit_page == page),
     }
 }
 
@@ -172,11 +164,10 @@ fn page_matches(hit: &Hit, pinned: Option<&str>) -> bool {
 /// matches.
 ///
 /// A page-pinned ref narrows the full-path match to chunks on the pinned
-/// page (see `page_matches`) — the page part only ever narrows, so a
-/// page-qualified ref that no chunk on the pinned page satisfies falls
-/// through the fragment and last-segment ladder unchanged (the
-/// deliberate fallback: a ref recorded against a restructured page still
-/// resolves, and an unqualified ref behaves exactly as before).
+/// page — the page part only ever narrows, so a page-qualified ref that
+/// no chunk on the pinned page satisfies falls through the fragment and
+/// last-segment ladder unchanged (docs/implementation/08 §Ref derivation
+/// owns the resolution rule).
 #[must_use]
 pub fn match_ref<'a>(chunks: &'a [Hit], parsed: &ParsedRef) -> Option<&'a Hit> {
     let want: Vec<String> = parsed.segments.iter().map(|s| segment(s)).collect();

@@ -35,10 +35,7 @@ fn to_refs<'a>(
             rank: first_rank + i,
             library: h.library.clone(),
             version: h.version.clone(),
-            page: h
-                .page_url
-                .as_deref()
-                .and_then(devdocs_model::docref::page_path),
+            page: h.page_path(),
             segments: h.section_path.clone(),
             symbol: h.symbol.clone(),
         })

@@ -58,7 +58,7 @@ jobs:
     # UI by the person who ran it and must not open tracker issues, and an
     # artifact-upload failure is not a gate regression. Same dedup shape as
     # audit.yml's report job.
-    if: needs.eval.outputs.gate_failed == 'true' && github.event_name == 'schedule'
+    if: always() && needs.eval.outputs.gate_failed == 'true' && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

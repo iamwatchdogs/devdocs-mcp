@@ -266,6 +266,8 @@ mod tests {
 
     use super::{Question, locate_devdocs, run_once_deadline};
     use crate::suite::{Grader, TaskType};
+    #[cfg(unix)]
+    use devdocs_testkit::sh_quote;
 
     /// A one-question stand-in for the suite loader.
     fn question() -> Question {
@@ -464,14 +466,12 @@ mod tests {
         let args_file = dir.join(format!("{name}.args"));
         let env_file = dir.join(format!("{name}.env"));
         let xdg_file = dir.join(format!("{name}.xdg"));
-        // shortcut: a literal `'` inside a path still breaks the
-        // quoting; upgrade to POSIX escaping if a test ever trips on it
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nenv | grep '^DEVDOCS_' > \
-             '{}'\nprintf '%s\\n' \"${{XDG_CONFIG_HOME-}}\" > '{}'\nexit 0\n",
-            args_file.display(),
-            env_file.display(),
-            xdg_file.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nenv | grep '^DEVDOCS_' > \
+             {}\nprintf '%s\\n' \"${{XDG_CONFIG_HOME-}}\" > {}\nexit 0\n",
+            sh_quote(&args_file),
+            sh_quote(&env_file),
+            sh_quote(&xdg_file)
         );
         stub(dir, name, &body);
         args_file
@@ -662,6 +662,41 @@ mod tests {
         assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
         drop(dir);
         let _ = std::fs::remove_dir(&spaced_root);
+    }
+
+    /// The recorder stub's redirections survive a single quote in the
+    /// path: the generated script POSIX-escapes every interpolated path
+    /// (each embedded `'` becomes `'\''`), so the quote cannot terminate
+    /// a shell word and the recorded files still land.
+    #[cfg(unix)]
+    #[test]
+    fn the_recorder_stub_survives_paths_with_quotes() {
+        let quoted_root = std::env::temp_dir().join("eval'test dir");
+        std::fs::create_dir_all(&quoted_root).unwrap();
+        let dir = tempfile::tempdir_in(&quoted_root).unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config_home = dir.path().join("config-home");
+        run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &config_home,
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        // All three redirections landed inside the quoted dir with the
+        // expected content — nothing split at the quote.
+        let args = std::fs::read_to_string(dir.path().join("devdocs.args")).unwrap();
+        assert!(args.contains("search"), "{args}");
+        let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
+        assert!(env.is_empty(), "{env}");
+        let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
+        assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
+        drop(dir);
+        let _ = std::fs::remove_dir(&quoted_root);
     }
 
     /// Every spawn carries `--config <path>`: the operator `--config`, or

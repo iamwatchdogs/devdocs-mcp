@@ -43,6 +43,7 @@ pub fn fast_hash(body: &str) -> blake3::Hash {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{canonical_body, content_hash, fast_hash};

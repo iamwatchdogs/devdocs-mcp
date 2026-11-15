@@ -220,6 +220,7 @@ pub fn empty_envelope() -> ResultEnvelope {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{SourceSummary, VersionStatus, empty_envelope, now_rfc3339};

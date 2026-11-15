@@ -3,7 +3,9 @@
 //! separately (`mod common;`), so items stay public and helpers a file
 //! does not use stay.
 
+// Fixture setup must abort the test on failure, so unwrap/expect are fine (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// Helper results are freely ignorable in test code; must_use adds noise (tracked in #87).
 #![allow(clippy::must_use_candidate)]
 #![allow(dead_code)]
 

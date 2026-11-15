@@ -87,6 +87,7 @@ pub(crate) fn validate_ref(
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{ParsedRef, TaskType, ensure_pinned_version, validate_ref};

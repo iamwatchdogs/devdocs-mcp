@@ -6,6 +6,7 @@
 //! expression must execute as a MATCH against a populated schema-0001
 //! database without error.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use proptest::prelude::*;

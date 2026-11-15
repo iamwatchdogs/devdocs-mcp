@@ -2,6 +2,7 @@
 //! packer never exceeds the budget after rank 1 and always includes rank 1;
 //! `truncated` and `next_cursor` report the cut correctly.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use devdocs_retrieve::budget::{Packed, pack};

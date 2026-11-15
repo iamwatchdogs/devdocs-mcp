@@ -2,6 +2,7 @@
 //! inventories match the manifest bytes, and the trim tool roundtrips
 //! (docs/implementation/14 §Fixture corpus).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};

@@ -2,7 +2,9 @@
 //! serves newline-delimited JSON-RPC on stdout, and stdout carries the
 //! protocol stream only (.agents/instructions/observability).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// Helper results are freely ignorable in test code; must_use adds noise (tracked in #87).
 #![allow(clippy::must_use_candidate)]
 
 mod common;

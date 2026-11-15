@@ -1,5 +1,6 @@
 //! Unit tests for the segmenter: byte-exact slicing, packing, overlap,
 //! fence safety, and the header/hash contract.
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::{Segmenter, boundary_inside_fence, contextual_header, fence_intervals};

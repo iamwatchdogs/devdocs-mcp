@@ -14,7 +14,7 @@ permanent copy):
 - Question rewrites: five echoed questions (verbatim doc sentences or bare
   keyword lists) were rewritten into real question form before this run;
   see `eval/golden/pilot.meta.json` (`curation_bias`) and Limitations.
-- Suite hash: `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c`
+- Suite hash: `44916716eaf78e1b07764905faf379a0ba7c5b530ea2e31d505c7743cce32759`
 - Database hash: `b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a`
   (the fixture-rebuilt `eval/runs/corpus.db`, offline; see Limitations —
   the db hash is not a reproducibility target).
@@ -141,6 +141,12 @@ gate table instead of a green exit.
 - The manifest db_hash is the run's own database identity and is not
   expected to reproduce byte-identically on a rebuild (sqlite rebuild-time
   state). Reproducibility is judged on suite_hash plus the gate table.
+- Note (2026-11-15): the golden record was edited after this run (the
+  multi_library record's `expect_refs` trimmed to the deciding ref), so the
+  suite hash moved from
+  `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c` (the
+  hash the recorded run used) to the re-pinned hash above. A fresh offline
+  run reproduced the identical gate table.
 - The next.js corpus was recorded from nextjs.org/docs/llms.txt as served
   on 2026-11-13; the site served its then-current docs under the 16.2.9
   corpus label (llms.txt serves latest only, no versioned endpoint).
@@ -159,7 +165,7 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 
 ## Corpus
 
-- suite: pilot — sha256 87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c
+- suite: pilot — sha256 44916716eaf78e1b07764905faf379a0ba7c5b530ea2e31d505c7743cce32759
 - database: sha256 b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a
 - pipeline: the live hybrid pipeline through devdocs-retrieve — the symbol rung and the FTS5 BM25 rung fused with RRF (docs/implementation/08 §Rungs)
 - CLI search path: the timed call is the live end-to-end `devdocs search` subprocess. The p95 row times process start through retrieval; the warmup call is excluded.

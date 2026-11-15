@@ -783,6 +783,24 @@ impl Config {
         Ok(())
     }
 
+    /// Load the configuration from one file layer alone: no user config,
+    /// no `DEVDOCS_*` env layer, no overrides — the remaining holes fill
+    /// from the built-in defaults. The eval harness resolves its scoring
+    /// pass plan this way, matching what its spawned child loads from the
+    /// same `--config` file (the child's user layer is cut off and its
+    /// env stripped); the `[search]` section the plan reads resolves
+    /// purely from the file plus defaults.
+    ///
+    /// # Errors
+    /// [`Error::ConfigInvalid`] when the file is unreadable or fails
+    /// validation.
+    pub fn load_file_layer(path: &Path) -> Result<Self, Error> {
+        let mut partial = read_layer(path)?;
+        let over = Overrides::default();
+        partial.merge(PartialConfig::from_overrides(&over));
+        Self::resolve(&partial, &over)
+    }
+
     /// Fill the remaining holes from built-in defaults.
     fn resolve(partial: &PartialConfig, over: &Overrides) -> Result<Self, Error> {
         let data_root = data_root()?;

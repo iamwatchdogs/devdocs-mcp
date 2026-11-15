@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use devdocs_model::CorpusEntry;
+use devdocs_retrieve::Plan;
 use devdocs_store::Store;
 use sha2::{Digest, Sha256};
 
@@ -35,10 +36,11 @@ pub struct RunOptions {
     pub runs_dir: Option<PathBuf>,
     /// The `devdocs` binary for the subprocess pass; located when absent.
     pub devdocs_bin: Option<PathBuf>,
-    /// The config file the spawned `devdocs search` loads. Together with
-    /// the child's isolated `XDG_CONFIG_HOME` (an empty per-run scratch
-    /// dir) this keeps the run hermetic against the operator's user
-    /// config (docs/implementation/14 §Regression gate).
+    /// The config file the spawned `devdocs search` loads and the
+    /// in-process scoring pass resolves its search plan from. Together
+    /// with the child's isolated `XDG_CONFIG_HOME` (an empty per-run
+    /// scratch dir) this keeps the run hermetic against the operator's
+    /// user config (docs/implementation/14 §Regression gate).
     pub config: Option<PathBuf>,
 }
 
@@ -85,7 +87,11 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     let store = Store::open(&db_path)?;
     store.migrate()?;
 
-    let mut passes = in_process_pass(&store, &suite)?;
+    // The scoring pass must search with the same plan the timed
+    // subprocess resolves from `--config`, so a gate row never mixes
+    // quality from defaults with latency from the config.
+    let plan = resolve_plan(options.config.as_deref())?;
+    let mut passes = in_process_pass(&store, &suite, &plan)?;
     // The child's user-config layer lives in an empty scratch dir: its
     // XDG_CONFIG_HOME names it, so the spawned search never reads the
     // operator's user config, however broken (docs/implementation/14
@@ -218,14 +224,40 @@ struct InProcess {
     graded: Vec<(Question, QuestionScore)>,
 }
 
+/// The search plan the in-process pass scores with. With a `--config`,
+/// the same knobs the spawned child resolves from that file — the child's
+/// isolated env leaves only the file layer, so the harness loads the file
+/// layer alone (devdocs-model `Config::load_file_layer`). Without one,
+/// the documented defaults.
+///
+/// # Errors
+/// [`EvalError::InvalidConfig`] when the file fails to load — normally
+/// unreachable: `validate_config` ran the same parse at run start.
+fn resolve_plan(config: Option<&Path>) -> Result<Plan, EvalError> {
+    let Some(config) = config else {
+        return Ok(Plan::defaults());
+    };
+    let resolved = devdocs_model::Config::load_file_layer(config).map_err(|error| {
+        EvalError::InvalidConfig {
+            reason: format!("config file {} is invalid: {error}", config.display()),
+        }
+    })?;
+    Ok(Plan {
+        limit: resolved.search.limit_default,
+        max_tokens: resolved.search.max_tokens_default,
+        rrf_k: resolved.search.rrf_k,
+        cursor: None,
+    })
+}
+
 /// The in-process pass: one timed pipeline call per question, then the
 /// per-question score (docs/implementation/14 §Harness flow step 2–3).
-fn in_process_pass(store: &Store, suite: &Suite) -> Result<InProcess, EvalError> {
+fn in_process_pass(store: &Store, suite: &Suite, plan: &Plan) -> Result<InProcess, EvalError> {
     let mut rows = Vec::with_capacity(suite.questions.len());
     let mut graded = Vec::with_capacity(suite.questions.len());
     for question in &suite.questions {
         let start = Instant::now();
-        let retrieval = pipeline::retrieve(store, question)?;
+        let retrieval = pipeline::retrieve(store, plan, question)?;
         let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
         let verdict = metrics::grade_question(question, &retrieval.refs, &retrieval.symbol_refs);
         rows.push(QuestionResult {
@@ -501,8 +533,27 @@ fn hash_file(db_path: &Path) -> Result<String, EvalError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{EvalError, RunOptions, discover_eval_root, fresh_run_dir, hash_file, run};
+    use super::{
+        EvalError, RunOptions, discover_eval_root, fresh_run_dir, hash_file, resolve_plan, run,
+    };
     use crate::process_lock;
+
+    /// The scoring pass resolves the same search knobs the timed
+    /// subprocess loads from `--config`: the file layer plus defaults
+    /// (the child's isolated env leaves nothing else). No config means
+    /// the documented defaults.
+    #[test]
+    fn the_scoring_plan_resolves_from_the_config_file_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("corpus.toml");
+        std::fs::write(&config, "[search]\nlimit_default = 3\nrrf_k = 90\n").unwrap();
+        let plan = resolve_plan(Some(&config)).unwrap();
+        assert_eq!(plan.limit, 3);
+        assert_eq!(plan.rrf_k, 90);
+        // Unspecified knobs stay on the defaults, not the operator's env.
+        assert_eq!(plan.max_tokens, 2000);
+        assert_eq!(resolve_plan(None).unwrap(), super::Plan::defaults());
+    }
 
     #[test]
     fn hashing_a_missing_database_is_an_io_error() {

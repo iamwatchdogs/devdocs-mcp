@@ -185,8 +185,9 @@ gate table instead of a green exit.
   `docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/route.md@Examples/CORS#GET`.
   The suite hash moved from
   `8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc`
-  (the hash the page-qualified re-baseline re-pinned) to the re-pinned
-  hash above. The fresh offline run (run dir `2026-11-15-pilot-2`)
+  (the hash the page-qualified re-baseline re-pinned) to
+  `9910c119a01c3928a73e199c14661c43c1096fdb7ac896a3717b5852fb27db4b`.
+  The fresh offline run (run dir `2026-11-15-pilot-2`)
   reproduced the identical gate table with all 48 rows passing; the
   per-question table above keeps the recorded run's pre-page-qualification
   ref spellings.

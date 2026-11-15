@@ -29,6 +29,67 @@ use crate::fixture::RecordedResponse;
 /// relations ride the `Link:` headers (llmstxt.org v2).
 const LINK_HEADER: &str = "link";
 
+/// How often the manifest replace retries while Windows reports the
+/// destination busy, and how long one retry waits. The in-process race
+/// clears on the first retry; the budget also covers a real-time
+/// scanner holding the fresh file for a few hundred milliseconds.
+const MANIFEST_REPLACE_RETRIES: u32 = 10;
+const MANIFEST_REPLACE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Windows: replacing the manifest is not atomic against a concurrent
+/// open — `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` fails with a sharing
+/// violation (`FileBusy`) or access denied (`PermissionDenied`) while
+/// another writer's replace is in flight or a real-time scanner holds
+/// the file, so the replace is retried.
+#[cfg(windows)]
+fn is_replace_busy(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::FileBusy
+    )
+}
+
+/// POSIX: rename(2) replaces an open destination atomically, so a
+/// failure is genuine and never retried.
+#[cfg(not(windows))]
+fn is_replace_busy(_error: &std::io::Error) -> bool {
+    false
+}
+
+/// Renames the filled temp file onto `manifest`, retrying the same
+/// rename with a short backoff while the replace reports the
+/// destination transiently busy; `persist` hands the temp file back on
+/// failure, so no attempt rewrites the body.
+fn replace_manifest(mut tmp: tempfile::NamedTempFile, manifest: &Path) -> Result<(), IngestError> {
+    let mut busy = "the replace never reported a busy state".to_owned();
+    for attempt in 0..MANIFEST_REPLACE_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(MANIFEST_REPLACE_BACKOFF);
+        }
+        match tmp.persist(manifest) {
+            // tempfile 3.10+ hands the open `File` back on success too;
+            // dropping it releases the handle.
+            Ok(_file) => return Ok(()),
+            Err(e) if is_replace_busy(&e.error) => {
+                busy = e.error.to_string();
+                tmp = e.file;
+            }
+            Err(e) => {
+                return Err(IngestError::Fixture {
+                    path: manifest.display().to_string(),
+                    message: e.error.to_string(),
+                });
+            }
+        }
+    }
+    Err(IngestError::Fixture {
+        path: manifest.display().to_string(),
+        message: format!(
+            "the manifest replace stayed busy for {MANIFEST_REPLACE_RETRIES} attempts: {busy}"
+        ),
+    })
+}
+
 /// Collects the responses of one ingest run and writes them as a fixture
 /// manifest.
 #[derive(Debug, Default)]
@@ -70,7 +131,10 @@ impl Recorder {
     /// The body lands in a unique same-directory temp file first and
     /// renames onto the manifest, so a failed write never leaves a
     /// truncated manifest behind, and two recorders writing one directory
-    /// concurrently never race on a shared temp name.
+    /// concurrently never race on a shared temp name. The replace
+    /// retries with a short backoff while Windows reports the
+    /// destination transiently busy — its rename-replace is not atomic
+    /// against a concurrent open.
     ///
     /// # Errors
     /// [`IngestError::Fixture`] when the directory or the file cannot be
@@ -99,11 +163,7 @@ impl Recorder {
                 path: manifest.display().to_string(),
                 message: e.to_string(),
             })?;
-        tmp.persist(&manifest).map_err(|e| IngestError::Fixture {
-            path: manifest.display().to_string(),
-            message: e.to_string(),
-        })?;
-        Ok(())
+        replace_manifest(tmp, &manifest)
     }
 
     /// Records or replaces the entry for `url`'s exact string.

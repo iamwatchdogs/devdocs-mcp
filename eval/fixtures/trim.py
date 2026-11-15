@@ -116,11 +116,13 @@ def split_link_values(value):
 
 
 def describedby_targets(value, base_url):
-    """The `rel="describedby"` targets of one joined `Link:` header value
+    """The `rel="describedby"` target of one joined `Link:` header value
     (`<uri>; rel="describedby"`), resolved against `base_url` — the RFC
     8288 subset the Rust relations parser reads. Unparsable link values
-    are ignored."""
-    targets = []
+    are ignored. The Rust parser holds one describedby slot (each match
+    overwrites), so the last target wins here too: the replay queues
+    exactly one index per page."""
+    last = None
     for piece in split_link_values(value):
         rest = piece.strip()
         close = rest.find(">")
@@ -136,9 +138,9 @@ def describedby_targets(value, base_url):
                 and name.strip().lower() == "rel"
                 and "describedby" in val.strip().strip('"').lower().split()
             ):
-                targets.append(urljoin(base_url, uri))
+                last = urljoin(base_url, uri)
                 break
-    return targets
+    return [last] if last is not None else []
 
 
 def parse_link_line(trimmed):

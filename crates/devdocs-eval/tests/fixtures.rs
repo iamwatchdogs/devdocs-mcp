@@ -460,3 +460,69 @@ fn the_trim_tool_follows_describedby_headers_for_reachability() {
         "a dropped root index fails loudly: {stderr}"
     );
 }
+
+/// A page's `Link:` header naming two describedby indexes must behave
+/// like the Rust parser: one slot, last value wins. The earlier target
+/// never queues and never lends its links — a page listed only there is
+/// rescued into the reachable root, exactly as if the header had named
+/// the later index alone.
+#[test]
+fn the_trim_tool_queues_only_the_last_describedby_header_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</a/llms.txt>; rel=\"describedby\", </b/llms.txt>; rel=\"describedby\""}, "body": "# api\n"},
+            {"url": "https://x.test/a/llms.txt", "status": 200, "headers": {}, "body": "# A\n\n- [Only](https://x.test/a/only.md)\n"},
+            {"url": "https://x.test/b/llms.txt", "status": 200, "headers": {}, "body": "# B\n\n- [Page](https://x.test/b/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/a/only.md", "status": 200, "headers": {}, "body": "# only\n"},
+            {"url": "https://x.test/b/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\nhttps://x.test/api.html\n\
+         https://x.test/a/llms.txt\nhttps://x.test/b/llms.txt\n\
+         https://x.test/a/only.md\nhttps://x.test/b/page.md\n",
+    )
+    .unwrap();
+    let out = dir.path().join("trimmed.json");
+    let (_, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
+    assert!(
+        stderr.contains("no reachable index listed"),
+        "the page listed only under the earlier target is rescued: {stderr}"
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        trimmed.len(),
+        7,
+        "every kept response survives the two-target trim"
+    );
+    assert!(
+        trimmed[0].body.contains("(https://x.test/a/only.md)"),
+        "the rescued page line lands in the reachable root: {}",
+        trimmed[0].body
+    );
+
+    // Replay parity: the rescue sits in the reachable root the replay
+    // loads, so re-trimming the trimmed manifest is the identity.
+    let retrimmed = dir.path().join("retrimmed.json");
+    run_trim(
+        &out,
+        &keep,
+        &retrimmed,
+        &dir.path().join("re-inventory.json"),
+    );
+    assert_eq!(
+        std::fs::read(&retrimmed).unwrap(),
+        std::fs::read(&out).unwrap(),
+        "trim(trimmed) is the identity"
+    );
+}

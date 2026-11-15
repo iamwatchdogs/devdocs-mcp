@@ -246,18 +246,22 @@ strip_devdocs_env := 'for v in $(env | sed -n "s/^\(DEVDOCS_[A-Z_]*\)=.*/\1/p");
 # Rebuild the gitignored eval corpus database from the committed fixtures,
 # fully offline (docs/implementation/14 §Fixture corpus). Each library's
 # first add bootstraps its license gate at approved_index; every call is
-# pinned to the corpus config and DB, so no user state is touched.
+# pinned to the corpus config and DB, so no user state is touched. Each
+# add also pins XDG_CONFIG_HOME to the empty eval/runs/xdg-config so the
+# user config layer is skipped — the same isolation the eval harness gives
+# its spawned search.
 eval-corpus:
     cargo build --locked -p devdocs
     rm -f eval/runs/corpus.db eval/runs/corpus.db-shm eval/runs/corpus.db-wal
     mkdir -p eval/runs
-    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" cargo run --locked -q -p devdocs -- \
+    mkdir -p eval/runs/xdg-config
+    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
         --config eval/corpus.toml --db eval/runs/corpus.db \
         add https://nextjs.org/docs/llms.txt --version 16.2.9 --fixture eval/fixtures/next.js/16.2.9
-    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" cargo run --locked -q -p devdocs -- \
+    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
         --config eval/corpus.toml --db eval/runs/corpus.db \
         add https://zod.dev/llms.txt --version 4.6.7 --fixture eval/fixtures/zod/4.6.7
-    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" cargo run --locked -q -p devdocs -- \
+    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
         --config eval/corpus.toml --db eval/runs/corpus.db \
         add https://github.com/serde-rs/serde --kind git --version 1.0.229 --fixture eval/fixtures/serde/1.0.229
 

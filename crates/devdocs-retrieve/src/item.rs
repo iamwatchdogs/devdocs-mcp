@@ -157,8 +157,8 @@ fn page_matches(hit: &Hit, pinned: Option<&str>) -> bool {
 }
 
 /// Finds the chunk that serves a parsed ref: the full section path
-/// first, then the last segment, then the fragment (symbol or title
-/// match). The placeholder segment matches a chunk without a section
+/// first, then the fragment (symbol or title match), then the last
+/// segment. The placeholder segment matches a chunk without a section
 /// path and a chunk whose heading slugs to empty. When several
 /// candidates remain, the lowest chunk id serves. `None` when nothing
 /// matches.

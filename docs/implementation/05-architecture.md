@@ -3,7 +3,7 @@ type: guide
 title: Architecture
 description: The layered design of devdocs as crates and types: layer map, crate graph, data flow, error model, concurrency model, configuration, storage layout, and the latency budget.
 tags: [devdocs, architecture, crates, errors, config]
-timestamp: 2026-11-12T02:00:00Z
+timestamp: 2026-11-16T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -154,7 +154,7 @@ The result shape matches the evidence contract in the research bundle (research:
 | 0 | Success (a hit, or a completed operation) | — |
 | 1 | Usage or configuration error | clap parse failure (remapped from clap's default 2), bad config file |
 | 2 | No result. Valid query, empty index or no match | retrieve returns `Miss` |
-| 3 | Upstream error. Fetch, network, git, or parse failure | ingest fetch guard, adapters |
+| 3 | Upstream error. Fetch, network, git, parse, or transport read failure | ingest fetch guard, adapters |
 | 4 | Budget exceeded with no deliverable content | retrieve budget packer |
 
 Deviation note. The research bundle maps exit 2 to "no result" (research: architecture.md §L4, DS §3). clap emits exit code 2 for argument errors by default. To keep the codes unambiguous, the CLI catches the clap error, prints the structured JSON error, and exits 1. The 0/2/3/4 semantics from the research stay intact.

@@ -276,11 +276,21 @@ eval:
 # report with eval/regression_check.py. `just eval` exits 2 by design while
 # the Retrieval-failures row is INCONCLUSIVE (its M4 baseline is M11 work);
 # that accepted exit is tolerated here — the recipe fails only when a gate
-# row that was PASS in the tracked report regresses.
+# row that was PASS in the tracked report regresses. The run dir `just eval`
+# reported is passed through as the fresh report: two concurrent eval-ci
+# calls in one checkout would otherwise race the newest-report glob and
+# compare the other run's report (the glob stays the fallback).
 eval-ci:
-    @just eval || [ "$?" -eq 2 ]
-    @echo "just eval exit code accepted (0 = all gates PASS, 2 = the accepted INCONCLUSIVE row)"
-    @python3 eval/regression_check.py
+    @code=0; out="$(just eval)" || code=$?; printf '%s\n' "$out"; \
+      if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then exit "$code"; fi; \
+      echo "just eval exit code accepted (0 = all gates PASS, 2 = the accepted INCONCLUSIVE row)"; \
+      run_dir="$(printf '%s\n' "$out" | sed -n 's/^run: \(.*\) — .*/\1/p')"; \
+      if [ -n "$run_dir" ]; then \
+        python3 eval/regression_check.py --fresh "$run_dir/report.md"; \
+      else \
+        echo "no run dir in 'just eval' output; comparing the newest eval/runs report"; \
+        python3 eval/regression_check.py; \
+      fi
 
 # Public API break detection between releases.
 semver:

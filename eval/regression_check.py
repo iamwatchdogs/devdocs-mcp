@@ -2,9 +2,13 @@
 
 Driven by `just eval-ci` (docs/implementation/14 §Regression gate). Every
 gate row that is PASS in the committed tracked report must still be PASS in
-the latest fresh run under eval/runs/. The accepted INCONCLUSIVE row
-(Retrieval failures; its M4 baseline measurement is M11 work) never fails
-the check, whichever way it reads.
+the fresh run report — passed explicitly (eval-ci hands over the run dir
+its `just eval` call reported) or, by fallback, the newest one under
+eval/runs/. The accepted INCONCLUSIVE row (Retrieval failures; its M4
+baseline measurement is M11 work) never fails the check, whichever way it
+reads.
+
+Usage: regression_check.py [baseline-report] [--fresh fresh-report]
 
 Exit 0 = no regression, 1 = regression, 2 = structural error (a missing
 report or run dir, an unparseable gate table, a gate set that is not
@@ -43,17 +47,35 @@ def gate_table(path):
 
 
 def main():
-    baseline_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BASELINE
+    argv = sys.argv[1:]
+    fresh_arg = None
+    if "--fresh" in argv:
+        i = argv.index("--fresh")
+        if i + 1 >= len(argv):
+            print("error: --fresh needs a fresh report path", file=sys.stderr)
+            return 2
+        fresh_arg = argv[i + 1]
+        del argv[i:i + 2]
+    baseline_path = Path(argv[0]) if argv else DEFAULT_BASELINE
     if not baseline_path.is_file():
         print(f"error: baseline report missing: {baseline_path}", file=sys.stderr)
         return 2
-    run_dirs = [p for p in RUNS.glob("*pilot*") if (p / "report.md").is_file()]
-    if not run_dirs:
-        print(f"error: no fresh run report under {RUNS}/ — run 'just eval' first", file=sys.stderr)
+    if fresh_arg:
+        # The fresh report this eval-ci run actually produced. Two concurrent
+        # `just eval-ci` calls in one checkout would otherwise race the
+        # newest-glob fallback below and compare the other run's report.
+        fresh_path = Path(fresh_arg)
+    else:
+        run_dirs = [p for p in RUNS.glob("*pilot*") if (p / "report.md").is_file()]
+        if not run_dirs:
+            print(f"error: no fresh run report under {RUNS}/ — run 'just eval' first", file=sys.stderr)
+            return 2
+        # Latest by mtime, not by name: the run dirs' -N suffix sorts
+        # lexicographically wrong past -9 (pilot-9 > pilot-12).
+        fresh_path = max(run_dirs, key=lambda p: (p / "report.md").stat().st_mtime) / "report.md"
+    if not fresh_path.is_file():
+        print(f"error: fresh report missing: {fresh_path}", file=sys.stderr)
         return 2
-    # Latest by mtime, not by name: the run dirs' -N suffix sorts
-    # lexicographically wrong past -9 (pilot-9 > pilot-12).
-    fresh_path = max(run_dirs, key=lambda p: (p / "report.md").stat().st_mtime) / "report.md"
 
     baseline = gate_table(baseline_path)
     fresh = gate_table(fresh_path)

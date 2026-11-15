@@ -386,6 +386,7 @@ def main():
         if not rewritten_indexes:
             fail(f"{manifest_path}: kept pages are unlinked but the manifest records no index to rewrite")
         host = rewritten_indexes[0]
+        # Structural invariant: the rescue host is the root index, which the closure seeds as reachable; this check pins that assumption if the ordering rules above change.
         if host[0]["url"] not in reachable:
             fail(
                 f"{host[0]['url']}: kept pages are unlinked but this index is outside the "

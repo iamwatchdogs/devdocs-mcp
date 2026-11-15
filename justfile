@@ -254,6 +254,7 @@ eval-corpus:
     cargo build --locked -p devdocs
     rm -f eval/runs/corpus.db eval/runs/corpus.db-shm eval/runs/corpus.db-wal
     mkdir -p eval/runs
+    rm -rf eval/runs/xdg-config
     mkdir -p eval/runs/xdg-config
     {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
         --config eval/corpus.toml --db eval/runs/corpus.db \

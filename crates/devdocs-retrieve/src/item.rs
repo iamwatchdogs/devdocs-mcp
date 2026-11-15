@@ -189,8 +189,8 @@ pub fn match_ref<'a>(chunks: &'a [Hit], parsed: &ParsedRef) -> Option<&'a Hit> {
                             .eq(want.iter().cloned())))
         })
         .collect();
-    if full.len() == 1 {
-        return full.first().copied();
+    if !full.is_empty() && (pinned.is_some() || full.len() == 1) {
+        return full.iter().min_by_key(|hit| hit.chunk_id).copied();
     }
     // 2. The fragment names the chunk's symbol when the path is absent
     //    from the section paths.
@@ -424,6 +424,67 @@ mod tests {
         // the lowest chunk id of the Storage title matches.
         let drifted = ParsedRef::parse("docs://next.js/v16.2.9/docs/app/proxy.md@storage").unwrap();
         assert_eq!(match_ref(&chunks, &drifted).map(|h| h.chunk_id), Some(2));
+    }
+
+    /// A page-pinned ref whose pinned page holds several full-path
+    /// matches stays on the pinned page — the lowest chunk id among the
+    /// pinned-page candidates serves, not a lower chunk id on another
+    /// page that the unfiltered fallback scans would pick up.
+    #[test]
+    fn a_page_pinned_ref_with_several_page_matches_stays_on_the_pinned_page() {
+        let mut export = hit("next.js", "16.2.9", &["Matcher"], None);
+        export.chunk_id = 1;
+        export.page_url = Some("https://nextjs.org/docs/llms-full.txt".to_owned());
+        let mut proxy_earlier = hit("next.js", "16.2.9", &["Matcher"], None);
+        proxy_earlier.chunk_id = 2;
+        proxy_earlier.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let mut proxy_later = hit("next.js", "16.2.9", &["Matcher"], None);
+        proxy_later.chunk_id = 3;
+        proxy_later.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let chunks = vec![export, proxy_earlier, proxy_later];
+
+        let pinned = ParsedRef::parse(
+            "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md\
+             @matcher",
+        )
+        .unwrap();
+        assert_eq!(
+            match_ref(&chunks, &pinned).map(|h| h.chunk_id),
+            Some(2),
+            "the pinned page's lowest chunk id serves, not the export copy"
+        );
+    }
+
+    /// The placeholder variant: two headless chunks on the pinned page
+    /// collide on `index`, and the ref stays on the pinned page instead
+    /// of serving a lower chunk id on another page.
+    #[test]
+    fn a_page_pinned_placeholder_ref_stays_on_the_pinned_page() {
+        let mut export = hit("next.js", "16.2.9", &[], None);
+        export.chunk_id = 1;
+        export.page_url = Some("https://nextjs.org/docs/llms-full.txt".to_owned());
+        let mut proxy_earlier = hit("next.js", "16.2.9", &[], None);
+        proxy_earlier.chunk_id = 2;
+        proxy_earlier.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let mut proxy_later = hit("next.js", "16.2.9", &[], None);
+        proxy_later.chunk_id = 3;
+        proxy_later.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let chunks = vec![export, proxy_earlier, proxy_later];
+
+        let pinned = ParsedRef::parse(
+            "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md\
+             @index",
+        )
+        .unwrap();
+        assert_eq!(
+            match_ref(&chunks, &pinned).map(|h| h.chunk_id),
+            Some(2),
+            "the pinned page's lowest chunk id serves, not the export copy"
+        );
     }
 
     /// The slug rule folds punctuation runs and trims the ends.

@@ -37,16 +37,15 @@ const MANIFEST_REPLACE_RETRIES: u32 = 10;
 const MANIFEST_REPLACE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Windows: replacing the manifest is not atomic against a concurrent
-/// open — `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` fails with a sharing
-/// violation (`FileBusy`) or access denied (`PermissionDenied`) while
-/// another writer's replace is in flight or a real-time scanner holds
-/// the file, so the replace is retried.
+/// open — `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` fails while another
+/// writer's replace is in flight or a real-time scanner holds the file,
+/// so the replace is retried. The errors are matched by their raw OS
+/// code — access denied (5), sharing violation (32), lock violation
+/// (33) — because std maps the sharing codes onto unstable
+/// `io::ErrorKind` variants.
 #[cfg(windows)]
 fn is_replace_busy(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::FileBusy
-    )
+    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33))
 }
 
 /// POSIX: rename(2) replaces an open destination atomically, so a

@@ -40,7 +40,11 @@ pub struct RunOptions {
     /// in-process scoring pass resolves its search plan from. Together
     /// with the child's isolated `XDG_CONFIG_HOME` (an empty per-run
     /// scratch dir) this keeps the run hermetic against the operator's
-    /// user config (docs/implementation/14 §Regression gate).
+    /// user config (docs/implementation/14 §Regression gate). When
+    /// absent, the harness writes an empty `child-defaults.toml` into
+    /// the run dir and hands that to the child: the explicit file skips
+    /// the project `devdocs.toml` discovery the inherited cwd would
+    /// otherwise trigger.
     pub config: Option<PathBuf>,
 }
 
@@ -102,7 +106,15 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
         path: config_home.clone(),
         source,
     })?;
-    let p95_ms = subprocess_pass(options, &db_path, &config_home, &suite, &mut passes.rows)?;
+    let child_config = child_config_file(options.config.as_deref(), &run_dir)?;
+    let p95_ms = subprocess_pass(
+        options,
+        &db_path,
+        &config_home,
+        &child_config,
+        &suite,
+        &mut passes.rows,
+    )?;
     // Read the corpus last, so the artifacts name the sources the hashed
     // database file holds (the read-path sweep can mutate license state).
     let corpus = store.list_corpus()?;
@@ -288,6 +300,32 @@ fn in_process_pass(store: &Store, suite: &Suite, plan: &Plan) -> Result<InProces
     Ok(InProcess { rows, graded })
 }
 
+/// The config file every spawned child loads: the operator `--config`
+/// when given, else an empty defaults file the harness writes into the
+/// run dir. The empty file parses to an empty layer — the child runs on
+/// the documented defaults — and the explicit `--config` path skips the
+/// project `devdocs.toml` discovery that `Config::load`'s none-given arm
+/// would otherwise run against the inherited cwd, where a stray file
+/// would silently poison the timed p95.
+///
+/// The internal file is the harness's own artifact and never goes through
+/// `validate_config` (that gate stays on the operator `--config` alone).
+///
+/// # Errors
+/// [`EvalError::Io`] when the defaults file cannot be written.
+fn child_config_file(options_config: Option<&Path>, run_dir: &Path) -> Result<PathBuf, EvalError> {
+    if let Some(config) = options_config {
+        return Ok(config.to_path_buf());
+    }
+    let path = run_dir.join("child-defaults.toml");
+    std::fs::write(&path, "").map_err(|source| EvalError::Io {
+        action: "create",
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
+}
+
 /// The CLI-subprocess pass: one warmup excluded, then one timed
 /// `devdocs search` per question (docs/implementation/14 §Harness flow).
 ///
@@ -297,11 +335,11 @@ fn subprocess_pass(
     options: &RunOptions,
     db_path: &Path,
     config_home: &Path,
+    config: &Path,
     suite: &Suite,
     rows: &mut [QuestionResult],
 ) -> Result<f64, EvalError> {
     let bin = subprocess::locate_devdocs(options.devdocs_bin.as_deref())?;
-    let config = options.config.as_deref();
     // One warmup call; the cold start is excluded (docs/implementation/14).
     let warmup = subprocess::run_once(&bin, db_path, config, config_home, &suite.questions[0])?;
     check_exit(warmup, "warmup")?;
@@ -534,7 +572,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{
-        EvalError, RunOptions, discover_eval_root, fresh_run_dir, hash_file, resolve_plan, run,
+        EvalError, RunOptions, child_config_file, discover_eval_root, fresh_run_dir, hash_file,
+        resolve_plan, run,
     };
     use crate::process_lock;
 
@@ -561,6 +600,38 @@ mod tests {
         let err = hash_file(&dir.path().join("absent.db")).unwrap_err();
         assert!(matches!(err, EvalError::Io { action: "open", .. }), "{err}");
         assert_eq!(err.exit_code(), 3);
+    }
+
+    /// With no operator `--config`, the harness hands every child an
+    /// empty defaults file from the run dir: the file exists, holds
+    /// nothing, and resolves to the documented defaults — so the spawn
+    /// never falls back to the project `devdocs.toml` discovery the
+    /// inherited cwd would otherwise run.
+    #[test]
+    fn the_run_passes_a_defaults_file_when_no_config_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let defaults = child_config_file(None, dir.path()).unwrap();
+        assert_eq!(defaults, dir.path().join("child-defaults.toml"));
+        assert_eq!(std::fs::read(&defaults).unwrap(), b"");
+        // The empty layer scores with the documented defaults, matching
+        // what the child loads from the same file.
+        assert_eq!(
+            resolve_plan(Some(&defaults)).unwrap(),
+            super::Plan::defaults()
+        );
+    }
+
+    /// An operator `--config` passes through untouched; the harness
+    /// writes no defaults file into the run dir.
+    #[test]
+    fn the_run_passes_the_operator_config_through_when_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("corpus.toml");
+        std::fs::write(&config, "[search]\nlimit_default = 3\n").unwrap();
+        let run_dir = tempfile::tempdir().unwrap();
+        let given = child_config_file(Some(&config), run_dir.path()).unwrap();
+        assert_eq!(given, config);
+        assert!(!run_dir.path().join("child-defaults.toml").exists());
     }
 
     #[test]

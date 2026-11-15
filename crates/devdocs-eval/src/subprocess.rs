@@ -161,7 +161,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1);
 pub fn run_once(
     bin: &Path,
     db: &Path,
-    config: Option<&Path>,
+    config: &Path,
     config_home: &Path,
     question: &Question,
 ) -> Result<SubprocessSample, EvalError> {
@@ -173,7 +173,7 @@ pub fn run_once(
 fn run_once_deadline(
     bin: &Path,
     db: &Path,
-    config: Option<&Path>,
+    config: &Path,
     config_home: &Path,
     question: &Question,
     deadline: Duration,
@@ -183,15 +183,14 @@ fn run_once_deadline(
     command
         .arg("--db")
         .arg(db)
-        // The corpus config rides along, and the child's user-config layer
-        // points at the harness's empty scratch dir, so the spawned search
-        // never grades against the operator's user config (hermetic,
-        // docs/implementation/14 §Regression gate).
-        .args(
-            config
-                .iter()
-                .flat_map(|c| ["--config".as_ref(), c.as_os_str()]),
-        )
+        // A config file always rides along — the operator `--config`, or
+        // the harness's empty defaults file — and the child's user-config
+        // layer points at the harness's empty scratch dir, so the spawned
+        // search never grades against the operator's user config and
+        // never discovers a project `devdocs.toml` from the inherited cwd
+        // (hermetic, docs/implementation/14 §Regression gate).
+        .arg("--config")
+        .arg(config)
         .arg("--json")
         .arg("search");
     strip_devdocs_env(&mut command, std::env::vars());
@@ -402,7 +401,7 @@ mod tests {
         let err = run_once_deadline(
             &bin,
             &dir.path().join("fixture.db"),
-            None,
+            &dir.path().join("corpus.toml"),
             &dir.path().join("config-home"),
             &question(),
             Duration::from_secs(1),
@@ -420,7 +419,7 @@ mod tests {
         let err = run_once_deadline(
             &bin,
             &db,
-            None,
+            &dir.path().join("corpus.toml"),
             &dir.path().join("config-home"),
             &question(),
             Duration::from_millis(100),
@@ -509,7 +508,7 @@ mod tests {
         run_once_deadline(
             &bin,
             &db,
-            None,
+            &dir.path().join("corpus.toml"),
             &dir.path().join("config-home"),
             &question(),
             Duration::from_secs(1),
@@ -530,7 +529,7 @@ mod tests {
         run_once_deadline(
             &bin,
             &db,
-            None,
+            &dir.path().join("corpus.toml"),
             &config_home,
             &question(),
             Duration::from_secs(1),
@@ -540,9 +539,13 @@ mod tests {
         assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
     }
 
+    /// Every spawn carries `--config <path>`: the operator `--config`, or
+    /// the harness's empty defaults file when none is given. The path need
+    /// not exist for the argument vector itself — the harness always
+    /// writes or validates its file before the spawn.
     #[cfg(unix)]
     #[test]
-    fn the_spawn_arg_vector_carries_the_config_when_set() {
+    fn the_spawn_arg_vector_always_carries_the_config() {
         let dir = tempfile::tempdir().unwrap();
         let args_file = argv_recorder(dir.path(), "devdocs");
         let bin = dir.path().join("devdocs");
@@ -551,7 +554,7 @@ mod tests {
         run_once_deadline(
             &bin,
             &db,
-            Some(&config),
+            &config,
             &dir.path().join("config-home"),
             &question(),
             Duration::from_secs(1),
@@ -560,25 +563,5 @@ mod tests {
         let args = std::fs::read_to_string(&args_file).unwrap();
         assert!(args.contains("--config\n"), "{args}");
         assert!(args.contains(config.to_str().unwrap()), "{args}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_spawn_arg_vector_omits_the_config_when_unset() {
-        let dir = tempfile::tempdir().unwrap();
-        let args_file = argv_recorder(dir.path(), "devdocs");
-        let bin = dir.path().join("devdocs");
-        let db = dir.path().join("fixture.db");
-        run_once_deadline(
-            &bin,
-            &db,
-            None,
-            &dir.path().join("config-home"),
-            &question(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        let args = std::fs::read_to_string(&args_file).unwrap();
-        assert!(!args.contains("--config"), "{args}");
     }
 }

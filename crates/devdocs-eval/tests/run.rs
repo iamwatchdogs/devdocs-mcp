@@ -151,6 +151,17 @@ fn a_run_renders_the_report_and_judges_the_gates() {
     assert!(!outcome.all_gates_pass);
 }
 
+/// With no operator `--config`, the run dir holds the empty defaults
+/// file every spawned child loaded (the child cannot fall back to
+/// project discovery through its inherited cwd).
+#[test]
+fn a_run_without_a_config_writes_a_defaults_file_for_the_child() {
+    let (_dir, _db, outcome) = run_fixture();
+    let defaults = outcome.run_dir.join("child-defaults.toml");
+    assert!(defaults.is_file(), "{}", defaults.display());
+    assert_eq!(std::fs::read(&defaults).unwrap(), b"");
+}
+
 #[test]
 fn an_invalid_suite_is_input_error_exit_one() {
     let dir = tempfile::tempdir().unwrap();

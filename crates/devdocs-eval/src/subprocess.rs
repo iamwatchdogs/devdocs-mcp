@@ -127,6 +127,24 @@ fn path_binary(path_var: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Whether a variable name carries the `DEVDOCS_` prefix. Windows
+/// environment names are case-insensitive but case-preserving
+/// (`GetEnvironmentVariableW`), so a lowercase-prefixed `devdocs_*`
+/// variable still resolves for the child and must match the strip.
+#[cfg(windows)]
+fn is_devdocs_env_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes()
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"DEVDOCS_"))
+}
+
+/// Non-Windows: environment names are case-sensitive, so the byte prefix
+/// test is exact.
+#[cfg(not(windows))]
+fn is_devdocs_env_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"DEVDOCS_")
+}
+
 /// Removes every `DEVDOCS_*` variable from the child environment.
 ///
 /// The env config layer merges *after* the `--config` layer
@@ -140,7 +158,7 @@ fn strip_devdocs_env(
     // OsString, not String: `env::vars()` panics on any non-UTF-8
     // variable, so the scan itself must run on raw bytes (the same
     // pattern the testkit `GIT_*` strip uses).
-    for (name, _) in vars.filter(|(name, _)| name.as_encoded_bytes().starts_with(b"DEVDOCS_")) {
+    for (name, _) in vars.filter(|(name, _)| is_devdocs_env_name(name)) {
         command.env_remove(name);
     }
 }
@@ -508,6 +526,36 @@ mod tests {
             removed,
             vec!["DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT", "DEVDOCS_SEARCH_RRF_K"]
         );
+    }
+
+    /// Windows environment names are case-insensitive but
+    /// case-preserving, so a lowercase-prefixed variable resolves for the
+    /// child and the strip must still match it (the unix suite skips
+    /// this — its names are case-sensitive).
+    #[cfg(windows)]
+    #[test]
+    fn the_spawn_strips_a_mixed_case_devdocs_var() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                (
+                    OsString::from("devdocs_SEARCH_RRF_K"),
+                    OsString::from("123"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["devdocs_SEARCH_RRF_K"]);
     }
 
     /// A non-UTF-8 variable — prefixed or not — must not panic the strip:

@@ -110,7 +110,8 @@ fn split_path(text: &str) -> Option<Vec<String>> {
 /// page URL after the authority, the leading and trailing `/` trimmed and
 /// the query and fragment dropped. `None` when the URL carries no path or
 /// the path cannot be the page part of the ref grammar (an `@` inside it
-/// would end the page early).
+/// would end the page early; whitespace, `..`, or `?` would not parse
+/// back).
 #[must_use]
 pub fn page_path(url: &str) -> Option<String> {
     let after_scheme = url.split_once("://")?.1;
@@ -119,10 +120,10 @@ pub fn page_path(url: &str) -> Option<String> {
         .next()
         .unwrap_or("")
         .trim_matches('/');
-    if path.is_empty() || path.contains('@') {
+    if path.is_empty() {
         return None;
     }
-    Some(path.to_owned())
+    split_path(path).map(|_| path.to_owned())
 }
 
 #[cfg(test)]
@@ -267,6 +268,11 @@ mod tests {
             page_path("https://nextjs.org/docs/a@b.md"),
             None,
             "an `@` would end the page part early"
+        );
+        assert_eq!(
+            page_path("https://nextjs.org/docs/a b.md"),
+            None,
+            "a path that cannot parse back is no page part"
         );
     }
 }

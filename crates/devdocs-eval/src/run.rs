@@ -140,9 +140,11 @@ fn load_suite(golden_dir: &Path, requested: &str) -> Result<Suite, EvalError> {
     Suite::load(&suite_path, &suite_name)
 }
 
-/// Refuses a `--config` path that does not name a readable file, at run
-/// start: the spawned `devdocs search` would otherwise carry the failure
-/// only after the pipeline pass and the warmup already spent work.
+/// Refuses a `--config` path that does not name a readable, well-formed
+/// config file, at run start: the spawned `devdocs search` would otherwise
+/// reject malformed contents with exit 1, whose stderr the harness
+/// discards — the run would surface only as a generic subprocess failure
+/// after the pipeline pass and the warmup already spent work.
 fn validate_config(config: &Path) -> Result<(), EvalError> {
     if std::fs::File::open(config).is_err() {
         return Err(EvalError::InvalidConfig {
@@ -152,7 +154,12 @@ fn validate_config(config: &Path) -> Result<(), EvalError> {
             ),
         });
     }
-    Ok(())
+    // The same full parse the child runs (`config validate` parity:
+    // devdocs-model `Config::validate_file`), so a malformed file is an
+    // input error (exit 1) instead of a subprocess failure (exit 3).
+    devdocs_model::Config::validate_file(config).map_err(|error| EvalError::InvalidConfig {
+        reason: format!("config file {} is invalid: {error}", config.display()),
+    })
 }
 
 /// Refuses suites the harness cannot grade (docs/implementation/14: the
@@ -574,6 +581,29 @@ mod tests {
         assert!(matches!(err, EvalError::InvalidConfig { .. }), "{err}");
         let message = err.to_string();
         assert!(message.contains("config file"), "{message}");
+        assert!(message.contains(config.to_str().unwrap()), "{message}");
+    }
+
+    #[test]
+    fn a_malformed_config_file_is_a_config_input_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("broken.toml");
+        std::fs::write(&config, "not toml [[[").unwrap();
+        // The validation runs before the directory resolution, so the run
+        // needs no eval ancestor to reach it.
+        let err = run(&RunOptions {
+            suite: "pilot".to_owned(),
+            db: None,
+            golden_dir: None,
+            runs_dir: None,
+            devdocs_bin: None,
+            config: Some(config.clone()),
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 1, "{err}");
+        assert!(matches!(err, EvalError::InvalidConfig { .. }), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("is invalid"), "{message}");
         assert!(message.contains(config.to_str().unwrap()), "{message}");
     }
 

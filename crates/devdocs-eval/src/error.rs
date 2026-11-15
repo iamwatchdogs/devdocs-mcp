@@ -20,7 +20,8 @@ pub enum EvalError {
         /// What is wrong, in one line.
         reason: String,
     },
-    /// The `--config` file passed to the run is missing or unreadable.
+    /// The `--config` file passed to the run is missing, unreadable, or
+    /// has invalid contents.
     #[error("invalid config: {reason}")]
     InvalidConfig {
         /// What is wrong, in one line.

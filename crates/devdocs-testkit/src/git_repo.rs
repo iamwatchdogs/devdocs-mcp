@@ -35,7 +35,7 @@ pub struct DocsRepo {
 #[cfg(windows)]
 fn is_git_env_name(name: &OsStr) -> bool {
     name.as_encoded_bytes()
-        .get(..5)
+        .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"GIT_"))
 }
 

@@ -294,21 +294,62 @@ fn mcp_stdin_io_error_before_init_is_upstream() {
     std::fs::create_dir_all(&dir).expect("test dir");
     let stdin = std::fs::File::open(&dir).expect("a directory opens for read");
     let mut cmd = env.std_cmd(&["mcp", "--transport", "stdio"]);
-    cmd.stdin(Stdio::from(stdin));
-    let out = cmd.output().expect("the binary runs");
-    assert_eq!(
-        out.status.code(),
-        Some(3),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.stdout.is_empty(), "stdout is protocol-only");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    cmd.stdin(Stdio::from(stdin))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("the binary spawns");
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+    // The same watchdog the Session tests use: kill the child at the
+    // deadline so a regression that waits fails instead of hanging.
+    let child = Arc::new(Mutex::new(child));
+    let watched = Arc::clone(&child);
+    std::thread::spawn(move || {
+        std::thread::sleep(WATCHDOG);
+        let _ = watched.lock().unwrap().kill();
+    });
+    let mut stdout_bytes = Vec::new();
+    stdout
+        .read_to_end(&mut stdout_bytes)
+        .expect("stdout drains");
+    let mut stderr_bytes = Vec::new();
+    stderr
+        .read_to_end(&mut stderr_bytes)
+        .expect("stderr drains");
+    // Poll the exit and release the lock between polls: a blocking
+    // wait under the mutex would keep the watchdog from its kill.
+    let deadline = Instant::now() + WATCHDOG;
+    let code = loop {
+        if let Some(status) = child.lock().unwrap().try_wait().expect("the child polls") {
+            break status.code().unwrap_or(-1);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.lock().unwrap().kill();
+            let status = child
+                .lock()
+                .unwrap()
+                .wait()
+                .expect("the killed child waits");
+            break status.code().unwrap_or(-1);
+        }
+        std::thread::sleep(POLL);
+    };
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout is protocol-only");
     // Logs share stderr with the envelope: the envelope is its last line.
     let envelope: Value =
         serde_json::from_str(stderr.trim().lines().last().expect("the envelope line"))
             .expect("the error envelope parses");
     assert_eq!(envelope["error"], json!("UPSTREAM_ERROR"));
+    assert!(
+        envelope["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stdin read failed"),
+        "the detail names the stdin read failure: {envelope}"
+    );
 }
 
 /// The startup migration hook: the serve path opens the store and runs

@@ -5,6 +5,7 @@
 //! Retrieval-failures gate stays INCONCLUSIVE without the M4 baseline —
 //! so every completed run here exits 2.
 
+// Tests assert on real harness output, so unwrap/expect are fine (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

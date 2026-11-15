@@ -109,16 +109,30 @@ fn hex(bytes: &[u8]) -> String {
 /// Runs the trim tool with isolated stdlib semantics (`-I`) on the given
 /// inputs and fails on a nonzero exit.
 fn run_trim(manifest: &Path, keep: &Path, out_manifest: &Path, out_inventory: &Path) {
-    let status = Command::new("python3")
+    let (success, stderr) = trim_output(manifest, keep, out_manifest, out_inventory);
+    assert!(success, "trim.py failed: {stderr}");
+}
+
+/// Runs the trim tool and returns whether it succeeded, with its stderr.
+fn trim_output(
+    manifest: &Path,
+    keep: &Path,
+    out_manifest: &Path,
+    out_inventory: &Path,
+) -> (bool, String) {
+    let output = Command::new("python3")
         .arg("-I")
         .arg(fixtures_dir().join("trim.py"))
         .arg(manifest)
         .arg(keep)
         .arg(out_manifest)
         .arg(out_inventory)
-        .status()
+        .output()
         .expect("python3 runs the trim tool");
-    assert!(status.success(), "trim.py exited with {status}");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }
 
 #[test]
@@ -187,5 +201,65 @@ fn the_trim_tool_drops_retargets_and_rescues_an_empty_index() {
     assert!(
         !index.contains("(https://x.test/twin)"),
         "the HTML twin link is gone: {index}"
+    );
+}
+
+#[test]
+fn the_trim_tool_refuses_to_rescue_an_empty_index_that_ends_inside_a_fence() {
+    let dir = tempfile::tempdir().unwrap();
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/llms.txt\nhttps://x.test/llms-full.txt\n",
+    )
+    .unwrap();
+
+    // The rewrite drops the index's only link line, and the body ends
+    // inside an unclosed fence: appending the export link there would
+    // stay fenced, so the fallback must fail loudly instead.
+    let fenced = dir.path().join("fenced.json");
+    std::fs::write(
+        &fenced,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [dropped](https://x.test/dropped)\n\n```\nunterminated\n"},
+            {"url": "https://x.test/llms-full.txt", "status": 200, "headers": {}, "body": "# X full\n"}
+        ]"##,
+    )
+    .unwrap();
+    let (_, stderr) = trim_output(
+        &fenced,
+        &keep,
+        &dir.path().join("out.json"),
+        &dir.path().join("out-inventory.json"),
+    );
+    assert!(
+        stderr.contains("ends inside an unclosed code fence"),
+        "the empty-index fallback refuses a body inside an unclosed fence: {stderr}"
+    );
+
+    // Negative control: the same input with the fence closed passes and
+    // gains the export link.
+    let closed = dir.path().join("closed.json");
+    std::fs::write(
+        &closed,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [dropped](https://x.test/dropped)\n\n```\nunterminated\n```\n"},
+            {"url": "https://x.test/llms-full.txt", "status": 200, "headers": {}, "body": "# X full\n"}
+        ]"##,
+    )
+    .unwrap();
+    let out = dir.path().join("closed-trimmed.json");
+    run_trim(
+        &closed,
+        &keep,
+        &out,
+        &dir.path().join("closed-inventory.json"),
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let index = &trimmed[0].body;
+    assert!(
+        index.contains("- [Full documentation](https://x.test/llms-full.txt)"),
+        "the closed index gains the export link: {index}"
     );
 }

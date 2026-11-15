@@ -310,6 +310,11 @@ def main():
                     f"{response['url']}: the rewrite leaves an empty index and no kept "
                     "llms-full.txt export to point at"
                 )
+            if body_ends_inside_fence(body):
+                fail(
+                    f"{response['url']}: the rewrite leaves an empty index that ends "
+                    "inside an unclosed code fence; cannot append the export link"
+                )
             body = body.rstrip("\n") + f"\n- [Full documentation]({export})\n"
             linked.add(export)
             note = _extend_note(note, "added the kept llms-full.txt export link (a bare index parses empty)")

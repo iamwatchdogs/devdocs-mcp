@@ -93,6 +93,7 @@ pub async fn serve(config: &Config) -> Result<(), Error> {
         // decides. A client that closes the pipe ends the server
         // normally: clean exit, not an upstream error.
         Err(rmcp::service::ServerInitializeError::ConnectionClosed(_)) => {
+            // defensive: the lock poisons only on a holder panic; the swallow keeps the clean close.
             let captured = stdin_error.lock().ok().and_then(|mut guard| guard.take());
             if let Some(e) = captured {
                 return Err(Error::Upstream {

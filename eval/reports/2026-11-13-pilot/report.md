@@ -14,7 +14,7 @@ permanent copy):
 - Question rewrites: five echoed questions (verbatim doc sentences or bare
   keyword lists) were rewritten into real question form before this run;
   see `eval/golden/pilot.meta.json` (`curation_bias`) and Limitations.
-- Suite hash: `44916716eaf78e1b07764905faf379a0ba7c5b530ea2e31d505c7743cce32759`
+- Suite hash: `5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7`
 - Database hash: `b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a`
   (the fixture-rebuilt `eval/runs/corpus.db`, offline; see Limitations —
   the db hash is not a reproducibility target).
@@ -27,7 +27,7 @@ permanent copy):
   | zod | 4.6.7 | llms_txt | — (recorded via llms.txt) |
 
 - Host: macOS, aarch64, 8 cores, `Mac14,7`.
-- Question count: 48 across all eight task-type categories.
+- Question count: 48 across seven task-type categories.
 - Curation record: 116 minutes (`eval/golden/pilot.meta.json`,
   `curation_minutes`).
 
@@ -50,14 +50,13 @@ reproducibility header above implement that reporting style).
 
 | task_type | n | pass | fail |
 |---|---|---|---|
-| exact_api | 18 | 18 | 0 |
+| exact_api | 19 | 19 | 0 |
 | how_to | 12 | 12 | 0 |
 | discovery | 5 | 5 | 0 |
 | migration | 3 | 3 | 0 |
 | multi_library | 3 | 3 | 0 |
 | agent_task | 2 | 2 | 0 |
 | unanswerable | 4 | 4 | 0 |
-| poisoned | 1 | 1 | 0 |
 
 ## Per-question table
 
@@ -88,7 +87,7 @@ rank-1 in-process hit. `—` marks an abstention.
 | nextjs-route-cors-001 | how_to | ref_match | pass | docs://next.js/v16.2.9/Examples/CORS#allowedOrigins |
 | nextjs-auth-authorization-001 | discovery | ref_match | pass | docs://next.js/v16.2.9/Authorization |
 | nextjs-revalidate-tag-001 | exact_api | ref_match | pass | docs://next.js/v16.2.9/On-demand revalidation/revalidateTag#updateUser |
-| nextjs-poisoned-tsconfig-001 | poisoned | ref_match | pass | docs://next.js/v16.2.9/ignoreBuildErrors |
+| nextjs-poisoned-tsconfig-001 | exact_api | ref_match | pass | docs://next.js/v16.2.9/ignoreBuildErrors |
 | nextjs-request-rewrites-001 | exact_api | symbol_match | pass | docs://next.js/v16.2.9/Rewriting to an external URL/Rewrites with basePath support#rewrites |
 | nextjs-generate-static-params-001 | exact_api | symbol_match | pass | docs://next.js/v16.2.9/What can make transitions slow?/Dynamic segments without generateStaticParams#generateStaticParams |
 | nextjs-force-dynamic-001 | exact_api | symbol_match | pass | docs://next.js/v16.2.9/Caching fetch requests/Route segment config/dynamic#dynamic |
@@ -135,9 +134,9 @@ gate table instead of a green exit.
   questions remain bare keyword or symbol lookups where no longer natural
   phrasing survives that rung. Natural-language failure-rate measurement
   is Phase 2 work (docs/implementation/13, M11).
-- The poisoned question (nextjs-poisoned-tsconfig-001) grades ref_match:
-  the grader cannot detect poisoned advice being served. The grader is
-  blind to this failure mode; grader work to close the gap is tracked.
+- The corpus holds no poisoned-doc case yet; the poisoned task type
+  stays in the TaskType enum and lands with the Phase 2 poisoned-corpus
+  work.
 - The manifest db_hash is the run's own database identity and is not
   expected to reproduce byte-identically on a rebuild (sqlite rebuild-time
   state). Reproducibility is judged on suite_hash plus the gate table.
@@ -146,7 +145,12 @@ gate table instead of a green exit.
   suite hash moved from
   `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c` (the
   hash the recorded run used) to the re-pinned hash above. A fresh offline
-  run reproduced the identical gate table.
+  run reproduced the identical gate table. A second post-run edit the same
+  day relabeled `nextjs-poisoned-tsconfig-001` from `poisoned` to
+  `exact_api` (the harness submits only the question, so the label
+  promised behavior it never ran) and moved the suite hash again; the
+  fresh run reproduced the identical gate table, with the per-task
+  breakdown now exact_api 19 and no poisoned row.
 - The next.js corpus was recorded from nextjs.org/docs/llms.txt as served
   on 2026-11-13; the site served its then-current docs under the 16.2.9
   corpus label (llms.txt serves latest only, no versioned endpoint).
@@ -165,7 +169,7 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 
 ## Corpus
 
-- suite: pilot — sha256 44916716eaf78e1b07764905faf379a0ba7c5b530ea2e31d505c7743cce32759
+- suite: pilot — sha256 5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7
 - database: sha256 b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a
 - pipeline: the live hybrid pipeline through devdocs-retrieve — the symbol rung and the FTS5 BM25 rung fused with RRF (docs/implementation/08 §Rungs)
 - CLI search path: the timed call is the live end-to-end `devdocs search` subprocess. The p95 row times process start through retrieval; the warmup call is excluded.

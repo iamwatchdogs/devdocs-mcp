@@ -36,7 +36,20 @@ fn the_pilot_suite_is_valid_and_meets_the_sizing_rules() {
         .iter()
         .map(|q| q.task_type.as_str())
         .collect();
-    assert_eq!(task_types.len(), 8, "all eight categories are covered");
+    // The suite covers the seven categories the official-docs corpus can
+    // serve; `poisoned` waits for the Phase 2 poisoned-corpus work.
+    let served: BTreeSet<_> = [
+        "exact_api",
+        "how_to",
+        "discovery",
+        "migration",
+        "multi_library",
+        "agent_task",
+        "unanswerable",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(task_types, served, "the served categories are covered");
 
     let meta = suite.meta.as_ref().expect("the sidecar records the effort");
     assert!(meta.curation_minutes > 0);

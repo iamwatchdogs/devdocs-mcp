@@ -257,8 +257,10 @@ fn argv_recorder(dir: &Path, name: &str) -> PathBuf {
 
 /// The global `--config` flag reaches the harness and the spawned
 /// `devdocs search`: the subprocess argument vector carries `--config`
-/// with the flag's path (docs/implementation/14 §Regression gate — the
-/// spawned search must not grade against the operator's user config).
+/// with the run-dir snapshot of the flag's path (docs/implementation/14
+/// §Regression gate — the spawned search must not grade against the
+/// operator's user config, and a mid-run edit of the original file must
+/// not reach a timed child).
 #[test]
 #[cfg(unix)]
 fn the_global_config_flag_reaches_the_subprocess_spawn() {
@@ -292,12 +294,28 @@ fn the_global_config_flag_reaches_the_subprocess_spawn() {
     args.insert(0, String::from("--json"));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code, stdout, stderr) = output(env.cmd(), &refs);
-    let _ = (code, stdout, stderr);
+    let _ = (code, stderr);
+
+    let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let run_dir = PathBuf::from(outcome["run_dir"].as_str().unwrap());
 
     let spawn_args = std::fs::read_to_string(&args_file).unwrap();
     assert!(spawn_args.contains("--config\n"), "{spawn_args}");
+    // The spawn carries the run-dir snapshot of the operator config, not
+    // the operator's original path.
     assert!(
-        spawn_args.contains(config.to_str().unwrap()),
+        !spawn_args.contains(config.to_str().unwrap()),
         "{spawn_args}"
+    );
+    let snapshot_arg = spawn_args
+        .lines()
+        .skip_while(|line| *line != "--config")
+        .nth(1)
+        .expect("the spawn carries a --config value");
+    let snapshot = PathBuf::from(snapshot_arg);
+    assert_eq!(snapshot.parent().unwrap(), run_dir, "{snapshot:?}");
+    assert_eq!(
+        std::fs::read(&snapshot).unwrap(),
+        std::fs::read(&config).unwrap()
     );
 }

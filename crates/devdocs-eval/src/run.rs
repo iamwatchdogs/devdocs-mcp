@@ -36,14 +36,16 @@ pub struct RunOptions {
     pub runs_dir: Option<PathBuf>,
     /// The `devdocs` binary for the subprocess pass; located when absent.
     pub devdocs_bin: Option<PathBuf>,
-    /// The config file the spawned `devdocs search` loads and the
-    /// in-process scoring pass resolves its search plan from. Together
-    /// with the child's isolated `XDG_CONFIG_HOME` (an empty per-run
-    /// scratch dir) this keeps the run hermetic against the operator's
-    /// user config (docs/implementation/14 §Regression gate). When
-    /// absent, the harness writes an empty `child-defaults.toml` into
-    /// the run dir and hands that to the child: the explicit file skips
-    /// the project `devdocs.toml` discovery the inherited cwd would
+    /// The operator config file the run measures with. The harness
+    /// snapshots it into the run dir at run start, and the scoring pass,
+    /// the warmup, and every spawned `devdocs search` load that snapshot,
+    /// so a mid-run edit of the original cannot change what the run
+    /// measures. Together with the child's isolated `XDG_CONFIG_HOME` (an
+    /// empty per-run scratch dir) this keeps the run hermetic against the
+    /// operator's user config (docs/implementation/14 §Regression gate).
+    /// When absent, the harness writes an empty `child-defaults.toml`
+    /// into the run dir and hands that to the child: the explicit file
+    /// skips the project `devdocs.toml` discovery the inherited cwd would
     /// otherwise trigger.
     pub config: Option<PathBuf>,
 }
@@ -81,6 +83,18 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     let date = report::now_rfc3339();
     let run_dir = fresh_run_dir(&runs_root, &date, &suite.name)?;
 
+    // The operator config is snapshotted into the run dir before anything
+    // measures it: the plan resolution, the warmup, and every timed child
+    // read the snapshot, so a mid-run edit of the original file cannot
+    // mix two configurations into one gate table (docs/implementation/14
+    // §Harness flow). The snapshot passes the same parse the original
+    // passed at run start: a copy raced with an edit is an input error,
+    // not a subprocess failure.
+    let child_config = child_config_file(options.config.as_deref(), &run_dir)?;
+    if options.config.is_some() {
+        validate_config(&child_config)?;
+    }
+
     // The fixture database comes from the store schema, never a copy: the
     // open runs the same fschecks and pragmas, and the migration is
     // idempotent (docs/implementation/06).
@@ -94,7 +108,7 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     // The scoring pass must search with the same plan the timed
     // subprocess resolves from `--config`, so a gate row never mixes
     // quality from defaults with latency from the config.
-    let plan = resolve_plan(options.config.as_deref())?;
+    let plan = resolve_plan(&child_config)?;
     let mut passes = in_process_pass(&store, &suite, &plan)?;
     // The child's user-config layer lives in an empty scratch dir: its
     // XDG_CONFIG_HOME names it, so the spawned search never reads the
@@ -106,7 +120,6 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
         path: config_home.clone(),
         source,
     })?;
-    let child_config = child_config_file(options.config.as_deref(), &run_dir)?;
     let p95_ms = subprocess_pass(
         options,
         &db_path,
@@ -236,19 +249,19 @@ struct InProcess {
     graded: Vec<(Question, QuestionScore)>,
 }
 
-/// The search plan the in-process pass scores with. With a `--config`,
-/// the same knobs the spawned child resolves from that file — the child's
-/// isolated env leaves only the file layer, so the harness loads the file
-/// layer alone (devdocs-model `Config::load_file_layer`). Without one,
-/// the documented defaults.
+/// The search plan the in-process pass scores with: the knobs of the
+/// child config file — the run-dir snapshot when an operator `--config`
+/// is given, the empty defaults file otherwise. That is the same file
+/// every spawned child resolves, and the child's isolated env leaves only
+/// the file layer, so the harness loads the file layer alone
+/// (devdocs-model `Config::load_file_layer`). The empty defaults file
+/// parses to the documented defaults.
 ///
 /// # Errors
 /// [`EvalError::InvalidConfig`] when the file fails to load — normally
-/// unreachable: `validate_config` ran the same parse at run start.
-fn resolve_plan(config: Option<&Path>) -> Result<Plan, EvalError> {
-    let Some(config) = config else {
-        return Ok(Plan::defaults());
-    };
+/// unreachable: `validate_config` ran the same parse on the operator's
+/// original and the snapshot at run start.
+fn resolve_plan(config: &Path) -> Result<Plan, EvalError> {
     let resolved = devdocs_model::Config::load_file_layer(config).map_err(|error| {
         EvalError::InvalidConfig {
             reason: format!("config file {} is invalid: {error}", config.display()),
@@ -300,26 +313,36 @@ fn in_process_pass(store: &Store, suite: &Suite, plan: &Plan) -> Result<InProces
     Ok(InProcess { rows, graded })
 }
 
-/// The config file every spawned child loads: the operator `--config`
-/// when given, else an empty defaults file the harness writes into the
-/// run dir. The empty file parses to an empty layer — the child runs on
-/// the documented defaults — and the explicit `--config` path skips the
+/// The config file every spawned child loads: a snapshot of the operator
+/// `--config` copied into the run dir when given, else an empty defaults
+/// file the harness writes there. The snapshot freezes the configuration
+/// the run measures — the plan resolution, the warmup, and every timed
+/// child read one immutable file, and the run dir records exactly what
+/// was measured. The empty file parses to an empty layer — the child
+/// runs on the documented defaults — and an explicit file path skips the
 /// project `devdocs.toml` discovery that `Config::load`'s none-given arm
 /// would otherwise run against the inherited cwd, where a stray file
 /// would silently poison the timed p95.
 ///
-/// The internal file is the harness's own artifact and never goes through
-/// `validate_config` (that gate stays on the operator `--config` alone).
+/// The files are the harness's own artifacts; `validate_config` guards
+/// the operator's original at run start and the snapshot copy once
+/// written, never the empty defaults file.
 ///
 /// # Errors
-/// [`EvalError::Io`] when the defaults file cannot be written.
+/// [`EvalError::Io`] when the file cannot be written.
 fn child_config_file(options_config: Option<&Path>, run_dir: &Path) -> Result<PathBuf, EvalError> {
-    if let Some(config) = options_config {
-        return Ok(config.to_path_buf());
-    }
-    let path = run_dir.join("child-defaults.toml");
-    std::fs::write(&path, "").map_err(|source| EvalError::Io {
-        action: "create",
+    let Some(config) = options_config else {
+        let path = run_dir.join("child-defaults.toml");
+        std::fs::write(&path, "").map_err(|source| EvalError::Io {
+            action: "create",
+            path: path.clone(),
+            source,
+        })?;
+        return Ok(path);
+    };
+    let path = run_dir.join("child-config.toml");
+    std::fs::copy(config, &path).map_err(|source| EvalError::Io {
+        action: "copy",
         path: path.clone(),
         source,
     })?;
@@ -578,20 +601,19 @@ mod tests {
     use crate::process_lock;
 
     /// The scoring pass resolves the same search knobs the timed
-    /// subprocess loads from `--config`: the file layer plus defaults
-    /// (the child's isolated env leaves nothing else). No config means
-    /// the documented defaults.
+    /// subprocess loads from the child config file: the file layer plus
+    /// defaults (the child's isolated env leaves nothing else). A config
+    /// pinning non-default knobs moves both passes together.
     #[test]
     fn the_scoring_plan_resolves_from_the_config_file_layer() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("corpus.toml");
         std::fs::write(&config, "[search]\nlimit_default = 3\nrrf_k = 90\n").unwrap();
-        let plan = resolve_plan(Some(&config)).unwrap();
+        let plan = resolve_plan(&config).unwrap();
         assert_eq!(plan.limit, 3);
         assert_eq!(plan.rrf_k, 90);
         // Unspecified knobs stay on the defaults, not the operator's env.
         assert_eq!(plan.max_tokens, 2000);
-        assert_eq!(resolve_plan(None).unwrap(), super::Plan::defaults());
     }
 
     #[test]
@@ -615,22 +637,24 @@ mod tests {
         assert_eq!(std::fs::read(&defaults).unwrap(), b"");
         // The empty layer scores with the documented defaults, matching
         // what the child loads from the same file.
-        assert_eq!(
-            resolve_plan(Some(&defaults)).unwrap(),
-            super::Plan::defaults()
-        );
+        assert_eq!(resolve_plan(&defaults).unwrap(), super::Plan::defaults());
     }
 
-    /// An operator `--config` passes through untouched; the harness
-    /// writes no defaults file into the run dir.
+    /// An operator `--config` is snapshotted into the run dir: the
+    /// children load the snapshot copy, not the original path, so a
+    /// mid-run edit of the original cannot change what the run measures.
     #[test]
-    fn the_run_passes_the_operator_config_through_when_given() {
+    fn the_run_snapshots_the_operator_config_into_the_run_dir() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("corpus.toml");
         std::fs::write(&config, "[search]\nlimit_default = 3\n").unwrap();
         let run_dir = tempfile::tempdir().unwrap();
-        let given = child_config_file(Some(&config), run_dir.path()).unwrap();
-        assert_eq!(given, config);
+        let snapshot = child_config_file(Some(&config), run_dir.path()).unwrap();
+        assert_eq!(snapshot, run_dir.path().join("child-config.toml"));
+        assert_eq!(
+            std::fs::read(&snapshot).unwrap(),
+            std::fs::read(&config).unwrap()
+        );
         assert!(!run_dir.path().join("child-defaults.toml").exists());
     }
 

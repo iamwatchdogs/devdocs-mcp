@@ -162,6 +162,65 @@ fn a_run_without_a_config_writes_a_defaults_file_for_the_child() {
     assert_eq!(std::fs::read(&defaults).unwrap(), b"");
 }
 
+/// A stub `devdocs` that appends the value of every `--config` argument
+/// to a log file and exits 0.
+#[cfg(unix)]
+fn config_recording_bin(dir: &std::path::Path, log: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("devdocs-config-recorder.sh");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != \"--config\" ]; do shift; done\n\
+             printf '%s\\n' \"$2\" >> \"{}\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// With an operator `--config`, the run dir holds the snapshot the run
+/// measured with: every spawned child — the warmup and one call per
+/// question — received the run-dir `child-config.toml`, not the
+/// operator's original path, so a mid-run edit of the original cannot
+/// reach a timed child.
+#[cfg(unix)]
+#[test]
+fn a_run_with_a_config_snapshots_it_and_every_child_loads_the_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, suite, runs) = common::fixture(dir.path());
+    let config = dir.path().join("corpus.toml");
+    std::fs::write(&config, "[search]\nlimit_default = 3\n").unwrap();
+    let log = dir.path().join("config-log");
+    let outcome = run(&RunOptions {
+        suite: suite.display().to_string(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(runs),
+        devdocs_bin: Some(config_recording_bin(dir.path(), &log)),
+        config: Some(config.clone()),
+    })
+    .unwrap();
+
+    // The snapshot lands in the run dir with the operator's bytes.
+    let snapshot = outcome.run_dir.join("child-config.toml");
+    assert!(snapshot.is_file(), "{}", snapshot.display());
+    assert_eq!(
+        std::fs::read(&snapshot).unwrap(),
+        std::fs::read(&config).unwrap()
+    );
+
+    // Every spawned call received the snapshot path, never the original.
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 4, "warmup + one per question");
+    for line in calls.lines() {
+        assert_eq!(std::path::Path::new(line), snapshot, "{line}");
+        assert_ne!(std::path::Path::new(line), config, "{line}");
+    }
+}
+
 #[test]
 fn an_invalid_suite_is_input_error_exit_one() {
     let dir = tempfile::tempdir().unwrap();

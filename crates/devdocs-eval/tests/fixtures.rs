@@ -400,6 +400,95 @@ fn the_trim_tool_rescues_pages_of_an_unreachable_subpath_index() {
     );
 }
 
+/// The rescue host must cover the page: replay ingests a page only under
+/// the scope whose directory is the longest path prefix of the page
+/// (`most_specific_scope`), so a root index at `/docs/` can never host a
+/// page under `/api/` — the trim fails loudly — and a kept deeper index
+/// that covers the page hosts it over the shallower root, promoted into
+/// the rewrite set when it was kept unchanged.
+#[test]
+fn the_trim_tool_rescues_pages_only_under_a_covering_reachable_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/docs/llms.txt", "status": 200, "headers": {}, "body": "# Docs\n\n- [Api](https://x.test/api/llms.txt)\n- [Sub Api](https://x.test/docs/api/llms.txt)\n- [Intro](https://x.test/docs/intro.md)\n"},
+            {"url": "https://x.test/api/llms.txt", "status": 200, "headers": {}, "body": "# Api\n\n- [Page](https://x.test/api/intro.md)\n"},
+            {"url": "https://x.test/docs/api/llms.txt", "status": 200, "headers": {}, "body": "# Api\n"},
+            {"url": "https://x.test/docs/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/api/intro.md", "status": 200, "headers": {}, "body": "# api intro\n"},
+            {"url": "https://x.test/docs/api/intro.md", "status": 200, "headers": {}, "body": "# docs api intro\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    // Negative control: the only listing of the /api page comes from the
+    // dropped /api index, and the /docs root does not cover /api — the
+    // replay would silently drop the page, so the trim fails loudly.
+    let keep = dir.path().join("keep-dropped.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/docs/llms.txt\nhttps://x.test/docs/intro.md\nhttps://x.test/api/intro.md\n",
+    )
+    .unwrap();
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep,
+        &dir.path().join("out-dropped.json"),
+        &dir.path().join("inventory-dropped.json"),
+    );
+    assert!(
+        stderr.contains("no reachable index covers https://x.test/api/intro.md"),
+        "a page no reachable index covers fails loudly: {stderr}"
+    );
+
+    // Positive control: the kept deeper index covers the page, so the
+    // rescue line lands there — not in the shallower root — and the
+    // kept-unchanged host is promoted into the rewrite set.
+    let keep_covered = dir.path().join("keep-covered.txt");
+    std::fs::write(
+        &keep_covered,
+        "https://x.test/docs/llms.txt\nhttps://x.test/docs/api/llms.txt\n\
+         https://x.test/docs/intro.md\nhttps://x.test/docs/api/intro.md\n",
+    )
+    .unwrap();
+    let out = dir.path().join("trimmed-covered.json");
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep_covered,
+        &out,
+        &dir.path().join("inventory-covered.json"),
+    );
+    assert!(
+        stderr.contains("no reachable index listed"),
+        "the uncovered page is rescued loudly: {stderr}"
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        trimmed.len(),
+        4,
+        "every kept response survives the covered rescue"
+    );
+    let deeper = trimmed
+        .iter()
+        .find(|r| r.url == "https://x.test/docs/api/llms.txt")
+        .expect("the covering deeper index survives");
+    assert!(
+        deeper.body.contains("(https://x.test/docs/api/intro.md)"),
+        "the rescue line lands in the deepest covering index: {}",
+        deeper.body
+    );
+    let root = &trimmed[0];
+    assert_eq!(root.url, "https://x.test/docs/llms.txt");
+    assert!(
+        !root.body.contains("docs/api/intro.md"),
+        "the shallower root never hosts the page: {}",
+        root.body
+    );
+}
+
 /// The subpath index is discovered only through a kept page's
 /// `Link: rel="describedby"` header (relative target resolved against the
 /// page URL) — the root never links it. With the describer kept, the

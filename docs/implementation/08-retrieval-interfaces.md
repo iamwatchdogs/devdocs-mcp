@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-14T00:30:00Z
+timestamp: 2026-11-15T10:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -91,7 +91,7 @@ The unified shape for CLI JSON and MCP structured output (research: retrieval-de
 ```json
 {
   "results": [{
-    "ref": "docs://next.js/v16.2.9/proxy#rewrite",
+    "ref": "docs://next.js/v16.2.9/docs/proxy@routing/proxy#rewrite",
     "title": "Proxy rewrite",
     "section": "Routing > Proxy",
     "snippet": "...",
@@ -114,7 +114,9 @@ The unified shape for CLI JSON and MCP structured output (research: retrieval-de
 
 Session dedup: with `--session <id>` (and session id in MCP calls), served chunk ids land in `session_trajectory`, and later queries in the same session down-rank already-served chunks instead of re-serving identical text (research: retrieval-design.md §3.8. The Ref measurement motivating it: −5,500 tokens average per request).
 
-Ref derivation: a chunk with an empty section path (content before the first heading), and any path segment whose heading has no ASCII alphanumerics (non-ASCII or punctuation-only text slugs to empty), gets the placeholder segment `index` in its ref — `docs://<library>/v<version>/index`. A symbol that slugs to empty leaves the fragment out. A ref that names several chunks (two pages with the same section title, or several chunks under the placeholder) serves the lowest chunk id.
+Ref derivation: `docs://<library>/v<version>/<page>@<path>[#<fragment>]` — the page part qualifies the served page and is optional. The page is the chunk's page URL path relative to the source root (the path component of the linked page URL after the authority); a chunk without a usable page URL derives the page-less form. A chunk with an empty section path (content before the first heading), and any path segment whose heading has no ASCII alphanumerics (non-ASCII or punctuation-only text slugs to empty), gets the placeholder segment `index` in its path — `docs://<library>/v<version>/index`. A symbol that slugs to empty leaves the fragment out.
+
+Ref resolution (`open`, `verify`): the ref's full section path matches first, restricted to the ref's pinned page when it names one — a section title another page shares cannot win. When nothing matches exactly, the resolution falls back deliberately: the fragment names a symbol, then a section title, and finally the last path segment matches the last section segment of any chunk; when several candidates remain, the lowest chunk id serves. The page part only ever narrows: a page-pinned ref whose page serves no full-path match falls through the same ladder unchanged, and a page-less ref resolves exactly as before.
 
 ## CLI contract
 

@@ -14,7 +14,9 @@ permanent copy):
 - Question rewrites: five echoed questions (verbatim doc sentences or bare
   keyword lists) were rewritten into real question form before this run;
   see `eval/golden/pilot.meta.json` (`curation_bias`) and Limitations.
-- Suite hash: `5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7`
+- Suite hash: `8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc`
+  (re-pinned 2026-11-15; see Limitations — the recorded run used
+  `5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7`)
 - Database hash: `b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a`
   (the fixture-rebuilt `eval/runs/corpus.db`, offline; see Limitations —
   the db hash is not a reproducibility target).
@@ -137,7 +139,7 @@ gate table instead of a green exit.
 - ref_match grades on the breadcrumb's trailing segments, so a section
   title that another page shares can count as the expected ref (the
   recorded Matcher row passed through the llms-full export copy);
-  page-qualified refs are tracked in #88.
+  resolved by the page-qualified grading below.
 - The corpus holds no poisoned-doc case yet; the poisoned task type
   stays in the TaskType enum and lands with the Phase 2 poisoned-corpus
   work.
@@ -155,6 +157,20 @@ gate table instead of a green exit.
   promised behavior it never ran) and moved the suite hash again; the
   fresh run reproduced the identical gate table, with the per-task
   breakdown now exact_api 19 and no poisoned row.
+- Note (2026-11-15, page-qualified grading): the recorded run's served
+  refs use the pre-page-qualification `docs://` format — library, version,
+  section breadcrumb, no page identity — so ref_match graded on the
+  breadcrumb's trailing segments and a section title another page shares
+  could count as the expected ref. Page-qualified grading lands with #88:
+  refs carry the served page (`docs://<library>/v<version>/<page>@<path>`
+  [#<symbol>], the page the page URL path relative to the source root),
+  and a pinned page must match the hit's page exactly. Every
+  `expect_refs` pin was re-baselined to the page-qualified form of the
+  ref the fresh offline run served for it, and the suite hash moved from
+  `5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7` to
+  the re-pinned hash above. The fresh run reproduced the identical gate
+  table with all 48 rows passing (the per-question table above keeps the
+  recorded run's pre-page-qualification ref spellings).
 - The next.js corpus was recorded from nextjs.org/docs/llms.txt as served
   on 2026-11-13; the site served its then-current docs under the 16.2.9
   corpus label (llms.txt serves latest only, no versioned endpoint).
@@ -173,7 +189,7 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 
 ## Corpus
 
-- suite: pilot — sha256 5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7
+- suite: pilot — sha256 8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc (re-pinned 2026-11-15, see Limitations)
 - database: sha256 b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a
 - pipeline: the live hybrid pipeline through devdocs-retrieve — the symbol rung and the FTS5 BM25 rung fused with RRF (docs/implementation/08 §Rungs)
 - CLI search path: the timed call is the live end-to-end `devdocs search` subprocess. The p95 row times process start through retrieval; the warmup call is excluded.

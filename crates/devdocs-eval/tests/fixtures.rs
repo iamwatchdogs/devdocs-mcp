@@ -404,8 +404,8 @@ fn the_trim_tool_rescues_pages_of_an_unreachable_subpath_index() {
 /// the scope whose directory is the longest path prefix of the page
 /// (`most_specific_scope`), so a root index at `/docs/` can never host a
 /// page under `/api/` — the trim fails loudly — and a kept deeper index
-/// that covers the page hosts it over the shallower root, promoted into
-/// the rewrite set when it was kept unchanged.
+/// that covers the page hosts it over the shallower root, its rescue
+/// line landing in the record the rewrite pass already holds.
 #[test]
 fn the_trim_tool_rescues_pages_only_under_a_covering_reachable_index() {
     let dir = tempfile::tempdir().unwrap();
@@ -444,8 +444,8 @@ fn the_trim_tool_rescues_pages_only_under_a_covering_reachable_index() {
     );
 
     // Positive control: the kept deeper index covers the page, so the
-    // rescue line lands there — not in the shallower root — and the
-    // kept-unchanged host is promoted into the rewrite set.
+    // rescue line lands there — not in the shallower root — in the
+    // record the rewrite pass already holds.
     let keep_covered = dir.path().join("keep-covered.txt");
     std::fs::write(
         &keep_covered,

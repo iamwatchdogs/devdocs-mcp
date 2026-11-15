@@ -429,15 +429,13 @@ def main():
     # index body, or synthesize one (titles never reach the corpus).
     unlinked = sorted(u for u in output_urls if is_page_url(u) and u not in linked)
     if unlinked:
-        # Every kept index can host a rescue: rewritten records carry
-        # their rewritten body, a kept-unchanged index promotes into the
-        # rewrite set when chosen.
+        # Every kept index can host a rescue: its record already sits in
+        # the rewrite set, so merged lines mutate that record in place.
         candidates = {}  # kept index URL -> its [response, note, body] record
         for response in kept:
             url = response["url"]
             if is_index_url(url):
-                record = next((r for r in rewritten_indexes if r[0] is response), None)
-                candidates[url] = record if record is not None else [response, "kept unchanged", response["body"]]
+                candidates[url] = next(r for r in rewritten_indexes if r[0] is response)
         if not candidates:
             fail(f"{manifest_path}: kept pages are unlinked but the manifest records no index to rewrite")
         by_host = {}  # host index URL -> (record, rescued pages)
@@ -460,11 +458,7 @@ def main():
             if url not in by_host:
                 by_host[url] = (record, [])
             by_host[url][1].append(page)
-        registered = {record[0]["url"] for record in rewritten_indexes}
         for url, (record, pages) in by_host.items():
-            if url not in registered:
-                registered.add(url)
-                rewritten_indexes.append(record)
             if body_ends_inside_fence(record[2]):
                 fail(f"{url}: the index body ends inside an unclosed code fence; cannot merge link lines")
             merged, synthesized, extra = 0, 0, []

@@ -785,31 +785,51 @@ impl Config {
 
     /// Load the configuration from one file layer alone: no user config,
     /// no `DEVDOCS_*` env layer, no overrides — the remaining holes fill
-    /// from the built-in defaults. The eval harness resolves its scoring
-    /// pass plan this way, matching what its spawned child loads from the
-    /// same `--config` file (the child's user layer is cut off and its
-    /// env stripped); the `[search]` section the plan reads resolves
-    /// purely from the file plus defaults.
+    /// from the built-in defaults. The resolution never touches the
+    /// process environment, including the index path: a non-UTF-8
+    /// `DEVDOCS_HOME` or an unset `HOME` in the operator env cannot abort
+    /// or redirect the load, which is the failure class the eval child's
+    /// env stripping exists to prevent. The eval harness resolves its
+    /// scoring pass plan this way, matching what its spawned child loads
+    /// from the same `--config` file (the child's user layer is cut off
+    /// and its env stripped); the `[search]` section the plan reads
+    /// resolves purely from the file plus defaults.
     ///
     /// # Errors
     /// [`Error::ConfigInvalid`] when the file is unreadable or fails
     /// validation.
     pub fn load_file_layer(path: &Path) -> Result<Self, Error> {
+        Self::load_file_layer_in(dirs::data_dir().as_deref(), path)
+    }
+
+    /// [`load_file_layer`] with the platform data dir injected, so tests
+    /// never touch the process environment (the crate's `unsafe_code` ban
+    /// forbids env mutation). `None` stands in for the unresolvable case —
+    /// no `HOME` and no `XDG_DATA_HOME` — and still cannot error.
+    ///
+    /// # Errors
+    /// [`Error::ConfigInvalid`] when the file is unreadable or fails
+    /// validation.
+    fn load_file_layer_in(data_dir: Option<&Path>, path: &Path) -> Result<Self, Error> {
         let mut partial = read_layer(path)?;
         let over = Overrides::default();
         partial.merge(PartialConfig::from_overrides(&over));
-        Self::resolve(&partial, &over)
+        // No env layer here: the file's `[index] path` wins, else the
+        // defaults-based fallback — each step Option-based, never a
+        // `ConfigInvalid` from a bad or missing environment variable.
+        let index_db = partial
+            .index
+            .path
+            .as_deref()
+            .map(expand_home)
+            .or_else(|| data_dir.map(|dir| dir.join("devdocs").join("docs.db")))
+            .unwrap_or_else(|| std::env::temp_dir().join("devdocs").join("docs.db"));
+        Self::resolve_fields(&partial, index_db)
     }
 
     /// Fill the remaining holes from built-in defaults.
     fn resolve(partial: &PartialConfig, over: &Overrides) -> Result<Self, Error> {
         let data_root = data_root()?;
-        let user_agent = partial.fetch.user_agent.clone().unwrap_or_else(|| {
-            format!(
-                "devdocs/{} (+https://github.com/OWNER/devdocs-mcp)",
-                env!("CARGO_PKG_VERSION")
-            )
-        });
 
         // `DEVDOCS_HOME` overrides the data root and any config-file index
         // path; the `--db` flag overrides everything.
@@ -824,6 +844,21 @@ impl Config {
                 .as_deref()
                 .map_or_else(|| data_root.join("docs.db"), expand_home)
         };
+
+        Self::resolve_fields(partial, index_db)
+    }
+
+    /// Fill every hole except the index database path from built-in
+    /// defaults and validate `[sources.*]`. The caller resolves the index
+    /// path: the full load applies the env precedence, the file layer
+    /// stays env-free.
+    fn resolve_fields(partial: &PartialConfig, index_db: PathBuf) -> Result<Self, Error> {
+        let user_agent = partial.fetch.user_agent.clone().unwrap_or_else(|| {
+            format!(
+                "devdocs/{} (+https://github.com/OWNER/devdocs-mcp)",
+                env!("CARGO_PKG_VERSION")
+            )
+        });
 
         let sources = partial
             .sources
@@ -1133,6 +1168,55 @@ refresh_days = 2
         assert!(config.index.path.ends_with("docs.db"));
         assert!(config.fetch.user_agent.contains("devdocs/"));
         assert_eq!(config.ingest.git_extensions, super::DEFAULT_GIT_EXTENSIONS);
+    }
+
+    /// The file layer's index path comes from the file, never from the
+    /// process env: the full load lets `DEVDOCS_HOME` override a
+    /// config-file `[index] path`, but the file layer is the hermetic
+    /// seam the eval harness scores through, so the file wins there.
+    #[test]
+    fn the_file_layer_index_path_comes_from_the_file_not_the_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("corpus.toml");
+        std::fs::write(
+            &file,
+            "[index]\npath = \"~/eval-index/docs.db\"\n[search]\nlimit_default = 3\n",
+        )
+        .unwrap();
+        let config = Config::load_file_layer(&file).unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(config.index.path, home.join("eval-index").join("docs.db"));
+        assert_eq!(config.search.limit_default, 3);
+    }
+
+    /// The file layer resolves without any home or data dir: no `HOME`, no
+    /// `XDG_DATA_HOME`, nothing resolvable — the load still succeeds and
+    /// falls back to a temp-dir path instead of a `ConfigInvalid` (the
+    /// injected `None` mirrors what `dirs::data_dir()` returns in that
+    /// environment; env mutation needs `unsafe`, which this crate forbids).
+    #[test]
+    fn the_file_layer_resolves_without_a_home_or_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("corpus.toml");
+        std::fs::write(&file, "[search]\nrrf_k = 90\n").unwrap();
+        let config = Config::load_file_layer_in(None, &file).unwrap();
+        assert_eq!(
+            config.index.path,
+            std::env::temp_dir().join("devdocs").join("docs.db")
+        );
+        assert_eq!(config.search.rrf_k, 90);
+    }
+
+    /// Without a file `[index] path` the file layer falls back to the
+    /// defaults-based path under the injected platform data dir.
+    #[test]
+    fn the_file_layer_falls_back_to_the_platform_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("corpus.toml");
+        std::fs::write(&file, "").unwrap();
+        let data = dir.path().join("data");
+        let config = Config::load_file_layer_in(Some(&data), &file).unwrap();
+        assert_eq!(config.index.path, data.join("devdocs").join("docs.db"));
     }
 
     /// A `[ingest]` section in a config file overrides the default

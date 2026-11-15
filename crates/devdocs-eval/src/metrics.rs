@@ -293,7 +293,7 @@ impl SuiteMetrics {
             if !score.passed {
                 failed += 1;
             }
-            // `None` (nothing served, or an unanswerable abstention) leaves
+            // `None` (nothing served, or an unanswerable question) leaves
             // the denominator: no served version to be wrong.
             if let Some(correct) = score.version_correct {
                 version_total += 1;

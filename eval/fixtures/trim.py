@@ -39,12 +39,13 @@ some rewritten index the replay can reach. Replay loads one scope queue
 first response — and then loads only the indexes a reachable index's
 link lines or a kept page's `Link: rel="describedby"` header name. A
 kept index outside that closure is never loaded, so it never lends its
-links: `linked` counts reachable indexes only, and a kept page nothing
-reachable lists is merged into the reachable root or fails the check.
-Trim rejects a keep list that drops an index a kept page's describedby
-header names — the header is never rewritten, so the replay would
-follow it and miss. Re-trimming a trimmed manifest with the same keep
-list is the identity.
+links: `linked` counts reachable indexes only, and a kept page no
+covering reachable index lists is merged into the deepest reachable
+index whose directory covers the page; a page no reachable index
+covers fails the trim. Trim rejects a keep list that drops an index a
+kept page's describedby header names — the header is never rewritten,
+so the replay would follow it and miss. Re-trimming a trimmed manifest
+with the same keep list is the identity.
 
 Usage:
     python3 trim.py <manifest.json> <keep-list.txt> <out-manifest.json> <out-inventory.json>

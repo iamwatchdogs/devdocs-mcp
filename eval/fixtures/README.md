@@ -65,8 +65,10 @@ The trim keeps only the keep-listed responses and rewrites each kept
   retargeted at the twin, so the replay fetches the same markdown body
   the recording buffered through the HTML-to-twin route. Other links drop.
 - A kept page no reachable index lists (its listing index was dropped,
-  or sits outside the reachable closure) gets its line merged from a
-  recorded index body, or a synthesized minimal line.
+  or sits outside the reachable closure) gets its line merged into the
+  deepest reachable index whose directory covers the page, from a
+  recorded index body or a synthesized minimal line. A page no
+  reachable index covers fails the trim.
 - An index that would keep zero link lines points at the kept
   `llms-full.txt` export instead; the export stays a probe-only page, so
   the corpus is the one the recording served.

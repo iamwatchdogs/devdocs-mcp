@@ -785,11 +785,12 @@ impl Config {
 
     /// Load the configuration from one file layer alone: no user config,
     /// no `DEVDOCS_*` env layer, no overrides — the remaining holes fill
-    /// from the built-in defaults. The resolution never touches the
-    /// process environment, including the index path: a non-UTF-8
-    /// `DEVDOCS_HOME` or an unset `HOME` in the operator env cannot abort
-    /// or redirect the load, which is the failure class the eval child's
-    /// env stripping exists to prevent. The eval harness resolves its
+    /// from the built-in defaults. No environment value can abort the
+    /// load or override the file's `[index] path`; the fallbacks may
+    /// consult the platform conventions (the data dir comes from
+    /// `XDG_DATA_HOME`/`HOME`), and none of them can fail the load —
+    /// which is the failure class the eval child's env stripping exists
+    /// to prevent. The eval harness resolves its
     /// scoring pass plan this way, matching what its spawned child loads
     /// from the same `--config` file (the child's user layer is cut off
     /// and its env stripped); the `[search]` section the plan reads

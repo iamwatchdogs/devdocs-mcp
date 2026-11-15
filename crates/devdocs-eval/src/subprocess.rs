@@ -146,8 +146,8 @@ const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// The `try_wait` poll interval while a call runs.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-/// Times one `devdocs search` invocation end-to-end: process start, flag
-/// parse, and dispatch (docs/implementation/08 §Latency).
+/// Times one `devdocs search` invocation end-to-end: process start
+/// through retrieval (docs/implementation/05 §Latency budget).
 ///
 /// The program and every argument travel as an argument vector — no shell,
 /// no interpolation (see the module security note). The call gets a fixed

@@ -41,7 +41,7 @@ reproducibility header above implement that reporting style).
 |---|---|---|---|---|
 | Symbol recall | 1.000 (5/5) | ≥ 0.95 | 1 | PASS |
 | hit@5 | 1.000 (39/39) | ≥ 0.8 | 1 | PASS |
-| p95 latency | 48.9 ms (subprocess, after one warmup; placeholder CLI before M4) | < 400 ms | 1 | PASS |
+| p95 latency | 48.9 ms (subprocess `devdocs search`, after one warmup) | < 400 ms | 1 | PASS |
 | Cost per 1,000 queries | $0.00 | ≤ $0.20 frontier-class | 3 | PASS |
 | Retrieval failures | 0.000 (M4 baseline pending) | −49% vs the M4 baseline | 2 | INCONCLUSIVE |
 | Version correctness | 1.000 (44/44) | ≥ 0.99 | 1 | PASS |
@@ -161,5 +161,5 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 
 - suite: pilot — sha256 87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c
 - database: sha256 b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a
-- pipeline: Phase 0 stub — one FTS5 rung through devdocs-store; the hybrid pipeline replaces it at M4 (docs/implementation/13)
-- CLI search path: placeholder until M4. The p95 row times process start and dispatch only.
+- pipeline: the live hybrid pipeline through devdocs-retrieve — the symbol rung and the FTS5 BM25 rung fused with RRF (docs/implementation/08 §Rungs)
+- CLI search path: the timed call is the live end-to-end `devdocs search` subprocess. The p95 row times process start through retrieval; the warmup call is excluded.

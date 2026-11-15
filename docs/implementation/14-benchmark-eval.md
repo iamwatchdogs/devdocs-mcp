@@ -101,7 +101,7 @@ Timing note: the harness measures the in-process pipeline plus, in a second pass
 |---|---|---|
 | hit@5 | Fraction of questions with at least one expected ref in the top 5 results | ≥ 0.8 |
 | symbol recall | Fraction of `expect_symbols` present in the symbol rung results for exact-lookup questions | ≥ 0.95 |
-| p95 latency | 95th percentile of CLI subprocess wall time across the suite. Until M4, the CLI `search` path is a placeholder, so the row times process start and dispatch only | < 400 ms |
+| p95 latency | 95th percentile of CLI subprocess wall time across the suite; the timed call is the live `devdocs search` subprocess (§Harness flow), cold start excluded after one warmup | < 400 ms |
 | cost per query | Model cost of the retrieval path (always $0 locally. Ingest embedding cost counted in Phase 3) | $0 |
 | failure rate | Fraction of questions with a wrong or partial result under the binary grader | baseline for the −49% Phase 2 delta |
 | version correctness | Fraction of questions where a result was served and the top result serves the answer's pinned version — the question's own pin, except `multi_library` where the matched expected ref's version decides. Unanswerable questions leave the denominator | ≥ 0.99 |

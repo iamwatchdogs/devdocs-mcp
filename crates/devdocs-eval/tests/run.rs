@@ -121,7 +121,8 @@ fn the_artifacts_name_the_corpus_and_the_host() {
 fn a_run_renders_the_report_and_judges_the_gates() {
     let (_dir, _db, outcome) = run_fixture();
 
-    // The report carries the gate table, the breakdown, and the stub note.
+    // The report carries the gate table, the breakdown, and the live-path
+    // corpus note.
     let md = std::fs::read_to_string(outcome.run_dir.join("report.md")).unwrap();
     assert!(md.contains("## Gate table"));
     assert!(md.contains("exact_api"));
@@ -129,7 +130,7 @@ fn a_run_renders_the_report_and_judges_the_gates() {
         md.contains("not recorded"),
         "no sidecar: minutes unrecorded"
     );
-    assert!(md.contains("Phase 0 stub"));
+    assert!(md.contains("the live hybrid pipeline"));
 
     // Deterministic gates: hit@5 is 1/2 (the absent ref misses), symbol
     // recall is 1/1, and version correctness is 2/2 (the abstention leaves

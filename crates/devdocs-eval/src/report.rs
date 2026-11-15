@@ -379,7 +379,7 @@ fn render_metrics(input: &ReportInput<'_>) -> String {
     push_line(
         &mut out,
         format!(
-            "| p95 latency | {:.1} ms (subprocess, after one warmup; placeholder CLI before M4) |",
+            "| p95 latency | {:.1} ms (subprocess `devdocs search`, after one warmup) |",
             input.p95_ms
         ),
     );
@@ -475,12 +475,14 @@ fn render_corpus(input: &ReportInput<'_>) -> String {
         ),
     );
     out.push_str(
-        "- pipeline: Phase 0 stub — one FTS5 rung through devdocs-store; the \
-         hybrid pipeline replaces it at M4 (docs/implementation/13)\n",
+        "- pipeline: the live hybrid pipeline through devdocs-retrieve — the \
+         symbol rung and the FTS5 BM25 rung fused with RRF \
+         (docs/implementation/08 §Rungs)\n",
     );
     out.push_str(
-        "- CLI search path: placeholder until M4. The p95 row times process \
-         start and dispatch only.\n",
+        "- CLI search path: the timed call is the live end-to-end \
+         `devdocs search` subprocess. The p95 row times process start \
+         through retrieval; the warmup call is excluded.\n",
     );
     out
 }

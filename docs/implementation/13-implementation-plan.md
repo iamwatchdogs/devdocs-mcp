@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-12T22:17:00Z
+timestamp: 2026-11-16T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---

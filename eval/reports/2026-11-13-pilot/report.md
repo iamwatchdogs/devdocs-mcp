@@ -162,9 +162,10 @@ gate table instead of a green exit.
   section breadcrumb, no page identity — so ref_match graded on the
   breadcrumb's trailing segments and a section title another page shares
   could count as the expected ref. Page-qualified grading lands with #88:
-  refs carry the served page (`docs://<library>/v<version>/<page>@<path>`
-  [#<symbol>], the page the page URL path relative to the source root),
-  and a pinned page must match the hit's page exactly. Every
+  refs carry the served page —
+  `docs://<library>/v<version>/<page>@<path>[#<symbol>]`, the page the
+  page URL path relative to the source root — and a pinned page must
+  match the hit's page exactly. Every
   `expect_refs` pin was re-baselined to the page-qualified form of the
   ref the fresh offline run served for it, and the suite hash moved from
   `5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7` to

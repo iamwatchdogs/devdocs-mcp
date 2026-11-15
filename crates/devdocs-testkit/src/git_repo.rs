@@ -173,7 +173,7 @@ pub fn bare_mirror(source: &Path, dir: &Path) -> io::Result<PathBuf> {
 }
 
 /// Copies `source`'s working tree into `fixture`, skipping the `.git`
-/// entry: the materialized tree a git fixture replay walks
+/// entry and symlinks: the materialized tree a git fixture replay walks
 /// (docs/implementation/07 §Git adapter, fixture replay). In-tree
 /// `.gitignore` and `.ignore` files copy too, because the replay walk
 /// honors them; the caller writes the fixture's `commit-sha` file.
@@ -181,6 +181,13 @@ pub fn materialize(source: &Path, fixture: &Path) -> io::Result<()> {
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         if entry.file_name() == std::ffi::OsStr::new(".git") {
+            continue;
+        }
+        // The ingest walker never follows symlinks, so a materialized
+        // fixture keeps them out too — copying one would either inline the
+        // target's content (a parity break against clone-based ingest) or
+        // fail outright when the target is a directory.
+        if entry.file_type()?.is_symlink() {
             continue;
         }
         let target = fixture.join(entry.file_name());
@@ -200,7 +207,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{bare_mirror, docs_repo, git};
+    use super::{bare_mirror, docs_repo, git, materialize};
 
     /// `docs_repo` builds, `v1.0.0` resolves on the default tip, and the
     /// second branch exists with a differing commit.
@@ -264,5 +271,26 @@ mod tests {
             ],
         );
         assert!(fetch.is_err(), "reachable-SHA fetch unexpectedly succeeded");
+    }
+
+    /// `materialize` skips symlinks: the ingest walker never follows
+    /// them (`follow_links(false)`), so a materialized fixture must not
+    /// inline the link's target either
+    /// (docs/implementation/07 §Git adapter, fixture replay).
+    #[cfg(unix)]
+    #[test]
+    fn materialize_skips_symlinks() {
+        let source = tempdir().unwrap();
+        std::fs::write(source.path().join("real.md"), "# docs\n\nThe body.\n").unwrap();
+        std::os::unix::fs::symlink("real.md", source.path().join("link.md")).unwrap();
+
+        let fixture = tempdir().unwrap();
+        materialize(source.path(), fixture.path()).unwrap();
+
+        assert!(fixture.path().join("real.md").is_file());
+        assert!(
+            !fixture.path().join("link.md").exists(),
+            "the symlink must not reach the fixture"
+        );
     }
 }

@@ -162,9 +162,10 @@ pub fn run_once(
     bin: &Path,
     db: &Path,
     config: Option<&Path>,
+    config_home: &Path,
     question: &Question,
 ) -> Result<SubprocessSample, EvalError> {
-    run_once_deadline(bin, db, config, question, CALL_DEADLINE)
+    run_once_deadline(bin, db, config, config_home, question, CALL_DEADLINE)
 }
 
 /// [`run_once`] with an injectable deadline; the tests shrink it so the
@@ -173,6 +174,7 @@ fn run_once_deadline(
     bin: &Path,
     db: &Path,
     config: Option<&Path>,
+    config_home: &Path,
     question: &Question,
     deadline: Duration,
 ) -> Result<SubprocessSample, EvalError> {
@@ -181,9 +183,10 @@ fn run_once_deadline(
     command
         .arg("--db")
         .arg(db)
-        // The corpus config rides along so the spawned search never grades
-        // against the operator's user config (hermetic, docs/implementation/14
-        // §Regression gate).
+        // The corpus config rides along, and the child's user-config layer
+        // points at the harness's empty scratch dir, so the spawned search
+        // never grades against the operator's user config (hermetic,
+        // docs/implementation/14 §Regression gate).
         .args(
             config
                 .iter()
@@ -192,6 +195,7 @@ fn run_once_deadline(
         .arg("--json")
         .arg("search");
     strip_devdocs_env(&mut command, std::env::vars());
+    command.env("XDG_CONFIG_HOME", config_home);
     let mut child = command
         .arg(&question.question)
         .arg("--library")
@@ -399,6 +403,7 @@ mod tests {
             &bin,
             &dir.path().join("fixture.db"),
             None,
+            &dir.path().join("config-home"),
             &question(),
             Duration::from_secs(1),
         )
@@ -412,34 +417,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = stub(dir.path(), "devdocs", "#!/bin/sh\nexec sleep 30\n");
         let db = dir.path().join("fixture.db");
-        let err = run_once_deadline(&bin, &db, None, &question(), Duration::from_millis(100))
-            .unwrap_err();
+        let err = run_once_deadline(
+            &bin,
+            &db,
+            None,
+            &dir.path().join("config-home"),
+            &question(),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("deadline"), "{message}");
         assert!(message.contains("killed"), "{message}");
     }
 
     /// A stub that records its argument vector, one argument per line,
-    /// and every `DEVDOCS_*` variable its environment still carries (one
+    /// every `DEVDOCS_*` variable its environment still carries (one
     /// `NAME=value` per line; the file exists but stays empty when the
-    /// environment carries none).
+    /// environment carries none), and the `XDG_CONFIG_HOME` value it sees
+    /// (the file exists but stays empty when the variable is unset).
     #[cfg(unix)]
     fn argv_recorder(dir: &std::path::Path, name: &str) -> PathBuf {
         let args_file = dir.join(format!("{name}.args"));
         let env_file = dir.join(format!("{name}.env"));
+        let xdg_file = dir.join(format!("{name}.xdg"));
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nenv | grep '^DEVDOCS_' > {}\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nenv | grep '^DEVDOCS_' > \
+             {}\nprintf '%s\\n' \"${{XDG_CONFIG_HOME-}}\" > {}\nexit 0\n",
             args_file.display(),
-            env_file.display()
+            env_file.display(),
+            xdg_file.display()
         );
         stub(dir, name, &body);
         args_file
     }
 
-    /// The environment file the [`argv_recorder`] stub writes.
+    /// The `DEVDOCS_*` environment file the [`argv_recorder`] stub writes.
     #[cfg(unix)]
     fn recorded_env(dir: &std::path::Path, name: &str) -> PathBuf {
         dir.join(format!("{name}.env"))
+    }
+
+    /// The `XDG_CONFIG_HOME` file the [`argv_recorder`] stub writes.
+    #[cfg(unix)]
+    fn recorded_xdg(dir: &std::path::Path, name: &str) -> PathBuf {
+        dir.join(format!("{name}.xdg"))
     }
 
     /// The `DEVDOCS_*` variables the child receives are gone: the unit
@@ -484,9 +506,38 @@ mod tests {
         let _args_file = argv_recorder(dir.path(), "devdocs");
         let bin = dir.path().join("devdocs");
         let db = dir.path().join("fixture.db");
-        run_once_deadline(&bin, &db, None, &question(), Duration::from_secs(1)).unwrap();
+        run_once_deadline(
+            &bin,
+            &db,
+            None,
+            &dir.path().join("config-home"),
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
         let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
         assert!(env.is_empty(), "the child saw DEVDOCS_* variables: {env}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_child_gets_the_isolated_config_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config_home = dir.path().join("config-home");
+        run_once_deadline(
+            &bin,
+            &db,
+            None,
+            &config_home,
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
+        assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
     }
 
     #[cfg(unix)]
@@ -501,6 +552,7 @@ mod tests {
             &bin,
             &db,
             Some(&config),
+            &dir.path().join("config-home"),
             &question(),
             Duration::from_secs(1),
         )
@@ -517,7 +569,15 @@ mod tests {
         let args_file = argv_recorder(dir.path(), "devdocs");
         let bin = dir.path().join("devdocs");
         let db = dir.path().join("fixture.db");
-        run_once_deadline(&bin, &db, None, &question(), Duration::from_secs(1)).unwrap();
+        run_once_deadline(
+            &bin,
+            &db,
+            None,
+            &dir.path().join("config-home"),
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
         let args = std::fs::read_to_string(&args_file).unwrap();
         assert!(!args.contains("--config"), "{args}");
     }

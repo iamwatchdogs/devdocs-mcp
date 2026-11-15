@@ -35,9 +35,10 @@ pub struct RunOptions {
     pub runs_dir: Option<PathBuf>,
     /// The `devdocs` binary for the subprocess pass; located when absent.
     pub devdocs_bin: Option<PathBuf>,
-    /// The config file the spawned `devdocs search` loads, so the run
-    /// stays hermetic against the operator's user config
-    /// (docs/implementation/14 §Regression gate).
+    /// The config file the spawned `devdocs search` loads. Together with
+    /// the child's isolated `XDG_CONFIG_HOME` (an empty per-run scratch
+    /// dir) this keeps the run hermetic against the operator's user
+    /// config (docs/implementation/14 §Regression gate).
     pub config: Option<PathBuf>,
 }
 
@@ -85,7 +86,17 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     store.migrate()?;
 
     let mut passes = in_process_pass(&store, &suite)?;
-    let p95_ms = subprocess_pass(options, &db_path, &suite, &mut passes.rows)?;
+    // The child's user-config layer lives in an empty scratch dir: its
+    // XDG_CONFIG_HOME names it, so the spawned search never reads the
+    // operator's user config, however broken (docs/implementation/14
+    // §Regression gate).
+    let config_home = run_dir.join("child-config-home");
+    std::fs::create_dir(&config_home).map_err(|source| EvalError::Io {
+        action: "create",
+        path: config_home.clone(),
+        source,
+    })?;
+    let p95_ms = subprocess_pass(options, &db_path, &config_home, &suite, &mut passes.rows)?;
     // Read the corpus last, so the artifacts name the sources the hashed
     // database file holds (the read-path sweep can mutate license state).
     let corpus = store.list_corpus()?;
@@ -253,17 +264,18 @@ fn in_process_pass(store: &Store, suite: &Suite) -> Result<InProcess, EvalError>
 fn subprocess_pass(
     options: &RunOptions,
     db_path: &Path,
+    config_home: &Path,
     suite: &Suite,
     rows: &mut [QuestionResult],
 ) -> Result<f64, EvalError> {
     let bin = subprocess::locate_devdocs(options.devdocs_bin.as_deref())?;
     let config = options.config.as_deref();
     // One warmup call; the cold start is excluded (docs/implementation/14).
-    let warmup = subprocess::run_once(&bin, db_path, config, &suite.questions[0])?;
+    let warmup = subprocess::run_once(&bin, db_path, config, config_home, &suite.questions[0])?;
     check_exit(warmup, "warmup")?;
     let mut samples = Vec::with_capacity(rows.len());
     for (row, question) in rows.iter_mut().zip(&suite.questions) {
-        let sample = subprocess::run_once(&bin, db_path, config, question)?;
+        let sample = subprocess::run_once(&bin, db_path, config, config_home, question)?;
         check_exit(sample, &question.id)?;
         samples.push(sample.wall_ms);
         row.subprocess = sample;

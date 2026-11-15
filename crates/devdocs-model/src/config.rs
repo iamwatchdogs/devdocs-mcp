@@ -650,10 +650,18 @@ fn expand_home(path: &str) -> PathBuf {
 /// [`Error::ConfigInvalid`] when a set `XDG_CONFIG_HOME` is not valid
 /// UTF-8.
 pub fn user_config_path() -> Result<Option<PathBuf>, Error> {
-    if let Some(dir) = env_string("XDG_CONFIG_HOME")? {
-        return Ok(Some(Path::new(&dir).join("devdocs").join("config.toml")));
+    Ok(user_config_path_in(
+        env_string("XDG_CONFIG_HOME")?.as_deref(),
+    ))
+}
+
+/// [`user_config_path`] on an injected `XDG_CONFIG_HOME`, so tests never
+/// touch the process environment.
+fn user_config_path_in(xdg: Option<&str>) -> Option<PathBuf> {
+    if let Some(dir) = xdg {
+        return Some(Path::new(&dir).join("devdocs").join("config.toml"));
     }
-    Ok(dirs::config_dir().map(|dir| dir.join("devdocs").join("config.toml")))
+    dirs::config_dir().map(|dir| dir.join("devdocs").join("config.toml"))
 }
 
 /// The user config file path when a home directory exists. This is the
@@ -704,9 +712,20 @@ impl Config {
     /// # Errors
     /// [`Error::ConfigInvalid`] when any layer fails validation.
     pub fn load(over: &Overrides) -> Result<Self, Error> {
+        Self::load_with_xdg(env_string("XDG_CONFIG_HOME")?.as_deref(), over)
+    }
+
+    /// [`load`] with the user-config `XDG_CONFIG_HOME` injected, so tests
+    /// never touch the process environment. Pointing the value at an empty
+    /// directory cuts the user layer off entirely — the eval harness spawns
+    /// its child this way (docs/implementation/14 §Regression gate).
+    ///
+    /// # Errors
+    /// [`Error::ConfigInvalid`] when any layer fails validation.
+    fn load_with_xdg(xdg: Option<&str>, over: &Overrides) -> Result<Self, Error> {
         let mut merged = PartialConfig::default();
 
-        if let Some(user) = user_config_path()?
+        if let Some(user) = user_config_path_in(xdg)
             && user.is_file()
         {
             merged.merge(read_layer(&user)?);
@@ -1112,6 +1131,42 @@ refresh_days = 2
         let config = Config::load(&over).unwrap();
         assert_eq!(config.ingest.git_extensions, ["md"]);
         assert_eq!(config.fetch.concurrency, 4);
+    }
+
+    /// An isolated, empty `XDG_CONFIG_HOME` cuts the user config layer off
+    /// entirely: a valid `--config` load succeeds whatever the operator's
+    /// own user config holds. The eval harness spawns its child this way
+    /// (docs/implementation/14 §Regression gate). The companion assertion
+    /// pins that the layer at the injected path is still read — isolation
+    /// points the path elsewhere, it does not drop the layer.
+    ///
+    /// The injected XDG value replaces the process environment because
+    /// env mutation needs `unsafe`, which this crate forbids.
+    #[test]
+    fn an_empty_xdg_config_home_bypasses_the_user_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("corpus.toml");
+        std::fs::write(&config_file, "[search]\nlimit_default = 3\n").unwrap();
+        let over = Overrides {
+            config_path: Some(config_file),
+            ..Overrides::default()
+        };
+
+        // An empty isolated dir: no user config at the path under it, so
+        // the load resolves from the --config layer plus defaults alone,
+        // never the operator's user config.
+        let empty = dir.path().join("config-home");
+        std::fs::create_dir(&empty).unwrap();
+        let config = Config::load_with_xdg(empty.to_str(), &over).unwrap();
+        assert_eq!(config.search.limit_default, 3);
+
+        // A malformed file at the isolated path still fails loudly: the
+        // isolated dir is the user layer, not a hole in it.
+        let user_dir = dir.path().join("broken-home");
+        std::fs::create_dir_all(user_dir.join("devdocs")).unwrap();
+        std::fs::write(user_dir.join("devdocs").join("config.toml"), "not toml [[[").unwrap();
+        let error = Config::load_with_xdg(user_dir.to_str(), &over).unwrap_err();
+        assert!(matches!(error, Error::ConfigInvalid { .. }), "{error}");
     }
 
     /// An empty `DEVDOCS_INGEST_GIT_EXTENSIONS` counts as set: the env

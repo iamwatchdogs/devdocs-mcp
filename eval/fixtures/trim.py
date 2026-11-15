@@ -37,7 +37,10 @@ link lines or a kept page's `Link: rel="describedby"` header name. A
 kept index outside that closure is never loaded, so it never lends its
 links: `linked` counts reachable indexes only, and a kept page nothing
 reachable lists is merged into the reachable root or fails the check.
-Re-trimming a trimmed manifest with the same keep list is the identity.
+Trim rejects a keep list that drops an index a kept page's describedby
+header names — the header is never rewritten, so the replay would
+follow it and miss. Re-trimming a trimmed manifest with the same keep
+list is the identity.
 
 Usage:
     python3 trim.py <manifest.json> <keep-list.txt> <out-manifest.json> <out-inventory.json>

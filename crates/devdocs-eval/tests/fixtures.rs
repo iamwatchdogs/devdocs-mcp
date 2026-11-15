@@ -483,6 +483,47 @@ fn the_trim_tool_follows_describedby_headers_for_reachability() {
     );
 }
 
+/// A kept page's `Link: rel="describedby"` header naming a non-index
+/// target (a `.md` page) must neither fail the missing-index check nor
+/// enter the reachable closure: non-index targets are filtered out
+/// (`is_index_url`, mirrored from the ingest pipeline), and the replay
+/// never fetches them.
+#[test]
+fn the_trim_tool_excludes_non_index_describedby_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</extra.md>; rel=\"describedby\""}, "body": "# api\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    // extra.md is recorded but dropped: naming it must not read as a
+    // dropped index.
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(&keep, "https://x.test/llms.txt\nhttps://x.test/api.html\n").unwrap();
+    let out = dir.path().join("trimmed.json");
+    let (success, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
+    assert!(
+        success,
+        "a describedby header naming a .md target must not fail the trim: {stderr}"
+    );
+    assert!(
+        !stderr.contains("describedby"),
+        "the non-index target must not trip the missing-index check: {stderr}"
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(
+        trimmed[0].body.contains("(https://x.test/api.html)"),
+        "the root still links the kept describer: {}",
+        trimmed[0].body
+    );
+}
+
 /// A page's `Link:` header naming two describedby indexes must behave
 /// like the Rust parser: one slot, last value wins. The earlier target
 /// never queues and never lends its links — a page listed only there is

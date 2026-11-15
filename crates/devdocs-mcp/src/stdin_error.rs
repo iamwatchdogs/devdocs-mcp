@@ -40,9 +40,13 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for GuardedStdin<R> {
         let this = self.get_mut();
         match Pin::new(&mut this.inner).poll_read(cx, buf) {
             Poll::Ready(Err(e)) => {
-                // `io::Error` carries no `Clone`, so the slot holds an
-                // equivalent copy and the poll returns the original.
-                if let Ok(mut guard) = this.slot.lock() {
+                // First error wins: the slot holds a copy of the kind
+                // and the message (`io::Error` carries no `Clone`, so
+                // the source chain drops), and the poll returns the
+                // original.
+                if let Ok(mut guard) = this.slot.lock()
+                    && guard.is_none()
+                {
                     *guard = Some(io::Error::new(e.kind(), e.to_string()));
                 }
                 Poll::Ready(Err(e))
@@ -89,6 +93,22 @@ mod tests {
         }
     }
 
+    /// A reader whose poll fails with a poll-counted message: the
+    /// stand-in that tells the first from the second error.
+    struct CountingFailures(u32);
+
+    impl tokio::io::AsyncRead for CountingFailures {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            this.0 += 1;
+            Poll::Ready(Err(io::Error::other(format!("failure {}", this.0))))
+        }
+    }
+
     #[test]
     fn a_read_error_lands_in_the_slot() {
         let slot: StdinErrorSlot = Arc::new(Mutex::new(None));
@@ -129,5 +149,31 @@ mod tests {
         );
         let captured = slot.lock().ok().and_then(|mut guard| guard.take());
         assert!(captured.is_none(), "EOF is not an error");
+    }
+
+    #[test]
+    fn a_second_read_error_does_not_replace_the_first() {
+        let slot: StdinErrorSlot = Arc::new(Mutex::new(None));
+        let mut guarded = GuardedStdin {
+            inner: CountingFailures(0),
+            slot: Arc::clone(&slot),
+        };
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut buf = [0_u8; 8];
+        let mut read_buf = ReadBuf::new(&mut buf);
+        for _ in 0..2 {
+            let outcome = Pin::new(&mut guarded).poll_read(&mut cx, &mut read_buf);
+            assert!(
+                matches!(outcome, Poll::Ready(Err(_))),
+                "the poll passes the error through: {outcome:?}"
+            );
+        }
+        let captured = slot.lock().ok().and_then(|mut guard| guard.take());
+        let message = captured.map(|error| error.to_string()).unwrap_or_default();
+        assert_eq!(
+            message, "failure 1",
+            "the slot holds the first error: the second does not replace it"
+        );
     }
 }

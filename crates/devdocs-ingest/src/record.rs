@@ -16,6 +16,7 @@
 //! requested URL — recording covers such sites only through their absolute
 //! links; upgrade when a real gate run needs redirecting relative links.
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -66,9 +67,10 @@ impl Recorder {
     /// Writes `<dir>/manifest.json`: one JSON array of recorded responses,
     /// the serialization `FixtureSet::load` parses.
     ///
-    /// The body lands in a sibling `manifest.json.tmp` first and renames
-    /// onto the manifest, so a failed write never leaves a truncated
-    /// manifest behind (atomic-enough: same-directory rename).
+    /// The body lands in a unique same-directory temp file first and
+    /// renames onto the manifest, so a failed write never leaves a
+    /// truncated manifest behind, and two recorders writing one directory
+    /// concurrently never race on a shared temp name.
     ///
     /// # Errors
     /// [`IngestError::Fixture`] when the directory or the file cannot be
@@ -84,12 +86,20 @@ impl Recorder {
             path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
-        let tmp = dir.join("manifest.json.tmp");
-        std::fs::write(&tmp, json).map_err(|e| IngestError::Fixture {
-            path: tmp.display().to_string(),
+        // A unique temp per write: concurrent recorders into one dir
+        // would otherwise race on a shared `manifest.json.tmp` and tear
+        // the rename target.
+        let tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| IngestError::Fixture {
+            path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
-        std::fs::rename(&tmp, &manifest).map_err(|e| IngestError::Fixture {
+        tmp.as_file()
+            .write_all(json.as_bytes())
+            .map_err(|e| IngestError::Fixture {
+                path: manifest.display().to_string(),
+                message: e.to_string(),
+            })?;
+        tmp.persist(&manifest).map_err(|e| IngestError::Fixture {
             path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
@@ -236,5 +246,29 @@ mod tests {
         std::fs::write(&file, "text").unwrap();
         let error = recorder.write(&file).unwrap_err();
         assert!(matches!(error, crate::error::IngestError::Fixture { .. }));
+    }
+
+    /// Two recorders writing one directory concurrently both succeed and
+    /// leave one parseable manifest: the unique per-write temp files never
+    /// race on a shared name.
+    #[test]
+    fn concurrent_writers_leave_one_parseable_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let dir = dir.path().to_owned();
+                std::thread::spawn(move || {
+                    let recorder = Recorder::new();
+                    let url = Url::parse(&format!("https://docs.acme.test/{i}.md")).unwrap();
+                    recorder.record(&url, &url, 200, &[], "body");
+                    recorder.write(&dir)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let text = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&text).unwrap();
     }
 }

@@ -14,8 +14,8 @@ permanent copy):
 - Question rewrites: five echoed questions (verbatim doc sentences or bare
   keyword lists) were rewritten into real question form before this run;
   see `eval/golden/pilot.meta.json` (`curation_bias`) and Limitations.
-- Suite hash: `8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc`
-  (re-pinned 2026-11-15; see Limitations — the recorded run used
+- Suite hash: `9910c119a01c3928a73e199c14661c43c1096fdb7ac896a3717b5852fb27db4b`
+  (re-pinned 2026-11-16; see Limitations — the recorded run used
   `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c`)
 - Database hash: `b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a`
   (the fixture-rebuilt `eval/runs/corpus.db`, offline; see Limitations —
@@ -172,6 +172,24 @@ gate table instead of a green exit.
   the re-pinned hash above. The fresh run reproduced the identical gate
   table with all 48 rows passing (the per-question table above keeps the
   recorded run's pre-page-qualification ref spellings).
+- Note (2026-11-16, route-cors row): `nextjs-route-cors-001` pinned the
+  proxy page's `Examples/CORS` section while its question and notes target
+  the route-handler page. The question's `preflight` token appears only in
+  the proxy chunks — the route-handler CORS section documents setting
+  headers on a GET handler and never discusses preflight — so the FTS
+  all-token AND rung could not serve the intended `route.md` chunk for it
+  (#90; #88's page-qualified grading surfaced the divergence). The
+  question was rewritten to `set CORS headers for route handlers`; the
+  notes stay the intent record. The pin moved to the route-handler
+  identity the fresh run serves at rank 1,
+  `docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/route.md@Examples/CORS#GET`.
+  The suite hash moved from
+  `8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc`
+  (the hash the page-qualified re-baseline re-pinned) to the re-pinned
+  hash above. The fresh offline run (run dir `2026-11-15-pilot-2`)
+  reproduced the identical gate table with all 48 rows passing; the
+  per-question table above keeps the recorded run's pre-page-qualification
+  ref spellings.
 - The next.js corpus was recorded from nextjs.org/docs/llms.txt as served
   on 2026-11-13; the site served its then-current docs under the 16.2.9
   corpus label (llms.txt serves latest only, no versioned endpoint).
@@ -190,7 +208,7 @@ Re-run the probe quarterly and on the reversal conditions (docs/implementation/1
 
 ## Corpus
 
-- suite: pilot — sha256 8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc (re-pinned 2026-11-15, see Limitations)
+- suite: pilot — sha256 9910c119a01c3928a73e199c14661c43c1096fdb7ac896a3717b5852fb27db4b (re-pinned 2026-11-16, see Limitations)
 - database: sha256 b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a
 - pipeline: the live hybrid pipeline through devdocs-retrieve — the symbol rung and the FTS5 BM25 rung fused with RRF (docs/implementation/08 §Rungs)
 - CLI search path: the timed call is the live end-to-end `devdocs search` subprocess. The p95 row times process start through retrieval; the warmup call is excluded.

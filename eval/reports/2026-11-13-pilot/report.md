@@ -134,6 +134,10 @@ gate table instead of a green exit.
   questions remain bare keyword or symbol lookups where no longer natural
   phrasing survives that rung. Natural-language failure-rate measurement
   is Phase 2 work (docs/implementation/13, M11).
+- ref_match grades on the breadcrumb's trailing segments, so a section
+  title that another page shares can count as the expected ref (the
+  recorded Matcher row passed through the llms-full export copy);
+  page-qualified refs are tracked in #88.
 - The corpus holds no poisoned-doc case yet; the poisoned task type
   stays in the TaskType enum and lands with the Phase 2 poisoned-corpus
   work.

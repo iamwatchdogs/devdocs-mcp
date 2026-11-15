@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-15T08:00:00Z
+timestamp: 2026-11-15T09:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -110,7 +110,7 @@ Timing note: the harness measures the in-process pipeline plus, in a second pass
 
 The binary grader: partial counts as wrong. The research protocol is explicit (research: benchmark-protocol.md Step 6).
 
-Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate counts every question. Version correctness counts the questions where a result was served and excludes every unanswerable question: the metric grades served answers, and an unanswerable question pins no answer, so version grading has no referent there. A hallucinated hit on an unanswerable question is a failure-rate signal, not a version signal. The top result grades against the version the answer is pinned to: the question's own pin. A `multi_library` question grades against the version of the expected ref its top hit matches. When no expected ref matches the top hit, the question's own pin decides. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands. Symbol recall grades from the rung results within the retrieval headroom window (4× the page limit, docs/implementation/08 §Rungs), so a suite pinning more symbols than the window holds cannot reach full recall.
+Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate counts every question. Version correctness counts the questions where a result was served and excludes every unanswerable question: the metric grades served answers, and an unanswerable question pins no answer, so version grading has no referent there. A hallucinated hit on an unanswerable question is a failure-rate signal, not a version signal. The top result grades against the version the answer is pinned to: the question's own pin. A `multi_library` question grades against the version of the expected ref its top hit matches. When no expected ref matches the top hit, the question's own pin decides. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands. `ref_match` grades on the trailing segments of the section breadcrumb, so a section title that another page shares can count as the expected ref; page-qualified refs are tracked in #88. Symbol recall grades from the rung results within the retrieval headroom window (4× the page limit, docs/implementation/08 §Rungs), so a suite pinning more symbols than the window holds cannot reach full recall.
 
 ## Gate table
 

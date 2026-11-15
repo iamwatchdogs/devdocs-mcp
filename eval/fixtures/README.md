@@ -77,8 +77,10 @@ some rewritten index the replay can reach. Reachability mirrors the
 replay's scope queue: the recording's root index (the manifest's first
 response) seeds, a reachable index's link lines and a kept page's
 `Link: rel="describedby"` header queue further indexes, and only
-reachable indexes lend their links. Re-trimming a trimmed manifest with
-the same keep list is the identity.
+reachable indexes lend their links. Trim rejects a keep list that drops
+an index a kept page's describedby header names — the header is never
+rewritten, so the replay would follow it and miss. Re-trimming a trimmed
+manifest with the same keep list is the identity.
 
 To rebuild a fixture after a fresh recording (manual, networked — real
 network rebuilds stay manual and labeled):

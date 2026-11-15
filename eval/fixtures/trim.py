@@ -357,8 +357,19 @@ def main():
             named = {
                 target
                 for target in describedby_targets(value, response["url"])
-                if is_index_url(target) and target in output_urls
+                if is_index_url(target)
             }
+            # Headers are never rewritten, so a kept page naming a
+            # dropped index must fail loudly: the replay follows the
+            # header and would miss. Non-index targets are never
+            # fetched by the replay and must not fail.
+            missing = sorted(named - output_urls)
+            if missing:
+                fail(
+                    f"{response['url']}: the kept page's describedby header names "
+                    f"the dropped index {', '.join(missing)}; the replay follows "
+                    "the header and would miss it — keep the index or drop the page"
+                )
             if named:
                 describedby_of[response["url"]] = named
     reachable = {root["url"]}

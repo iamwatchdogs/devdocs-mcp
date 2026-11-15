@@ -374,8 +374,10 @@ fn the_trim_tool_rescues_pages_of_an_unreachable_subpath_index() {
 /// page URL) — the root never links it. With the describer kept, the
 /// header queues the index and its page is linked without a rescue; with
 /// the describer dropped, the index is unreachable and the rescue must
-/// carry the page loudly. A keep list without the root index cannot seed
-/// the replay at all and fails.
+/// carry the page loudly; with the describer kept but the index dropped,
+/// trim fails loudly — the header is never rewritten, so the replay
+/// would follow it and miss. A keep list without the root index cannot
+/// seed the replay at all and fails.
 #[test]
 fn the_trim_tool_follows_describedby_headers_for_reachability() {
     let dir = tempfile::tempdir().unwrap();
@@ -443,6 +445,26 @@ fn the_trim_tool_follows_describedby_headers_for_reachability() {
         dropped[0].body.contains("(https://x.test/guide/page.md)"),
         "the rescued page line lands in the reachable root: {}",
         dropped[0].body
+    );
+
+    // A kept describer whose describedby header names a dropped index
+    // must fail loudly: the header is never rewritten, so the replay
+    // would follow it and miss the kept page's covering index.
+    let keep_no_index = dir.path().join("keep-no-index.txt");
+    std::fs::write(
+        &keep_no_index,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\nhttps://x.test/api.html\n",
+    )
+    .unwrap();
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep_no_index,
+        &dir.path().join("out-no-index.json"),
+        &dir.path().join("inventory-no-index.json"),
+    );
+    assert!(
+        stderr.contains("describedby") && stderr.contains("https://x.test/guide/llms.txt"),
+        "a kept page naming a dropped index fails loudly: {stderr}"
     );
 
     // A keep list without the root index cannot seed the replay: trim

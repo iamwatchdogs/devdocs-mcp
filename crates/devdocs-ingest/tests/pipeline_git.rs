@@ -525,3 +525,92 @@ async fn git_fixture_replay_refuses_a_malformed_commit_sha() {
         other => panic!("expected Fixture, got {other:?}"),
     }
 }
+
+/// A fixture recorded from commit A must not publish under a different
+/// commit pin B: the replay compares the recorded SHA against the pin and
+/// refuses as `Fixture` before anything publishes
+/// (docs/implementation/07 §Git adapter, fixture replay).
+#[tokio::test]
+async fn git_fixture_replay_refuses_a_pin_that_differs_from_the_recorded_sha() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+    let fixture_dir = tempdir().unwrap();
+    git_fixture(&repo, fixture_dir.path());
+
+    // A 40-hex pin the fixture did not record.
+    let other_pin = "b".repeat(40);
+
+    let db = tempdir().unwrap();
+    let db_path = db.path().join("docs.db");
+    let replay_store = Arc::new(devdocs_testkit::open_migrated(&db_path).unwrap());
+    let guard = guard(&config);
+    let error = IngestJob::new(&config, &guard, None)
+        .with_git_fixture(fixture_dir.path())
+        .run_git(
+            Arc::clone(&replay_store),
+            &url,
+            "acme",
+            "1.0",
+            GitPin::from(other_pin.as_str()),
+            tempdir().unwrap().path(),
+        )
+        .await
+        .unwrap_err();
+    match error {
+        devdocs_ingest::IngestError::Fixture { message, .. } => {
+            assert!(
+                message.contains("does not match the requested pin"),
+                "message: {message}"
+            );
+        }
+        other => panic!("expected Fixture, got {other:?}"),
+    }
+    assert!(
+        replay_store.list_sources().unwrap().is_empty(),
+        "a refused replay must publish no source row"
+    );
+    assert!(
+        devdocs_testkit::read_chunks(&db_path).unwrap().is_empty(),
+        "a refused replay must publish no chunks"
+    );
+}
+
+/// A commit pin matching the recorded SHA replays the happy path: the
+/// run publishes and the recorded commit stays the provenance — the
+/// comparison is case-insensitive, so an uppercase pin matches too
+/// (docs/implementation/07 §Git adapter, fixture replay).
+#[tokio::test]
+async fn git_fixture_replay_publishes_a_matching_commit_pin() {
+    let repo_dir = tempdir().unwrap();
+    let repo = docs_repo(repo_dir.path()).unwrap();
+    let url = repo_url(&repo.work_dir);
+    let config = config(&url);
+    let fixture_dir = tempdir().unwrap();
+    git_fixture(&repo, fixture_dir.path());
+
+    let replay_store = store();
+    let guard = guard(&config);
+    let upper_pin = repo.tag_sha.to_ascii_uppercase();
+    let outcome = IngestJob::new(&config, &guard, None)
+        .with_git_fixture(fixture_dir.path())
+        .run_git(
+            Arc::clone(&replay_store),
+            &url,
+            "acme",
+            &upper_pin,
+            GitPin::from(upper_pin.as_str()),
+            tempdir().unwrap().path(),
+        )
+        .await
+        .unwrap();
+
+    assert!(outcome.chunks > 0);
+    assert_eq!(
+        outcome.commit_sha.as_deref(),
+        Some(repo.tag_sha.as_str()),
+        "the recorded commit is the provenance"
+    );
+    assert_commit_provenance(&replay_store, &url, &repo.tag_sha);
+}

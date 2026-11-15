@@ -310,7 +310,24 @@ impl<'a> IngestJob<'a> {
         let git_fixture = self.git_fixture.map(std::path::Path::to_path_buf);
         let fetched = tokio::task::spawn_blocking(move || {
             if let Some(fixture_dir) = git_fixture.as_deref() {
-                return crate::git::replay(fixture_dir, &extensions);
+                let fetched = crate::git::replay(fixture_dir, &extensions)?;
+                // A commit pin names the exact commit to publish: a fixture
+                // recorded from another commit must not publish under this
+                // pin's version label. Tag pins keep the recorded SHA as
+                // the intended provenance (docs/implementation/07 §Git
+                // adapter, fixture replay).
+                if crate::git::is_commit_sha(&pin) && fetched.commit_sha != pin.to_ascii_lowercase()
+                {
+                    return Err(IngestError::Fixture {
+                        path: fixture_dir.join("commit-sha").display().to_string(),
+                        message: format!(
+                            "recorded commit SHA {} does not match the requested pin {}",
+                            fetched.commit_sha,
+                            pin.to_ascii_lowercase()
+                        ),
+                    });
+                }
+                return Ok(fetched);
             }
             let git_plan = crate::git::plan(&url, &pin, &data_root)?;
             let extra: Vec<&str> = extra_config.iter().map(String::as_str).collect();

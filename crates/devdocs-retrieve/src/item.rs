@@ -172,7 +172,7 @@ fn page_matches(hit: &Hit, pinned: Option<&str>) -> bool {
 /// matches.
 ///
 /// A page-pinned ref narrows the full-path match to chunks on the pinned
-/// page ([`page_matches`]) — the page part only ever narrows, so a
+/// page (see `page_matches`) — the page part only ever narrows, so a
 /// page-qualified ref that no chunk on the pinned page satisfies falls
 /// through the fragment and last-segment ladder unchanged (the
 /// deliberate fallback: a ref recorded against a restructured page still

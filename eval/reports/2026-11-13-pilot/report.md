@@ -16,7 +16,7 @@ permanent copy):
   see `eval/golden/pilot.meta.json` (`curation_bias`) and Limitations.
 - Suite hash: `8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc`
   (re-pinned 2026-11-15; see Limitations — the recorded run used
-  `5b9d004c91c0c25e3877baf562cb20929b3de7258fb086473f7439958dac93e7`)
+  `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c`)
 - Database hash: `b721d6219bfb0b2ca022693ede1a6ff8bf03d77dd50b0bda5d3c5d4753fab28a`
   (the fixture-rebuilt `eval/runs/corpus.db`, offline; see Limitations —
   the db hash is not a reproducibility target).

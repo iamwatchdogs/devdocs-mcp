@@ -122,9 +122,12 @@ def describedby_targets(value, base_url):
     """The `rel="describedby"` target of one joined `Link:` header value
     (`<uri>; rel="describedby"`), resolved against `base_url` — the RFC
     8288 subset the Rust relations parser reads. Unparsable link values
-    are ignored. The Rust parser holds one describedby slot (each match
-    overwrites), so the last target wins here too: the replay queues
-    exactly one index per page."""
+    are ignored. Within one link value, the last `rel` parameter wins:
+    the Rust parser overwrites its rel accumulator per parameter. So a
+    value whose final rel parameter is not describedby does not count.
+    The Rust parser holds one describedby slot (each match overwrites),
+    so the last target wins here too: the replay queues exactly one
+    index per page."""
     last = None
     for piece in split_link_values(value):
         rest = piece.strip()
@@ -132,17 +135,15 @@ def describedby_targets(value, base_url):
         if not rest.startswith("<") or close < 0:
             continue
         uri, params = rest[1:close], rest[close + 1:]
+        rel = ""
         for param in params.split(";"):
             name, sep, val = param.partition("=")
-            # RFC 8288: rel is a space-separated token list, so one link
-            # can carry several relations.
-            if (
-                sep
-                and name.strip().lower() == "rel"
-                and "describedby" in val.strip().strip('"').lower().split()
-            ):
-                last = urljoin(base_url, uri)
-                break
+            if sep and name.strip().lower() == "rel":
+                rel = val.strip().strip('"').lower()
+        # RFC 8288: rel is a space-separated token list, so one link
+        # can carry several relations.
+        if "describedby" in rel.split():
+            last = urljoin(base_url, uri)
     return [last] if last is not None else []
 
 

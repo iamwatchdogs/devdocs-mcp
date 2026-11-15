@@ -589,3 +589,55 @@ fn the_trim_tool_queues_only_the_last_describedby_header_target() {
         "trim(trimmed) is the identity"
     );
 }
+
+/// Within one link value, the last `rel` parameter wins — the Rust
+/// parser overwrites its rel accumulator per parameter. A value whose
+/// final rel is not `describedby` never counts, so the earlier value's
+/// target stays the one that queues: the trim accepts a header the
+/// replay can load.
+#[test]
+fn the_trim_tool_ignores_a_value_whose_last_rel_is_not_describedby() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</a/llms.txt>; rel=\"describedby\", </b/llms.txt>; rel=\"describedby\"; rel=\"stylesheet\""}, "body": "# api\n"},
+            {"url": "https://x.test/a/llms.txt", "status": 200, "headers": {}, "body": "# A\n\n- [Only](https://x.test/a/only.md)\n"},
+            {"url": "https://x.test/b/llms.txt", "status": 200, "headers": {}, "body": "# B\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/a/only.md", "status": 200, "headers": {}, "body": "# only\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\nhttps://x.test/api.html\n\
+         https://x.test/a/llms.txt\nhttps://x.test/a/only.md\n",
+    )
+    .unwrap();
+    let out = dir.path().join("trimmed.json");
+    let (success, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
+    assert!(
+        success,
+        "the kept earlier target needs no dropped index, so the trim passes: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no reachable index listed"),
+        "the queued earlier target is reachable and links its page: {stderr}"
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(
+        trimmed.iter().any(|r| r.url == "https://x.test/a/llms.txt"),
+        "the earlier value's target queues: {:?}",
+        trimmed.iter().map(|r| r.url.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        !trimmed.iter().any(|r| r.url == "https://x.test/b/llms.txt"),
+        "the non-describedby value's target never queues"
+    );
+}

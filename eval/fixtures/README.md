@@ -64,16 +64,21 @@ The trim keeps only the keep-listed responses and rewrites each kept
 - A link to a kept page stays. A link whose `.md` twin is kept is
   retargeted at the twin, so the replay fetches the same markdown body
   the recording buffered through the HTML-to-twin route. Other links drop.
-- A kept page no kept index lists (its listing index was dropped) gets its
-  line merged from a recorded index body, or a synthesized minimal line.
+- A kept page no reachable index lists (its listing index was dropped,
+  or sits outside the reachable closure) gets its line merged from a
+  recorded index body, or a synthesized minimal line.
 - An index that would keep zero link lines points at the kept
   `llms-full.txt` export instead; the export stays a probe-only page, so
   the corpus is the one the recording served.
 
 The tool verifies before it writes: every link line target in a rewritten
 index resolves to a recorded response, and every kept page is linked by
-some rewritten index. Re-trimming a trimmed manifest with the same keep
-list is the identity.
+some rewritten index the replay can reach. Reachability mirrors the
+replay's scope queue: the recording's root index (the manifest's first
+response) seeds, a reachable index's link lines and a kept page's
+`Link: rel="describedby"` header queue further indexes, and only
+reachable indexes lend their links. Re-trimming a trimmed manifest with
+the same keep list is the identity.
 
 To rebuild a fixture after a fresh recording (manual, networked — real
 network rebuilds stay manual and labeled):

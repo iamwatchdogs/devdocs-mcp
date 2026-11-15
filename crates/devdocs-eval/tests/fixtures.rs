@@ -263,3 +263,200 @@ fn the_trim_tool_refuses_to_rescue_an_empty_index_that_ends_inside_a_fence() {
         "the closed index gains the export link: {index}"
     );
 }
+
+/// The redirect dual-entry recording: the subpath index is recorded under
+/// both the requested and the final URL, and the keep list holds only the
+/// final-URL entry. The root's link line to the requested URL drops, so
+/// the kept index sits outside the reachable closure — the replay never
+/// loads it, and its page must come from the rescue (a merged line in the
+/// reachable root) instead of silently from the unreachable index.
+#[test]
+fn the_trim_tool_rescues_pages_of_an_unreachable_subpath_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Guide](https://x.test/guide/llms.txt)\n"},
+            {"url": "https://x.test/guide/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/v2/page.md)\n"},
+            {"url": "https://x.test/guide/v2/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/v2/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/guide/v2/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\n\
+         https://x.test/guide/v2/llms.txt\nhttps://x.test/guide/v2/page.md\n",
+    )
+    .unwrap();
+    let out = dir.path().join("trimmed.json");
+    let (_, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
+    assert!(
+        stderr.contains("no reachable index listed"),
+        "the unreachable index's page is rescued loudly: {stderr}"
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        trimmed.len(),
+        4,
+        "the root, the intro page, the final-URL index, and the page survive"
+    );
+    assert!(
+        trimmed[0]
+            .body
+            .contains("(https://x.test/guide/v2/page.md)"),
+        "the rescued page line lands in the reachable root: {}",
+        trimmed[0].body
+    );
+
+    // The rescue lines sit in a reachable host, so re-trimming the
+    // rescued manifest with the same keep list is the identity.
+    let retrimmed = dir.path().join("retrimmed.json");
+    run_trim(
+        &out,
+        &keep,
+        &retrimmed,
+        &dir.path().join("re-inventory.json"),
+    );
+    assert_eq!(
+        std::fs::read(&retrimmed).unwrap(),
+        std::fs::read(&out).unwrap(),
+        "trim(trimmed) is the identity"
+    );
+
+    // Negative control: the root keeps the link to the requested URL, so
+    // the subpath index is reachable and every kept page is linked
+    // without a rescue — replay parity.
+    let keep_linked = dir.path().join("keep-linked.txt");
+    std::fs::write(
+        &keep_linked,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\n\
+         https://x.test/guide/llms.txt\nhttps://x.test/guide/v2/llms.txt\n\
+         https://x.test/guide/v2/page.md\n",
+    )
+    .unwrap();
+    let out_linked = dir.path().join("trimmed-linked.json");
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep_linked,
+        &out_linked,
+        &dir.path().join("inventory-linked.json"),
+    );
+    assert!(
+        !stderr.contains("no reachable index listed"),
+        "the reachable index needs no rescue: {stderr}"
+    );
+    let linked: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out_linked).unwrap()).unwrap();
+    assert!(
+        linked[0].body.contains("(https://x.test/guide/llms.txt)"),
+        "the root keeps the subpath index link: {}",
+        linked[0].body
+    );
+    let requested = linked
+        .iter()
+        .find(|r| r.url == "https://x.test/guide/llms.txt")
+        .expect("the requested subpath index survives");
+    assert!(
+        requested.body.contains("(https://x.test/guide/v2/page.md)"),
+        "the reachable index links the page: {}",
+        requested.body
+    );
+}
+
+/// The subpath index is discovered only through a kept page's
+/// `Link: rel="describedby"` header (relative target resolved against the
+/// page URL) — the root never links it. With the describer kept, the
+/// header queues the index and its page is linked without a rescue; with
+/// the describer dropped, the index is unreachable and the rescue must
+/// carry the page loudly. A keep list without the root index cannot seed
+/// the replay at all and fails.
+#[test]
+fn the_trim_tool_follows_describedby_headers_for_reachability() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</guide/llms.txt>; rel=\"describedby\", </style.css>; rel=\"stylesheet\""}, "body": "# api\n"},
+            {"url": "https://x.test/guide/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/guide/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\nhttps://x.test/api.html\n\
+         https://x.test/guide/llms.txt\nhttps://x.test/guide/page.md\n",
+    )
+    .unwrap();
+    let out = dir.path().join("trimmed.json");
+    let (_, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
+    assert!(
+        !stderr.contains("no reachable index listed"),
+        "the describedby header queues the index, so no rescue fires: {stderr}"
+    );
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let index = trimmed
+        .iter()
+        .find(|r| r.url == "https://x.test/guide/llms.txt")
+        .expect("the describedby-discovered index survives");
+    assert!(
+        index.body.contains("(https://x.test/guide/page.md)"),
+        "the reachable index keeps its page link: {}",
+        index.body
+    );
+
+    // Dropped describer: the index is unreachable, so its page must be
+    // rescued into the reachable root instead of passing silently.
+    let keep_dropped = dir.path().join("keep-dropped.txt");
+    std::fs::write(
+        &keep_dropped,
+        "https://x.test/llms.txt\nhttps://x.test/intro.md\n\
+         https://x.test/guide/llms.txt\nhttps://x.test/guide/page.md\n",
+    )
+    .unwrap();
+    let out_dropped = dir.path().join("trimmed-dropped.json");
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep_dropped,
+        &out_dropped,
+        &dir.path().join("inventory-dropped.json"),
+    );
+    assert!(
+        stderr.contains("no reachable index listed"),
+        "the dropped describer leaves the index unreachable; the page is rescued: {stderr}"
+    );
+    let dropped: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out_dropped).unwrap()).unwrap();
+    assert!(
+        dropped[0].body.contains("(https://x.test/guide/page.md)"),
+        "the rescued page line lands in the reachable root: {}",
+        dropped[0].body
+    );
+
+    // A keep list without the root index cannot seed the replay: trim
+    // fails loudly instead of writing a corpus nothing can load.
+    let keep_no_root = dir.path().join("keep-no-root.txt");
+    std::fs::write(&keep_no_root, "https://x.test/intro.md\n").unwrap();
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep_no_root,
+        &dir.path().join("out.json"),
+        &dir.path().join("out-inventory.json"),
+    );
+    assert!(
+        stderr.contains("no scope to seed"),
+        "a dropped root index fails loudly: {stderr}"
+    );
+}

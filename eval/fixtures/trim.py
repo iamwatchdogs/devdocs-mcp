@@ -16,12 +16,12 @@ The rewrite, per index body:
   directly — the same document the recording buffered through the
   HTML-to-twin route.
 - A link line whose target is neither kept nor a kept twin is dropped.
-- Kept pages that no kept index links (their listing index was dropped)
-  get their line merged in from a recorded index body, retargeted at the
-  kept page; a page no recorded index links is synthesized as
-  `- [<segment>](<url>)`. Link titles and descriptions never reach the
-  corpus, so a merged or synthesized line serves exactly the page it
-  names.
+- Kept pages that no reachable index links (their listing index was
+  dropped, or sits outside the reachable closure) get their line merged
+  in from a recorded index body, retargeted at the kept page; a page no
+  recorded index links is synthesized as `- [<segment>](<url>)`. Link
+  titles and descriptions never reach the corpus, so a merged or
+  synthesized line serves exactly the page it names.
 - When a rewritten index would hold zero link lines — an index the
   ingest parser refuses — and the keep list holds the scope's
   llms-full.txt export, the rewrite points the index at that export with
@@ -30,8 +30,14 @@ The rewrite, per index body:
 
 The tool verifies before writing: every link line target in a rewritten
 index resolves to a kept response, and every kept page URL is linked by
-some rewritten index. Re-trimming a trimmed manifest with the same keep
-list is the identity.
+some rewritten index the replay can reach. Replay loads one scope queue
+(docs/07 rule 4): it seeds the recording's root index — the manifest's
+first response — and then loads only the indexes a reachable index's
+link lines or a kept page's `Link: rel="describedby"` header name. A
+kept index outside that closure is never loaded, so it never lends its
+links: `linked` counts reachable indexes only, and a kept page nothing
+reachable lists is merged into the reachable root or fails the check.
+Re-trimming a trimmed manifest with the same keep list is the identity.
 
 Usage:
     python3 trim.py <manifest.json> <keep-list.txt> <out-manifest.json> <out-inventory.json>
@@ -85,6 +91,54 @@ def is_page_url(url):
     if stem.lower() in ("llms", "llms-full") and ext.lower() == "txt":
         return False
     return ext.lower() in ("md", "mdx", "html", "htm", "xhtml")
+
+
+def split_link_values(value):
+    """Splits a comma-joined `Link:` header on commas outside `<...>` and
+    quotes, mirroring the Rust relations parser's split."""
+    pieces, current = [], []
+    angle, quoted = 0, False
+    for char in value:
+        if char == "<":
+            angle += 1
+        elif char == ">":
+            angle = max(angle - 1, 0)
+        elif char == '"':
+            quoted = not quoted
+        if char == "," and not angle and not quoted:
+            pieces.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if "".join(current).strip():
+        pieces.append("".join(current))
+    return pieces
+
+
+def describedby_targets(value, base_url):
+    """The `rel="describedby"` targets of one joined `Link:` header value
+    (`<uri>; rel="describedby"`), resolved against `base_url` — the RFC
+    8288 subset the Rust relations parser reads. Unparsable link values
+    are ignored."""
+    targets = []
+    for piece in split_link_values(value):
+        rest = piece.strip()
+        close = rest.find(">")
+        if not rest.startswith("<") or close < 0:
+            continue
+        uri, params = rest[1:close], rest[close + 1:]
+        for param in params.split(";"):
+            name, sep, val = param.partition("=")
+            # RFC 8288: rel is a space-separated token list, so one link
+            # can carry several relations.
+            if (
+                sep
+                and name.strip().lower() == "rel"
+                and "describedby" in val.strip().strip('"').lower().split()
+            ):
+                targets.append(urljoin(base_url, uri))
+                break
+    return targets
 
 
 def parse_link_line(trimmed):
@@ -255,15 +309,31 @@ def main():
         if is_index_url(response["url"])
     ]
 
-    linked = set()
+    # Replay seeds exactly one scope: the recording's root index, the
+    # first response the recorder appended. The keep list must hold it,
+    # or the replay has nothing to load.
+    root = recorded[0]
+    if root["url"] not in output_urls or not is_index_url(root["url"]):
+        fail(
+            f"{manifest_path}: the first recorded response {root['url']} is not a kept "
+            "llms.txt index; the replay has no scope to seed"
+        )
+
     rewritten_indexes = []  # mutable [response, note, body] records
+    scope_links = {}  # kept index URL -> kept index URLs its recorded body names
+    scope_pages = {}  # kept index URL -> the rewrite's kept targets
     for response in kept:
         url = response["url"]
         body = response["body"]
         note = "kept unchanged"
         if is_index_url(url):
             body, dropped, retargeted, targets = rewrite_index(url, body, keep)
-            linked |= targets
+            scope_links[url] = {
+                resolved
+                for _, _, resolved in link_lines(url, response["body"])
+                if is_index_url(resolved) and resolved in output_urls
+            }
+            scope_pages[url] = targets
             parts = []
             if dropped:
                 parts.append(f"dropped {dropped} link line(s) to dropped pages")
@@ -273,13 +343,54 @@ def main():
                 note = "index rewritten: " + "; ".join(parts)
             rewritten_indexes.append([response, note, body])
 
-    # Pages no rewritten index links: merge their line from a recorded
+    # The reachable-index closure, the replay's scope queue: the root
+    # seeds; a reachable index's link lines and a kept page's describedby
+    # header queue further indexes; and only reachable indexes lend their
+    # links to `linked`. A kept index outside the closure is never loaded
+    # by the replay, so its targets must not count as linked.
+    describedby_of = {}
+    for response in kept:
+        value = (response.get("headers") or {}).get("link")
+        if value and is_page_url(response["url"]):
+            named = {
+                target
+                for target in describedby_targets(value, response["url"])
+                if is_index_url(target) and target in output_urls
+            }
+            if named:
+                describedby_of[response["url"]] = named
+    reachable = {root["url"]}
+    linked = set()
+    scopes = [root["url"]]
+    fresh_pages = []
+    while scopes or fresh_pages:
+        if scopes:
+            url = scopes.pop()
+            fresh = [target for target in scope_pages[url] if target not in linked]
+            linked.update(fresh)
+            fresh_pages.extend(fresh)
+            for target in scope_links[url]:
+                if target not in reachable:
+                    reachable.add(target)
+                    scopes.append(target)
+        else:
+            for target in describedby_of.get(fresh_pages.pop(), ()):
+                if target not in reachable:
+                    reachable.add(target)
+                    scopes.append(target)
+
+    # Pages nothing reachable links: merge their line from a recorded
     # index body, or synthesize one (titles never reach the corpus).
     unlinked = sorted(u for u in output_urls if is_page_url(u) and u not in linked)
     if unlinked:
         if not rewritten_indexes:
             fail(f"{manifest_path}: kept pages are unlinked but the manifest records no index to rewrite")
         host = rewritten_indexes[0]
+        if host[0]["url"] not in reachable:
+            fail(
+                f"{host[0]['url']}: kept pages are unlinked but this index is outside the "
+                "reachable closure; merged lines would never be replayed"
+            )
         if body_ends_inside_fence(host[2]):
             fail(f"{host[0]['url']}: the index body ends inside an unclosed code fence; cannot merge link lines")
         merged, synthesized, extra = 0, 0, []
@@ -296,9 +407,9 @@ def main():
         host[1] = _extend_note(
             host[1],
             f"merged {merged} link line(s) from dropped listings, synthesized {synthesized} "
-            f"(kept pages no kept index links)",
+            f"(kept pages no reachable index links)",
         )
-        print(f"trim: linked {len(unlinked)} kept page(s) no kept index listed", file=sys.stderr)
+        print(f"trim: linked {len(unlinked)} kept page(s) no reachable index listed", file=sys.stderr)
 
     # A rewritten index that would parse empty points at the export.
     for record in rewritten_indexes:

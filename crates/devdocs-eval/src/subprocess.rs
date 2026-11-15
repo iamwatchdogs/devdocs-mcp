@@ -133,8 +133,14 @@ fn path_binary(path_var: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
 /// (devdocs-model `Config::load`), so a `DEVDOCS_*` variable that leaks
 /// from the operator's environment would silently override the corpus
 /// config pin. The child needs no `DEVDOCS_*` variable, so all of them go.
-fn strip_devdocs_env(command: &mut Command, vars: impl Iterator<Item = (String, String)>) {
-    for (name, _) in vars.filter(|(name, _)| name.starts_with("DEVDOCS_")) {
+fn strip_devdocs_env(
+    command: &mut Command,
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    // OsString, not String: `env::vars()` panics on any non-UTF-8
+    // variable, so the scan itself must run on raw bytes (the same
+    // pattern the testkit `GIT_*` strip uses).
+    for (name, _) in vars.filter(|(name, _)| name.as_encoded_bytes().starts_with(b"DEVDOCS_")) {
         command.env_remove(name);
     }
 }
@@ -193,7 +199,7 @@ fn run_once_deadline(
         .arg(config)
         .arg("--json")
         .arg("search");
-    strip_devdocs_env(&mut command, std::env::vars());
+    strip_devdocs_env(&mut command, std::env::vars_os());
     command.env("XDG_CONFIG_HOME", config_home);
     let mut child = command
         .arg(&question.question)
@@ -472,18 +478,22 @@ mod tests {
     /// fake a pass).
     #[test]
     fn the_spawn_strips_the_devdocs_env_vars() {
+        use std::ffi::OsString;
         use std::process::Command as StdCommand;
 
         let mut command = StdCommand::new("unused");
         super::strip_devdocs_env(
             &mut command,
             [
-                ("DEVDOCS_SEARCH_RRF_K".to_owned(), "123".to_owned()),
                 (
-                    "DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT".to_owned(),
-                    "9000".to_owned(),
+                    OsString::from("DEVDOCS_SEARCH_RRF_K"),
+                    OsString::from("123"),
                 ),
-                ("PATH".to_owned(), "/bin".to_owned()),
+                (
+                    OsString::from("DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT"),
+                    OsString::from("9000"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
             ]
             .into_iter(),
         );
@@ -496,6 +506,36 @@ mod tests {
             removed,
             vec!["DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT", "DEVDOCS_SEARCH_RRF_K"]
         );
+    }
+
+    /// A non-UTF-8 variable — prefixed or not — must not panic the strip:
+    /// the prefix check runs on raw bytes and the removal keeps the name
+    /// verbatim (`env::vars()` would abort the whole run instead).
+    #[cfg(unix)]
+    #[test]
+    fn the_strip_survives_non_utf8_env_names() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        use std::process::Command as StdCommand;
+
+        let prefixed = OsString::from_vec(b"DEVDOCS_\xff\xfe".to_vec());
+        let unrelated = OsString::from_vec(b"OTHER_\xff".to_vec());
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                (prefixed.clone(), OsString::from("1")),
+                (unrelated.clone(), OsString::from("x")),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        assert_eq!(removed, vec![prefixed], "the unrelated var must survive");
     }
 
     #[cfg(unix)]

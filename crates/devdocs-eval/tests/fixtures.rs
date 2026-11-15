@@ -206,6 +206,36 @@ fn the_trim_tool_drops_retargets_and_rescues_an_empty_index() {
 }
 
 #[test]
+fn the_trim_tool_retargets_only_the_destination_of_a_parenthetical_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Guide (https://x.test/guide)](https://x.test/guide)\n"},
+            {"url": "https://x.test/guide.md", "status": 200, "headers": {}, "body": "# guide\n"}
+        ]"##,
+    )
+    .unwrap();
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(&keep, "https://x.test/llms.txt\nhttps://x.test/guide.md\n").unwrap();
+    let out = dir.path().join("trimmed.json");
+    run_trim(&manifest, &keep, &out, &dir.path().join("inventory.json"));
+
+    let trimmed: Vec<RecordedResponse> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let index = &trimmed[0].body;
+    assert!(
+        index.contains("- [Guide (https://x.test/guide)](https://x.test/guide.md)"),
+        "the title keeps its parentheses, only the destination is retargeted: {index}"
+    );
+    assert!(
+        !index.contains("Guide(https"),
+        "the title is never corrupted into the destination: {index}"
+    );
+}
+
+#[test]
 fn the_trim_tool_refuses_to_rescue_an_empty_index_that_ends_inside_a_fence() {
     let dir = tempfile::tempdir().unwrap();
     let keep = dir.path().join("keep.txt");

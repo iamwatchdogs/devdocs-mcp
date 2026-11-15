@@ -149,7 +149,9 @@ def describedby_targets(value, base_url):
 
 def parse_link_line(trimmed):
     """One link line: `- [title](url)` or `* [title](url)`, optional
-    `: description`. The destination ends at a depth-zero `)`; balanced
+    `: description`. Returns `(written, start, end)` — the written
+    destination and the `(written)` span it occupies within `trimmed` —
+    or None. The destination ends at a depth-zero `)`; balanced
     parentheses are legal URL characters. Mirrors the Rust parser."""
     rest = None
     for bullet in ("- [", "* ["):
@@ -170,7 +172,8 @@ def parse_link_line(trimmed):
         elif char == ")":
             if depth == 0:
                 if title.strip() and after[:index].strip():
-                    return after[:index]
+                    start = len(bullet) + close_bracket + 1
+                    return after[:index], start, start + index + 2
                 return None
             depth -= 1
     return None
@@ -207,9 +210,9 @@ def link_lines(url, body):
             if marker is not None:
                 open_fence = marker
                 continue
-            written = parse_link_line(trimmed)
-            if written is not None:
-                yield index, written, urljoin(url, written)
+            parsed = parse_link_line(trimmed)
+            if parsed is not None:
+                yield index, parsed[0], urljoin(url, parsed[0])
         elif fence_closes(open_fence, trimmed):
             open_fence = None
 
@@ -228,13 +231,16 @@ def body_ends_inside_fence(body):
     return open_fence is not None
 
 
-def retarget(line, written, url):
-    """Rewrites one link line's destination to `url`, keeping the title
-    and description."""
-    head, sep, tail = line.partition(f"({written})")
-    if not sep:
+def retarget(line, url):
+    """Rewrites one link line's destination to `url`, replacing the whole
+    parsed `(destination)` span so a title holding parentheses of its own
+    stays intact."""
+    strip = len(line) - len(line.lstrip())
+    parsed = parse_link_line(line.strip())
+    if parsed is None:
         fail(f"internal: cannot retarget link line: {line!r}")
-    return f"{head}({url}){tail}"
+    _, dest_start, dest_end = parsed
+    return line[:strip + dest_start] + f"({url})" + line[strip + dest_end:]
 
 
 def rewrite_index(url, body, keep):
@@ -242,14 +248,12 @@ def rewrite_index(url, body, keep):
     dropped count, the retargeted count, and the linked kept targets."""
     drop = set()
     retargets = {}
-    written_of = {}
     linked = set()
-    for index, written, resolved in link_lines(url, body):
+    for index, _, resolved in link_lines(url, body):
         if resolved in keep:
             linked.add(resolved)
         elif resolved + ".md" in keep:
             retargets[index] = resolved + ".md"
-            written_of[index] = written
             linked.add(resolved + ".md")
         else:
             drop.add(index)
@@ -259,7 +263,7 @@ def rewrite_index(url, body, keep):
     for index, line in enumerate(body.splitlines()):
         if index in drop:
             continue
-        out_lines.append(retarget(line, written_of[index], retargets[index]) if index in retargets else line)
+        out_lines.append(retarget(line, retargets[index]) if index in retargets else line)
     new_body = "\n".join(out_lines)
     if body.endswith("\n") or out_lines:
         new_body += "\n"
@@ -502,11 +506,9 @@ def find_line_for(page, index_bodies):
     """The recorded link line naming `page` (directly or through its HTML
     twin), taken from any index body, retargeted at the kept URL."""
     for url, body in index_bodies:
-        for _, written, resolved in link_lines(url, body):
+        for index, _, resolved in link_lines(url, body):
             if resolved == page or resolved + ".md" == page:
-                for line in body.splitlines():
-                    if parse_link_line(line.strip()) == written:
-                        return retarget(line, written, page)
+                return retarget(body.splitlines()[index], page)
     return None
 
 

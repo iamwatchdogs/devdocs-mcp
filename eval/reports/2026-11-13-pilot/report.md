@@ -150,7 +150,11 @@ gate table instead of a green exit.
   multi_library record's `expect_refs` trimmed to the deciding ref), so the
   suite hash moved from
   `87427e9e151e4bd2180137dc5a18ce338830154a2acc16f62e51033958ab7a5c` (the
-  hash the recorded run used) to the re-pinned hash above. A fresh offline
+  hash the recorded run used) to
+  `44916716eaf78e1b07764905faf379a0ba7c5b530ea2e31d505c7743cce32759`, the
+  re-pinned hash when this note was written; the header now pins
+  `8307e67d75d148bb9d1b53f3bf100dfe96b2654478d3bab923a5781c8422a0cc` after
+  the edits noted below. A fresh offline
   run reproduced the identical gate table. A second post-run edit the same
   day relabeled `nextjs-poisoned-tsconfig-001` from `poisoned` to
   `exact_api` (the harness submits only the question, so the label

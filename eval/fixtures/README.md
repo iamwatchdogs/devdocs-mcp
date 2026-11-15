@@ -30,6 +30,32 @@ that day: the site served its then-current docs under the 16.2.9 corpus
 label, because llms.txt serves latest only and has no versioned
 endpoint. Real-network re-recording stays manual and labeled.
 
+## serde git fixture
+
+The git fixture is materialized by hand, not recorded: `--record-to`
+records llms.txt HTTP responses only and refuses git sources
+(docs/implementation/07 §Git adapter, fixture replay).
+
+To materialize `serde/<version>/` (manual, networked — like every
+real-network rebuild):
+
+1. Shallow-clone https://github.com/serde-rs/serde and check out the
+   pinned commit: the 40-hex SHA recorded in `serde/<version>/commit-sha`
+   (currently `7fc3b4c30c94f73a96ebd1553f2b090d928fc3a8`).
+2. Copy the files the docs walk keeps into `serde/<version>/` at their
+   tree-relative paths. The walk applies the ingest extension allowlist
+   (`md`, `mdx`, `rst`, `adoc`, `txt`, `json`, `yaml`, `yml`; config
+   `ingest.git_extensions`) after the tree's own `.gitignore`, with
+   hidden entries skipped — the serde recording keeps `README.md` and
+   `serde_core/README.md`.
+3. Write the `git rev-parse HEAD` output of the checked-out clone into
+   `serde/<version>/commit-sha`.
+
+Replay validates the recorded SHA shape (40 hex) and, when the requested
+pin is a commit SHA, compares the pin against the recorded SHA and fails
+on a mismatch. The `commit-sha` file carries no allowlisted extension, so
+the walk never ingests it.
+
 ## Trim procedure
 
 The trim keeps only the keep-listed responses and rewrites each kept

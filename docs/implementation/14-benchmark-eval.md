@@ -63,7 +63,11 @@ tool. `eval/fixtures/README.md` documents the layout and the trim rules.
 The corpus comes from a real-network recording, and that step stays
 manual: run the add against the live source with `--record-to`, write the
 keep list (the index URLs plus every page a golden question pins), and
-trim with `eval/fixtures/trim.py`. The trim keeps only keep-listed
+trim with `eval/fixtures/trim.py`. The serde git fixture is materialized
+separately — `--record-to` records llms.txt HTTP sources only and refuses
+git ones (docs/implementation/07 §Git adapter, fixture replay); its
+materialization steps live in `eval/fixtures/README.md` (§serde git
+fixture). The trim keeps only keep-listed
 responses and rewrites each kept llms.txt index body so it links only
 kept pages — the replay then fetches only listed pages, and every link
 resolves to a recorded response. The tool verifies both directions

@@ -1,16 +1,19 @@
 // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
-
 use crate::suite::{Grader, Question, TaskType};
 #[cfg(unix)]
 use devdocs_testkit::sh_quote;
 
 mod env;
 mod locate;
+#[cfg(unix)]
 mod recorder;
 mod spawn;
+
+// The stub helpers below are the only PathBuf users, and all of them are unix-only.
+#[cfg(unix)]
+use std::path::PathBuf;
 
 /// A one-question stand-in for the suite loader.
 fn question() -> Question {

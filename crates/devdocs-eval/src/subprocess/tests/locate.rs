@@ -1,10 +1,11 @@
 // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::subprocess::{
-    env_binary, from_target_dir_in, locate_devdocs, missing_binary_error, path_binary,
-};
+#[cfg(unix)]
+use crate::subprocess::{env_binary, from_target_dir_in, path_binary};
+use crate::subprocess::{locate_devdocs, missing_binary_error};
 
+#[cfg(unix)]
 use super::stub;
 
 #[test]

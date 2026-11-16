@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use crate::subprocess::run_once_deadline;
 
-use super::{question, stub};
+use super::question;
+#[cfg(unix)]
+use super::stub;
 
 #[test]
 fn a_spawn_failure_is_a_subprocess_error() {

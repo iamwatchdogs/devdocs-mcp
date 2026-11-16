@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-17T11:05:00Z
+timestamp: 2026-11-17T11:20:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -67,7 +67,7 @@ impl Store {
 ```
 
 2. `publish_generation` implements the atomic swap from [07](07-ingest-pipeline.md) inside one transaction.
-3. `search_fts` binds the MATCH expression. The builder is a separate pure function owned by this milestone, so proptest can hammer it. [08](08-retrieval-interfaces.md) §Query pipeline fixes the construction.
+3. `search_fts` binds the MATCH expression. The builder is a separate pure function owned by this milestone, so proptest can hammer it. [08](08-retrieval-interfaces.md) §Rungs fixes the construction.
 
 Tests: migration up/down on a temp file. FTS5 bm25-weight and snippet behavior. Publish-then-search round trip. Concurrent open with WAL.
 

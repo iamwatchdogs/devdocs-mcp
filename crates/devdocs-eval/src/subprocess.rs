@@ -637,7 +637,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_recorder_stub_survives_paths_with_spaces() {
-        let spaced_root = std::env::temp_dir().join("eval test dir");
+        let base = tempfile::tempdir().unwrap();
+        let spaced_root = base.path().join("eval test dir");
         std::fs::create_dir_all(&spaced_root).unwrap();
         let dir = tempfile::tempdir_in(&spaced_root).unwrap();
         let _args_file = argv_recorder(dir.path(), "devdocs");
@@ -662,7 +663,6 @@ mod tests {
         let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
         assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
         drop(dir);
-        let _ = std::fs::remove_dir(&spaced_root);
     }
 
     /// The recorder stub's redirections survive a single quote in the
@@ -672,7 +672,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_recorder_stub_survives_paths_with_quotes() {
-        let quoted_root = std::env::temp_dir().join("eval'test dir");
+        let base = tempfile::tempdir().unwrap();
+        let quoted_root = base.path().join("eval'test dir");
         std::fs::create_dir_all(&quoted_root).unwrap();
         let dir = tempfile::tempdir_in(&quoted_root).unwrap();
         let _args_file = argv_recorder(dir.path(), "devdocs");
@@ -697,7 +698,6 @@ mod tests {
         let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
         assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
         drop(dir);
-        let _ = std::fs::remove_dir(&quoted_root);
     }
 
     /// Every spawn carries `--config <path>`: the operator `--config`, or

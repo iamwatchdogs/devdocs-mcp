@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-17T00:00:00Z
+timestamp: 2026-11-17T12:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -200,7 +200,7 @@ Order matters. Each stage is a pure function over `RawDocument` streams, so snap
 4. **Segmentation.** Algorithm below.
 5. **Contextual headers.** Prepend the breadcrumb and version to every chunk body: `[{library} {version} › {section path}]` (research: architecture.md §L2. Measured effect −49% retrieval failures, −67% with reranking).
 
-   Implemented shape (M11a, the redaction pass): at chunk assembly, before the token count and the content hash, every chunk body runs the secret redaction pass (`devdocs_model::redaction::redact`). Markers replace secret-shaped spans. The stored hash covers the redacted body, so the stored hash and text never diverge and the store's drift check stays sound. Redaction is idempotent, so it never fights the boundary spans the segmentation already fixed. The marker count lands in the ingest events as `redactions`.
+   Implemented shape (M11a, the redaction pass): next to the ANSI strip, still before the dedup hash and the chrome counts, every page body runs the secret redaction pass (`devdocs_model::redaction::redact`) — page-wide, pre-segmentation. Markers replace secret-shaped spans. Because the pass runs before segmentation, everything downstream computes on redacted text by construction: the dedup hash, the chrome counts, heading titles and section paths, the contextual headers, fence bodies, the symbol extraction, and the stored token counts. A secret that would straddle a packed chunk boundary cannot split in half, because the markers replaced it before the boundaries were fixed. The stored hash covers the redacted body, so the stored hash and text never diverge and the store's drift check stays sound. The marker count lands in the ingest events as `redactions`.
 6. **Symbol extraction.** Tree-sitter pass over fenced code blocks (per grammar) plus structured sources (OpenAPI operations, front-matter routes). Populates `chunks.symbol` and `symbols`.
 
    Implemented shape (M5, fences only):
@@ -239,7 +239,9 @@ Scope: flag, quarantine, and report. Do not attempt language-model detection in 
 
 Implemented shape (M11a, filter v0): `devdocs_ingest::filter::run` scores one chunk's text. A small CommonMark fence scanner (up to three spaces of indent, open and close on runs of three or more backticks or tildes, a fence closes on a marker-only line with at least the opening run of the same character, an unterminated fence runs to the end of the text) computes the text outside fenced code blocks. The quarantine rules and the review rule match that out-of-code text only — fenced content is data a tutorial quotes. The caution shapes match each fence's info string and first body line. Per-hit warnings log the rule name and the first 16 hex characters of the chunk's content hash, never the matched text (.agents/instructions/observability). The counters land in the ingest events as `quarantined_chunks`, `review_flagged_chunks`, `code_caution_blocks`, and `redactions`, and flow into the `--json` add envelope.
 
-Quarantined chunks are visible with `devdocs db quarantine list` and can be released by an operator flag. The tool never serves a quarantined chunk. A review-flagged chunk still serves, but the fused score carries a fixed confidence penalty of × 0.5 at serving time — the serving-side factor lands with the next step; the flag stores now.
+The oversized-comment shape runs at the page level: segmentation splits any standalone block over the 400-token target, so a >2k HTML comment almost never fits one chunk and the per-chunk comment rule rarely fires. The pipeline scans the page text once, pre-segmentation (`devdocs_ingest::filter::oversized_comment_spans`), and every chunk whose byte range intersects an oversized comment span carries the `hidden_text` quarantine rule, on top of the per-chunk rule the chunk-level pass keeps.
+
+Quarantined chunks are visible with `devdocs db quarantine list` and can be released by an operator flag. The tool never serves a quarantined chunk. A review-flagged chunk still serves, but the fused score carries a fixed confidence penalty of × 0.5 at serving time.
 
 ## Atomic publish
 

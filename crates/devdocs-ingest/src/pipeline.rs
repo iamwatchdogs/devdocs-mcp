@@ -50,6 +50,13 @@ fn store_symbols(symbols: &[ExtractedSymbol]) -> Vec<devdocs_store::Symbol> {
     symbols.iter().map(devdocs_store::Symbol::from).collect()
 }
 
+/// The head of the redaction marker the page-level redaction pass writes
+/// (docs/implementation/07 §Normalization pipeline, the redaction pass).
+/// The event counter reads the marker-count difference a page's redaction
+/// added; no detection pattern matches inside a marker, so pre-existing
+/// literal `[REDACTED:` text cancels out of the difference.
+const REDACTED_MARKER: &str = "[REDACTED:";
+
 /// Builds a chunk's symbol rows plus its primary symbol: the declared
 /// symbol whose name the contextual header names, else the first declared
 /// one (docs/implementation/07 §Normalization pipeline, the symbol pass).
@@ -594,25 +601,37 @@ impl<'a> IngestJob<'a> {
         origin_url: &str,
     ) -> Result<RunState, IngestError> {
         // Dedup first, so a duplicate page cannot skew the chrome
-        // frequency counts; then the chrome strip. The ANSI pre-stage runs
-        // before both: the dedup hash, the chrome counts, and every token
-        // count downstream compute on clean text
-        // (docs/implementation/07 §Normalization pipeline, the ANSI
-        // pre-stage).
-        let (dedup_dropped, chrome_report, docs) = tokio::task::spawn_blocking(move || {
-            let mut docs = docs;
-            for doc in &mut docs {
-                doc.body = crate::text::strip_ansi(&doc.body);
-            }
-            let dropped = dedup_pages(&mut docs);
-            let report = crate::chrome::strip_chrome(&mut docs);
-            (dropped, report, docs)
-        })
-        .await
-        .map_err(|join| IngestError::Join(join.to_string()))?;
+        // frequency counts; then the chrome strip. The ANSI pre-stage and
+        // the redaction pass run before both, in that order: the dedup
+        // hash, the chrome counts, and every token count, heading title,
+        // fence body, and symbol extraction downstream compute on clean,
+        // redacted text (docs/implementation/07 §Normalization pipeline,
+        // the ANSI pre-stage and the redaction pass).
+        let (dedup_dropped, chrome_report, docs, redactions) =
+            tokio::task::spawn_blocking(move || {
+                let mut docs = docs;
+                for doc in &mut docs {
+                    doc.body = crate::text::strip_ansi(&doc.body);
+                }
+                let mut redactions = 0usize;
+                for doc in &mut docs {
+                    let redacted = devdocs_model::redaction::redact(&doc.body);
+                    redactions += redacted
+                        .matches(REDACTED_MARKER)
+                        .count()
+                        .saturating_sub(doc.body.matches(REDACTED_MARKER).count());
+                    doc.body = redacted;
+                }
+                let dropped = dedup_pages(&mut docs);
+                let report = crate::chrome::strip_chrome(&mut docs);
+                (dropped, report, docs, redactions)
+            })
+            .await
+            .map_err(|join| IngestError::Join(join.to_string()))?;
         run.events.dedup_dropped_pages = dedup_dropped;
         run.events.chrome_pattern_drops = chrome_report.pattern_drops;
         run.events.chrome_drops = chrome_report.frequency_drops;
+        run.events.redactions = redactions;
 
         // Segment every stripped document (docs/implementation/07
         // §Segmentation algorithm), one spawn_blocking per page.
@@ -642,12 +661,25 @@ impl<'a> IngestJob<'a> {
             run.events.skipped_blocks += stats.skipped_blocks;
             run.events.unknown_fence_languages += stats.unknown_fence_languages;
             run.events.unsupported_fence_languages += stats.unsupported_fence_languages;
-            run.events.redactions += stats.redactions;
+            // The page-level oversized-comment scan
+            // (docs/implementation/07 §Injection filter): segmentation
+            // splits a standalone block over the token target, so a >2k
+            // HTML comment almost never fits one chunk and the per-chunk
+            // comment rule rarely fires. The page text is scanned once and
+            // every chunk whose byte range intersects an oversized comment
+            // span carries the `hidden_text` quarantine rule.
+            let hidden_spans = crate::filter::oversized_comment_spans(&doc.body);
             for chunk in chunks {
                 let (symbols, symbol) = chunk_symbols(&chunk.header, &chunk.symbols);
                 // The injection filter scores the chunk's text and fills
                 // the flags (docs/implementation/07 §Injection filter).
-                let report = crate::filter::run(&chunk.text);
+                let mut report = crate::filter::run(&chunk.text);
+                if hidden_spans.iter().any(|span| {
+                    chunk.page_range.start < span.end && span.start < chunk.page_range.end
+                }) && !report.quarantine_rules.contains(&"hidden_text")
+                {
+                    report.quarantine_rules.push("hidden_text");
+                }
                 let quarantined = !report.quarantine_rules.is_empty();
                 let review_flagged = !report.review_rules.is_empty();
                 run.events.quarantined_chunks += usize::from(quarantined);

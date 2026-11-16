@@ -73,6 +73,43 @@ static ACTION_REQUEST: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// (docs/implementation/07 §Injection filter).
 static HIDDEN_COMMENT: LazyLock<Regex> = LazyLock::new(|| compile(r"(?s)<!--[\s\S]{2001,}?-->"));
 
+/// The minimum interior length of an oversized HTML comment: more than
+/// 2000 characters between the markers, the same threshold the
+/// [`HIDDEN_COMMENT`] regex carries.
+const HIDDEN_COMMENT_MIN_INTERIOR: usize = 2000;
+
+/// The byte spans of the oversized HTML comments in `text`, each covering
+/// the whole comment from `<!--` through `-->` (docs/implementation/07
+/// §Injection filter). Segmentation splits a standalone block over the
+/// token target, so a >2k comment almost never fits one chunk and the
+/// per-chunk oversized-comment rule rarely fires; the pipeline scans the
+/// page once with this function, pre-segmentation, and flags every chunk
+/// whose byte range intersects a span. Nested or overlapping comments take
+/// the outermost `-->`, one span each.
+#[must_use]
+pub fn oversized_comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(start) = text[cursor..].find("<!--") {
+        let open = cursor + start;
+        let body_start = open + 4;
+        let Some(close_at) = text[body_start..].find("-->") else {
+            // An unterminated comment hides everything to the end of the
+            // page; its tail still counts as oversized when long enough.
+            if text.len() - body_start > HIDDEN_COMMENT_MIN_INTERIOR {
+                spans.push(open..text.len());
+            }
+            break;
+        };
+        let end = body_start + close_at + 3;
+        if end - body_start > HIDDEN_COMMENT_MIN_INTERIOR {
+            spans.push(open..end);
+        }
+        cursor = end;
+    }
+    spans
+}
+
 /// Quarantine rule, shape 2: zero-width characters above a density
 /// threshold. The set spans the zero-width and bidi-control blocks
 /// (`U+200B`–`U+200F`), the word joiner (`U+2060`), and the BOM

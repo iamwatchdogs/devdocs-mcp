@@ -6,12 +6,11 @@
 //! block over the target but within twice the target splits with the
 //! configured overlap; a block over twice the target becomes its own chunk,
 //! never truncated. Code fences never split. Chunk bodies are byte-exact
-//! slices of the page body — the ingest redaction pass, applied at chunk
-//! assembly before the hash, is the one exception
-//! (docs/implementation/07 §Normalization pipeline, the redaction pass) —
-//! so the exclusive (non-overlap) spans of a document tile it; the
-//! contextual header is prepended at chunk assembly and excluded from the
-//! content hash.
+//! slices of the page body, which the pipeline has already ANSI-stripped
+//! and secret-redacted page-wide
+//! (docs/implementation/07 §Normalization pipeline) — so the exclusive
+//! (non-overlap) spans of a document tile it; the contextual header is
+//! prepended at chunk assembly and excluded from the content hash.
 
 use std::ops::Range;
 
@@ -21,10 +20,6 @@ use text_splitter::{ChunkConfig, ChunkSizer, MarkdownSplitter};
 
 use crate::error::IngestError;
 use crate::symbols::{ExtractedSymbol, extract, grammar_for};
-
-/// The head of the redaction marker the ingest redaction pass writes
-/// (docs/implementation/07 §Normalization pipeline, the redaction pass).
-const REDACTED_MARKER: &str = "[REDACTED:";
 
 /// The segmentation target (docs/implementation/07: target 400 tokens,
 /// overlap 80 tokens).
@@ -108,10 +103,6 @@ pub struct SegmentStats {
     /// whose grammar is not in this build (a disabled `grammar-*` feature,
     /// or the TypeScript aliases).
     pub unsupported_fence_languages: usize,
-    /// Secret-shaped matches the ingest redaction pass replaced in chunk
-    /// bodies (docs/implementation/07 §Normalization pipeline, the
-    /// redaction pass).
-    pub redactions: usize,
 }
 
 /// The fence language of an info string: the first token, lower-cased. A
@@ -326,20 +317,12 @@ impl Segmenter {
         for section in &sections {
             for candidate in self.pack_section(section, &mut stats) {
                 let span = candidate.span;
-                let body = &page_body[span.start..span.end];
-                // The ingest redaction pass runs pre-hash, on the body the
-                // hash and the stored text are built from, so the stored
-                // hash and text never diverge
-                // (docs/implementation/07 §Normalization pipeline, the
-                // redaction pass). The markers are stable, so re-redacting
-                // is a no-op and the boundary spans above stay untouched —
-                // redaction begins after the segmentation fixed them.
-                let redacted = devdocs_model::redaction::redact(body);
-                stats.redactions += redacted
-                    .matches(REDACTED_MARKER)
-                    .count()
-                    .saturating_sub(body.matches(REDACTED_MARKER).count());
-                let body = redacted;
+                // The page body arrived ANSI-stripped and secret-redacted
+                // page-wide (docs/implementation/07 §Normalization
+                // pipeline), so the body, the hash, the header, and the
+                // token count all compute on redacted text and the chunk
+                // stays a byte-exact slice of the page.
+                let body = page_body[span.start..span.end].to_owned();
                 let header = contextual_header(library, version, &section.breadcrumb);
                 let text = format!("{header}\n\n{body}");
                 let token_count = u32::try_from(self.sizer.size(&text)).unwrap_or(u32::MAX);

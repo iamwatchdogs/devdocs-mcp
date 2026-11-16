@@ -1370,3 +1370,228 @@ async fn ingest_quarantines_redacts_and_annotates_per_the_filter() {
         );
     }
 }
+
+/// The secret-carrying page: a heading that carries a `ghp_` token, a
+/// rust fence whose function name is a `ghp_` token (a secret-shaped
+/// identifier the symbol pass would extract), and a long paragraph with a
+/// 40-character AWS-shaped secret long enough to split across chunk
+/// boundaries (docs/implementation/07 §Normalization pipeline, the
+/// redaction pass).
+const SECRET_PAGE: &str = concat!(
+    "# Keys ghp_0123456789abcdefghijklmnopqrstuvwxyz\n\n",
+    "## Setup\n\n",
+    "```rust\nfn ghp_0123456789abcdefghijklmnopqrstuvwxyz() {}\n```\n\n",
+    "## Long\n\n"
+);
+
+/// The filler paragraph: enough words to split at the default 400-token
+/// target, with the AWS credential embedded mid-paragraph so a chunk
+/// boundary lands near it.
+fn secret_paragraph() -> String {
+    const AWS_SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    let mut words = Vec::with_capacity(600);
+    for index in 0..600 {
+        if index == 300 {
+            words.push(format!("aws_secret_access_key = {AWS_SECRET}"));
+        } else {
+            words.push(format!("filler{index}"));
+        }
+    }
+    words.join(" ")
+}
+
+/// The redaction pass runs page-wide, pre-segmentation: the stored
+/// heading/section path, the extracted symbols, and every stored chunk
+/// text carry no raw token shape — including a secret long enough to
+/// straddle a packed chunk boundary, which is redacted before any
+/// boundary is fixed (docs/implementation/07 §Normalization pipeline, the
+/// redaction pass).
+#[tokio::test]
+async fn ingest_redacts_page_wide_before_segmentation() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = concat!(
+        "# Acme\n\n> Acme widgets documentation.\n\n",
+        "## Guides\n\n",
+        "- [Secrets](https://docs.acme.test/secrets.md): secret page\n"
+    );
+    let page = format!("{SECRET_PAGE}{}\n", secret_paragraph());
+    let responses = serde_json::json!([
+        { "url": "https://docs.acme.test/llms.txt", "status": 200, "headers": {}, "body": index },
+        { "url": "https://docs.acme.test/secrets.md", "status": 200, "headers": {}, "body": page },
+    ]);
+    let fixture = write_fixture_set(dir.path(), &responses);
+    let config = config();
+    let guard = FetchGuard::from_fetch_config(&config.fetch);
+
+    let db = tempfile::tempdir().unwrap();
+    let db_path = db.path().join("docs.db");
+    let store = Arc::new(devdocs_testkit::open_migrated(&db_path).unwrap());
+
+    let index_url = Url::parse("https://docs.acme.test/llms.txt").unwrap();
+    let job = IngestJob::new(&config, &guard, Some(&fixture));
+    let outcome = job
+        .run(Arc::clone(&store), &index_url, "acme", "1.0")
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.events.redactions >= 3,
+        "the tokens redact: {outcome:?}"
+    );
+
+    let chunks = devdocs_testkit::read_chunks(&db_path).unwrap();
+    assert!(chunks.len() > 1, "the fixture page splits into chunks");
+    for chunk in &chunks {
+        // The stored text — body and contextual header alike — carries no
+        // raw token shape, heading-derived section paths included.
+        assert!(
+            !chunk.text.contains("ghp_"),
+            "chunk {} carries a raw ghp_ shape: {:?}",
+            chunk.ordinal,
+            chunk.text
+        );
+        assert!(
+            !chunk.section_path.contains("ghp_"),
+            "chunk {} carries the raw token in its section path: {:?}",
+            chunk.ordinal,
+            chunk.section_path
+        );
+        // The boundary-straddling AWS secret redacted in every chunk.
+        assert!(
+            !chunk.text.contains("wJalrXUtnFEMI"),
+            "chunk {} carries the raw AWS secret: {:?}",
+            chunk.ordinal,
+            chunk.text
+        );
+        assert!(
+            chunk.text.contains("[REDACTED:"),
+            "chunk {} carries at least one redaction marker",
+            chunk.ordinal
+        );
+    }
+
+    // The symbol pass ran on redacted fence literals: the secret-shaped
+    // identifier never became a symbols row.
+    let hits = store
+        .search_symbols(
+            "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+            devdocs_store::SymbolMatch::Exact,
+            devdocs_store::SymbolScope::All,
+            10,
+            0,
+        )
+        .unwrap();
+    assert!(hits.is_empty(), "the secret-shaped symbol must not extract");
+}
+
+/// The oversized-comment page: a 2.5k-character HTML comment embedded
+/// inline in one long paragraph, sized between the token target and twice
+/// the target so the paragraph splits and the comment bytes straddle the
+/// chunk boundary.
+fn comment_page() -> String {
+    let interior = std::iter::repeat_n("hiddenmarker payload ", 100).collect::<String>();
+    let head: String = (0..15).fold(String::new(), |acc, i| acc + &format!("head{i} "));
+    let tail: String = (0..15).fold(String::new(), |acc, i| acc + &format!("tail{i} "));
+    format!(
+        "# Commented\n\n{head}<!-- {interior} --> {tail}\n\n## After\n\nClean prose follows the comment.\n"
+    )
+}
+
+/// The >2k HTML-comment shape is evaluated at the page level,
+/// pre-segmentation: chunks whose byte range intersects an oversized
+/// comment span quarantine with `hidden_text`, even though no chunk holds
+/// the whole comment, and a comment-free page stays untouched
+/// (docs/implementation/07 §Injection filter).
+#[tokio::test]
+async fn ingest_quarantines_chunks_intersecting_an_oversized_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = concat!(
+        "# Acme\n\n> Acme widgets documentation.\n\n",
+        "## Guides\n\n",
+        "- [Commented](https://docs.acme.test/commented.md): comment page\n",
+        "- [Clean](https://docs.acme.test/clean.md): clean page\n"
+    );
+    let clean =
+        "# Clean\n\nPlain prose with no comment anywhere in it.\n\n## More\n\nMore plain prose.\n";
+    let responses = serde_json::json!([
+        { "url": "https://docs.acme.test/llms.txt", "status": 200, "headers": {}, "body": index },
+        { "url": "https://docs.acme.test/commented.md", "status": 200, "headers": {}, "body": comment_page() },
+        { "url": "https://docs.acme.test/clean.md", "status": 200, "headers": {}, "body": clean },
+    ]);
+    let fixture = write_fixture_set(dir.path(), &responses);
+    let config = config();
+    let guard = FetchGuard::from_fetch_config(&config.fetch);
+
+    let db = tempfile::tempdir().unwrap();
+    let db_path = db.path().join("docs.db");
+    let store = Arc::new(devdocs_testkit::open_migrated(&db_path).unwrap());
+
+    let index_url = Url::parse("https://docs.acme.test/llms.txt").unwrap();
+    let job = IngestJob::new(&config, &guard, Some(&fixture));
+    let outcome = job
+        .run(Arc::clone(&store), &index_url, "acme", "1.0")
+        .await
+        .unwrap();
+    assert!(
+        outcome.events.quarantined_chunks > 0,
+        "the comment chunks quarantine"
+    );
+
+    // One source, two pages: the comment page's sections are `Commented`
+    // and `After`, the clean page's are `Clean` and `More`.
+    let chunks = devdocs_testkit::read_chunks(&db_path).unwrap();
+    let on_comment_page =
+        |section: &str| section.contains("Commented") || section.contains("After");
+    let mut comment_chunks = 0usize;
+    let mut intersecting = 0usize;
+    for chunk in &chunks {
+        let on_comment = on_comment_page(&chunk.section_path);
+        let holds_comment = chunk.text.contains("hiddenmarker");
+        if on_comment && holds_comment {
+            // The chunk intersects the oversized comment span: it
+            // quarantines with the `hidden_text` rule even though the
+            // whole comment never fits one chunk.
+            intersecting += 1;
+            assert!(
+                chunk.quarantined,
+                "chunk {} intersects the comment and must quarantine: {:?}",
+                chunk.ordinal, chunk.text
+            );
+            assert!(
+                chunk
+                    .rule_names
+                    .as_deref()
+                    .is_some_and(|rules| rules.split(',').any(|rule| rule == "hidden_text")),
+                "chunk {} must carry the hidden_text rule, got {:?}",
+                chunk.ordinal,
+                chunk.rule_names
+            );
+        }
+        if on_comment && !holds_comment {
+            assert!(
+                !chunk.quarantined,
+                "chunk {} carries no comment content and must not quarantine",
+                chunk.ordinal
+            );
+        }
+        if !on_comment {
+            assert!(
+                !chunk.quarantined && chunk.rule_names.is_none(),
+                "the comment-free page must stay untouched, got chunk {} {:?}",
+                chunk.ordinal,
+                chunk.rule_names
+            );
+        }
+        if holds_comment {
+            comment_chunks += 1;
+        }
+    }
+    assert!(
+        comment_chunks >= 2,
+        "the oversized comment splits across chunks, got {comment_chunks}"
+    );
+    assert!(
+        intersecting >= 1,
+        "at least one chunk intersects the comment span"
+    );
+}

@@ -294,11 +294,9 @@ def find_export(index_url, output_urls):
     return export if export in output_urls else None
 
 
-def main():
-    if len(sys.argv) != 5:
-        fail(USAGE)
-    manifest_path, keep_path, out_manifest, out_inventory = sys.argv[1:5]
-    keep = read_keep_set(keep_path)
+def load_recorded_manifest(manifest_path):
+    """Loads the recorded manifest and fails unless it holds a non-empty
+    array of url/body responses; returns it and the seen URL set."""
     try:
         with open(manifest_path, encoding="utf-8") as handle:
             recorded = json.load(handle)
@@ -314,7 +312,12 @@ def main():
         if response["url"] in seen:
             fail(f"{manifest_path}: duplicate recorded URL {response['url']}")
         seen.add(response["url"])
+    return recorded, seen
 
+
+def select_kept_responses(recorded, keep, manifest_path, seen):
+    """Selects the kept responses, notes keep-list URLs missing from the
+    manifest, and fails unless the recording's root index is kept."""
     kept = [response for response in recorded if response["url"] in keep]
     missing = sorted(keep - seen)
     if missing:
@@ -346,7 +349,12 @@ def main():
             f"{manifest_path}: the first recorded response {root['url']} is not a kept "
             "llms.txt index; the replay has no scope to seed"
         )
+    return kept, output_urls, index_bodies, root
 
+
+def rewrite_kept_indexes(keep, kept, output_urls):
+    """Applies the drop/retarget rewrite to every kept index and collects
+    its scope links and kept targets."""
     rewritten_indexes = []  # mutable [response, note, body] records
     scope_links = {}  # kept index URL -> kept index URLs its recorded body names
     scope_pages = {}  # kept index URL -> the rewrite's kept targets
@@ -370,7 +378,12 @@ def main():
             if parts:
                 note = "index rewritten: " + "; ".join(parts)
             rewritten_indexes.append([response, note, body])
+    return rewritten_indexes, scope_links, scope_pages
 
+
+def collect_describedby_targets(kept, output_urls):
+    """Maps each kept page's describedby header to its kept index targets
+    and fails when it names a dropped index."""
     # The reachable-index closure, the replay's scope queue: the root
     # seeds; a reachable index's link lines and a kept page's describedby
     # header queue further indexes; and only reachable indexes lend their
@@ -398,9 +411,15 @@ def main():
                 )
             if named:
                 describedby_of[response["url"]] = named
-    reachable = {root["url"]}
+    return describedby_of
+
+
+def reachable_linked_pages(root_url, scope_links, scope_pages, describedby_of):
+    """Walks the scope closure from the root and returns the reachable
+    indexes and the linked kept pages."""
+    reachable = {root_url}
     linked = set()
-    scopes = [root["url"]]
+    scopes = [root_url]
     fresh_pages = []
     while scopes or fresh_pages:
         if scopes:
@@ -425,9 +444,38 @@ def main():
                 if target not in reachable:
                     reachable.add(target)
                     scopes.append(target)
+    return reachable, linked
 
-    # Pages nothing reachable links: merge their line from a recorded
-    # index body, or synthesize one (titles never reach the corpus).
+
+def select_covering_indexes(unlinked, candidates, reachable):
+    """Maps each unlinked page to the record of its deepest covering
+    reachable index and the pages that the index rescues."""
+    by_host = {}  # host index URL -> (record, rescued pages)
+    for page in unlinked:
+        covering = [
+            (url, record)
+            for url, record in candidates.items()
+            if url in reachable and directory_covers(url, page)
+        ]
+        if not covering:
+            fail(
+                f"no reachable index covers {page}; replay ingests a page only under the "
+                "scope whose directory prefixes it — keep an index covering the page or "
+                "drop it"
+            )
+        # Deepest covering reachable index wins: replay's
+        # most_specific_scope skips a page listed by a shallower
+        # scope once a deeper one owns the path.
+        url, record = max(covering, key=lambda item: len(index_directory(item[0])))
+        if url not in by_host:
+            by_host[url] = (record, [])
+        by_host[url][1].append(page)
+    return by_host
+
+
+def merge_unlinked_pages(kept, rewritten_indexes, output_urls, reachable, linked, index_bodies, manifest_path):
+    """Merges a listing line for every kept page nothing reachable links
+    into its deepest covering reachable index, or synthesizes one."""
     unlinked = sorted(u for u in output_urls if is_page_url(u) and u not in linked)
     if unlinked:
         # Every kept index can host a rescue: its record already sits in
@@ -439,26 +487,7 @@ def main():
                 candidates[url] = next(r for r in rewritten_indexes if r[0] is response)
         if not candidates:
             fail(f"{manifest_path}: kept pages are unlinked but the manifest records no index to rewrite")
-        by_host = {}  # host index URL -> (record, rescued pages)
-        for page in unlinked:
-            covering = [
-                (url, record)
-                for url, record in candidates.items()
-                if url in reachable and directory_covers(url, page)
-            ]
-            if not covering:
-                fail(
-                    f"no reachable index covers {page}; replay ingests a page only under the "
-                    "scope whose directory prefixes it — keep an index covering the page or "
-                    "drop it"
-                )
-            # Deepest covering reachable index wins: replay's
-            # most_specific_scope skips a page listed by a shallower
-            # scope once a deeper one owns the path.
-            url, record = max(covering, key=lambda item: len(index_directory(item[0])))
-            if url not in by_host:
-                by_host[url] = (record, [])
-            by_host[url][1].append(page)
+        by_host = select_covering_indexes(unlinked, candidates, reachable)
         for url, (record, pages) in by_host.items():
             if body_ends_inside_fence(record[2]):
                 fail(f"{url}: the index body ends inside an unclosed code fence; cannot merge link lines")
@@ -480,6 +509,10 @@ def main():
             )
         print(f"trim: linked {len(unlinked)} kept page(s) no reachable index listed", file=sys.stderr)
 
+
+def rescue_empty_indexes(rewritten_indexes, output_urls, linked):
+    """Points each rewritten index that would parse empty at the kept
+    llms-full.txt export, or fails."""
     # A rewritten index that would parse empty points at the export.
     for record in rewritten_indexes:
         response, note, body = record
@@ -500,6 +533,10 @@ def main():
             note = _extend_note(note, "added the kept llms-full.txt export link (a bare index parses empty)")
             record[1], record[2] = note, body
 
+
+def verify_reachability(rewritten_indexes, output_urls, linked):
+    """Fails unless every rewritten index link resolves to a kept
+    response and every kept page is linked."""
     # Replay consistency: every index link resolves to a kept response,
     # and every kept page is reachable from some rewritten index.
     for response, _, body in rewritten_indexes:
@@ -513,6 +550,10 @@ def main():
     if unreachable:
         fail("kept pages no rewritten index links: " + ", ".join(unreachable[:5]))
 
+
+def build_inventory(kept, rewritten_indexes):
+    """Builds the inventory rows and stamps each rewritten response's
+    body in place."""
     inventory = []
     for response in kept:
         body = next((record[2] for record in rewritten_indexes if record[0] is response), response["body"])
@@ -531,6 +572,23 @@ def main():
                 "note": note,
             }
         )
+    return inventory
+
+
+def main():
+    if len(sys.argv) != 5:
+        fail(USAGE)
+    manifest_path, keep_path, out_manifest, out_inventory = sys.argv[1:5]
+    keep = read_keep_set(keep_path)
+    recorded, seen = load_recorded_manifest(manifest_path)
+    kept, output_urls, index_bodies, root = select_kept_responses(recorded, keep, manifest_path, seen)
+    rewritten_indexes, scope_links, scope_pages = rewrite_kept_indexes(keep, kept, output_urls)
+    describedby_of = collect_describedby_targets(kept, output_urls)
+    reachable, linked = reachable_linked_pages(root["url"], scope_links, scope_pages, describedby_of)
+    merge_unlinked_pages(kept, rewritten_indexes, output_urls, reachable, linked, index_bodies, manifest_path)
+    rescue_empty_indexes(rewritten_indexes, output_urls, linked)
+    verify_reachability(rewritten_indexes, output_urls, linked)
+    inventory = build_inventory(kept, rewritten_indexes)
 
     write_json(out_manifest, kept)
     write_json(

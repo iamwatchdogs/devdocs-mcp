@@ -262,13 +262,16 @@ fn argv_recorder(dir: &Path, name: &str) -> PathBuf {
 /// §Regression gate — the spawned search must not grade against the
 /// operator's user config, and a mid-run edit of the original file must
 /// not reach a timed child).
-#[test]
+///
+/// Runs one eval with the stub recorder: seeds the fixture db, writes the
+/// suite and the probe config, records the spawned argv, and runs the
+/// harness with `--json`. Returns the args file, the operator config,
+/// the config snapshot, and the run dir.
 #[cfg(unix)]
-fn the_global_config_flag_reaches_the_subprocess_spawn() {
-    let env = Env::new();
+fn run_stubbed_eval(env: &Env) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let db = env.root.join("fixture.db");
     seed_fixture_db(&db);
-    write_suite(&env, "fixture");
+    write_suite(env, "fixture");
     let config = env.root.join("probe.toml");
     std::fs::write(
         &config,
@@ -308,6 +311,23 @@ fn the_global_config_flag_reaches_the_subprocess_spawn() {
     let run_dir = PathBuf::from(outcome["run_dir"].as_str().unwrap());
 
     let spawn_args = std::fs::read_to_string(&args_file).unwrap();
+    let snapshot_arg = spawn_args
+        .lines()
+        .skip_while(|line| *line != "--config")
+        .nth(1)
+        .expect("the spawn carries a --config value");
+    (args_file, config, PathBuf::from(snapshot_arg), run_dir)
+}
+
+/// The spawned `devdocs search` carries `--config` with the run-dir
+/// snapshot of the operator config, never the operator's original path.
+#[test]
+#[cfg(unix)]
+fn the_spawned_search_carries_the_config_snapshot_path() {
+    let env = Env::new();
+    let (args_file, config, snapshot, run_dir) = run_stubbed_eval(&env);
+
+    let spawn_args = std::fs::read_to_string(&args_file).unwrap();
     assert!(spawn_args.contains("--config\n"), "{spawn_args}");
     // The spawn carries the run-dir snapshot of the operator config, not
     // the operator's original path.
@@ -315,13 +335,16 @@ fn the_global_config_flag_reaches_the_subprocess_spawn() {
         !spawn_args.contains(config.to_str().unwrap()),
         "{spawn_args}"
     );
-    let snapshot_arg = spawn_args
-        .lines()
-        .skip_while(|line| *line != "--config")
-        .nth(1)
-        .expect("the spawn carries a --config value");
-    let snapshot = PathBuf::from(snapshot_arg);
     assert_eq!(snapshot.parent().unwrap(), run_dir, "{snapshot:?}");
+}
+
+/// The run-dir snapshot the spawn receives matches the operator's config
+/// file byte for byte.
+#[test]
+#[cfg(unix)]
+fn the_spawned_search_config_snapshot_matches_the_operator_file() {
+    let env = Env::new();
+    let (_, config, snapshot, _) = run_stubbed_eval(&env);
     assert_eq!(
         std::fs::read(&snapshot).unwrap(),
         std::fs::read(&config).unwrap()

@@ -373,7 +373,7 @@ fn subprocess_pass(
 /// Finishes the run: reads the corpus, scores and writes the artifacts,
 /// and assembles the outcome the caller exits on
 /// (docs/implementation/14 §Harness flow).
-#[allow(clippy::too_many_arguments)] // the phase reads what run() resolved
+#[allow(clippy::too_many_arguments)] // the phase reads what run() resolved (tracked in #87).
 fn score_and_finish(
     store: Store,
     run_dir: PathBuf,
@@ -411,7 +411,7 @@ fn score_and_finish(
 
 /// Scores the run, hashes the database, and writes the artifacts into
 /// the run dir; returns the metrics and the evaluated gate rows.
-#[allow(clippy::too_many_arguments)] // the phase reads what run() resolved
+#[allow(clippy::too_many_arguments)] // the phase reads what run() resolved (tracked in #87).
 fn score_and_write(
     run_dir: &Path,
     suite: &Suite,

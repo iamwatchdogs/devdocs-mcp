@@ -3,7 +3,7 @@ type: guide
 title: Roadmap and Milestones
 description: The phased roadmap for devdocs with concrete milestones, scope, acceptance criteria, and effort. Each phase gate matches the research validation gates.
 tags: [devdocs, roadmap, milestones, gates]
-timestamp: 2026-11-17T11:07:00Z
+timestamp: 2026-11-17T11:50:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -79,7 +79,7 @@ The items below have no milestone. Each entry names the trigger that starts the 
 | OpenAPI adapter ([07](07-ingest-pipeline.md) §OpenAPI adapter) | Not scheduled in any milestone. The `oas3` 0.22.0 pin ([01](01-tech-stack-decision.md)) stays the chosen parser | A needed library publishes an OpenAPI specification and no llms.txt, and the gate report shows the API surface is not retrievable from the llms.txt and git corpus |
 | HTML crawl adapter ([07](07-ingest-pipeline.md) §HTML adapter) | Stays last-resort-only. Not scheduled in any milestone. The robots.txt and license gates ([09](09-security-implementation.md)) are a build precondition | A needed library publishes no llms.txt and no git mirror, and the publisher grants crawl rights. The gates must exist before any build starts |
 | Near-duplicate cosine dedup ([07](07-ingest-pipeline.md) §Normalization pipeline) | Deferred. No ticket owns it | Duplicate chunks crowd the top search ranks on the golden set, and the gate report shows a hit-rate loss from them |
-| `devdocs db vacuum|stats` ([08](08-retrieval-interfaces.md) §CLI contract) | Placeholders today. One polish ticket owns both when the trigger fires. Startup migrate is not deferred: it runs at CLI start (#6) and at MCP server start (#12) | Large-replacement bloat appears in the store, or size reporting becomes necessary to debug it |
+| `devdocs db vacuum\|stats` ([08](08-retrieval-interfaces.md) §CLI contract) | Placeholders today. One polish ticket owns both when the trigger fires. Startup migrate is not deferred: it runs at CLI start (#6) and at MCP server start (#12) | Large-replacement bloat appears in the store, or size reporting becomes necessary to debug it |
 | FTS5 monthly fuzz job ([13](13-implementation-plan.md) §Risk register) | Not scheduled. The property test runs on every CI run | A fuzz finding, or a MATCH parse failure in a tracked issue |
 | Gemfile.lock parser ([08](08-retrieval-interfaces.md) §Version resolution) | Not scheduled. Ruby lockfiles parse in a later phase | A Ruby library joins the golden set |
 | Phase 4 Code Mode | Unscheduled by design. Phase 4 starts only after the Phase 3 gate passes | The Phase 3 gate PASS, plus documented multi-hop cost and p95 evidence (research: benchmark-protocol.md) |

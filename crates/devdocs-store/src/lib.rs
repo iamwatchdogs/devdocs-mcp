@@ -12,6 +12,7 @@ mod license;
 mod list;
 mod migrate;
 mod publish;
+mod quarantine;
 mod query;
 mod search;
 mod store;
@@ -22,6 +23,7 @@ pub use migrate::{
     AppliedMigration, MIGRATION_COUNT, MigrateOptions, migrate, migrate_with_options,
 };
 pub use publish::{NewChunk, Symbol};
+pub use quarantine::{QuarantineRow, QuarantineState};
 pub use query::build_match_query;
 pub use search::{Hit, SymbolMatch, SymbolScope};
 pub use store::{Store, StoreOptions};

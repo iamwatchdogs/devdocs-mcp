@@ -104,6 +104,23 @@ pub enum StoreError {
         library: String,
     },
 
+    /// No chunk row carries the chunk id
+    /// (docs/implementation/07 §Injection filter).
+    #[error("no chunk row for chunk {chunk_id}")]
+    UnknownChunk {
+        /// The chunk id that matched nothing.
+        chunk_id: i64,
+    },
+
+    /// The chunk row exists but carries no quarantine or review flag, so
+    /// there is nothing to release
+    /// (docs/implementation/07 §Injection filter).
+    #[error("chunk {chunk_id} carries no quarantine or review flag")]
+    ChunkNotFlagged {
+        /// The chunk id that holds no flags.
+        chunk_id: i64,
+    },
+
     /// A chunk in a publish batch could not be serialized for storage.
     #[error("chunk serialization failed: {0}")]
     InvalidChunk(#[from] serde_json::Error),

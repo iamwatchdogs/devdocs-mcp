@@ -103,7 +103,7 @@ impl Hit {
 }
 
 /// Reads a `chunks.section_path` JSON string array out of a row column.
-fn section_path(
+pub(crate) fn section_path(
     row: &rusqlite::Row<'_>,
     idx: usize,
     chunk_id: i64,

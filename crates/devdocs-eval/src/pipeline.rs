@@ -35,6 +35,7 @@ fn to_refs<'a>(
             rank: first_rank + i,
             library: h.library.clone(),
             version: h.version.clone(),
+            page: h.page_path(),
             segments: h.section_path.clone(),
             symbol: h.symbol.clone(),
         })
@@ -198,6 +199,43 @@ mod tests {
         .unwrap();
         assert_eq!(retrieval.refs.len(), 1);
         assert_eq!(retrieval.refs[0].library, "serde");
+    }
+
+    /// A chunk page URL grades as the ref's page — the page URL path
+    /// relative to the source root (issue #88); a chunk without one
+    /// grades page-less.
+    #[test]
+    fn hits_carry_their_page_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("seed.db");
+        devdocs_testkit::open_migrated(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let src = devdocs_testkit::seed_source(&conn, "next.js", true).unwrap();
+        devdocs_testkit::seed_chunk(
+            &conn,
+            src,
+            0,
+            r#"["app","proxy"]"#,
+            None,
+            "the middleware rewrites the request",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE chunks SET page_url = 'https://nextjs.org/docs/app/proxy.md'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+
+        let retrieval = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::ExactApi, "next.js"),
+        )
+        .unwrap();
+        assert_eq!(retrieval.refs.len(), 1);
+        assert_eq!(retrieval.refs[0].page.as_deref(), Some("docs/app/proxy.md"));
     }
 
     /// The served page honors the plan's `limit`, not a fixed page size:

@@ -19,6 +19,9 @@ pub struct RetrievedRef {
     pub library: String,
     /// The exact version the hit was served from.
     pub version: String,
+    /// The hit's page URL path relative to the source root, when the
+    /// chunk carries a usable page URL (issue #88).
+    pub page: Option<String>,
     /// The section-path segments of the hit.
     pub segments: Vec<String>,
     /// The hit's symbol, when the chunk documents one.
@@ -30,22 +33,30 @@ impl RetrievedRef {
     #[must_use]
     pub fn reference(&self) -> String {
         let path = self.segments.join("/");
-        match &self.symbol {
-            Some(symbol) => format!(
-                "docs://{}/v{}/{}#{symbol}",
-                self.library, self.version, path
-            ),
-            None => format!("docs://{}/v{}/{}", self.library, self.version, path),
+        let mut reference = format!("docs://{}/v{}/", self.library, self.version);
+        if let Some(page) = &self.page {
+            reference.push_str(page);
+            reference.push('@');
         }
+        reference.push_str(&path);
+        if let Some(symbol) = &self.symbol {
+            reference.push('#');
+            reference.push_str(symbol);
+        }
+        reference
     }
 }
 
 /// Whether an expected ref matches a hit.
 ///
-/// The libraries compare case-insensitively; the version must be exact. The
-/// expected path matches when it equals the hit path or is a trailing run
-/// of its segments, so a pinned `proxy` matches a hit served from
-/// `app/proxy`. A pinned fragment requires the hit's symbol to equal it.
+/// The libraries compare case-insensitively; the version must be exact. A
+/// pinned page must equal the hit's page exactly — the page URL path
+/// relative to the source root — so a section title another page shares
+/// can no longer grade as a hit (issue #88); a ref without a page part
+/// pins no page and matches on the breadcrumb alone. The expected path
+/// matches when it equals the hit path or is a trailing run of its
+/// segments, so a pinned `proxy` matches a hit served from `app/proxy`.
+/// A pinned fragment requires the hit's symbol to equal it.
 #[must_use]
 pub fn ref_matches(expected: &str, hit: &RetrievedRef) -> bool {
     let Some(expected) = ParsedRef::parse(expected) else {
@@ -53,6 +64,12 @@ pub fn ref_matches(expected: &str, hit: &RetrievedRef) -> bool {
     };
     if !expected.library.eq_ignore_ascii_case(&hit.library) || expected.version != hit.version {
         return false;
+    }
+    if let Some(page) = &expected.page {
+        let pinned = page.join("/");
+        if hit.page.as_deref() != Some(pinned.as_str()) {
+            return false;
+        }
     }
     let hit_tail = hit.segments.len().checked_sub(expected.segments.len());
     let Some(offset) = hit_tail else {
@@ -344,9 +361,17 @@ mod tests {
             rank,
             library: library.to_owned(),
             version: version.to_owned(),
+            page: None,
             segments: path.split('/').map(str::to_owned).collect(),
             symbol: symbol.map(str::to_owned),
         }
+    }
+
+    /// The same hit served from a page: the page URL path relative to the
+    /// source root.
+    fn on_page(mut r: RetrievedRef, page: &str) -> RetrievedRef {
+        r.page = Some(page.to_owned());
+        r
     }
 
     fn refs(list: &[&str]) -> Vec<String> {
@@ -374,6 +399,42 @@ mod tests {
         assert_eq!(with.reference(), "docs://next.js/v16.2.9/app/proxy#rewrite");
         let without = hit(1, "next.js", "16.2.9", "app/proxy", None);
         assert_eq!(without.reference(), "docs://next.js/v16.2.9/app/proxy");
+        let paged = on_page(
+            hit(1, "next.js", "16.2.9", "app/proxy", Some("rewrite")),
+            "docs/app/api-reference/proxy.md",
+        );
+        assert_eq!(
+            paged.reference(),
+            "docs://next.js/v16.2.9/docs/app/api-reference/proxy.md@app/proxy#rewrite"
+        );
+    }
+
+    /// A pinned page must equal the hit's page exactly: the wrong-page
+    /// hole (issue #88) stays closed — a Matcher section served from the
+    /// llms-full export copy does not grade a proxy-page pin.
+    #[test]
+    fn a_pinned_page_must_match_exactly() {
+        let export = on_page(
+            hit(1, "next.js", "16.2.9", "Matcher", Some("config")),
+            "docs/llms-full.txt",
+        );
+        let proxy = on_page(
+            hit(1, "next.js", "16.2.9", "Matcher", Some("config")),
+            "docs/app/api-reference/file-conventions/proxy.md",
+        );
+        let pin = "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md@Matcher";
+
+        assert!(ref_matches(pin, &proxy));
+        assert!(
+            !ref_matches(pin, &export),
+            "a same-title section on another page is not a hit"
+        );
+        // The page-less pin keeps the old semantics for both hits.
+        assert!(ref_matches(
+            "docs://next.js/v16.2.9/Matcher#config",
+            &export
+        ));
+        assert!(ref_matches("docs://next.js/v16.2.9/Matcher#config", &proxy));
     }
 
     #[test]

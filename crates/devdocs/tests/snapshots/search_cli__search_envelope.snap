@@ -1,6 +1,5 @@
 ---
 source: crates/devdocs/tests/search_cli.rs
-assertion_line: 53
 expression: envelope
 ---
 {
@@ -12,7 +11,7 @@ expression: envelope
       "content_hash": "fb8adc6c950632386423664f080a0f983f74ebc434a5d856a0a2bd76ebf929a8",
       "examples": [],
       "license_status": "approved_snippet",
-      "ref": "docs://acme/v1.0/intro",
+      "ref": "docs://acme/v1.0/intro.md@intro",
       "requested_version": null,
       "section": "Intro",
       "served_version": "1.0",

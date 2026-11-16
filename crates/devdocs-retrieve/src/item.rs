@@ -66,10 +66,14 @@ pub fn to_result_item(
 }
 
 /// Derives the `docs://` ref for one chunk: the library, the `v`-prefixed
-/// version, the section path (the placeholder segment when a path segment
-/// or the whole path slugs to empty), and the slugified symbol as the
-/// fragment when one applies. An empty fragment is left out — a symbol
-/// that slugs to empty names nothing.
+/// version, the page path (the chunk page URL path relative to the source
+/// root, when the chunk carries a usable page URL —
+/// `docs://<library>/v<version>/<page>@<path>`), the section path (the
+/// placeholder segment when a path segment or the whole path slugs to
+/// empty), and the slugified symbol as the fragment when one applies. An
+/// empty fragment is left out — a symbol that slugs to empty names
+/// nothing, and a chunk without a usable page URL derives the
+/// page-less form.
 #[must_use]
 pub fn derive_ref(hit: &Hit) -> String {
     let segments: Vec<String> = if hit.section_path.is_empty() {
@@ -77,12 +81,12 @@ pub fn derive_ref(hit: &Hit) -> String {
     } else {
         hit.section_path.iter().map(|s| segment(s)).collect()
     };
-    let mut ref_ = format!(
-        "docs://{}/v{}/{}",
-        hit.library,
-        hit.version,
-        segments.join("/")
-    );
+    let mut ref_ = format!("docs://{}/v{}/", hit.library, hit.version);
+    if let Some(page) = hit.page_path() {
+        ref_.push_str(&page);
+        ref_.push('@');
+    }
+    ref_.push_str(&segments.join("/"));
     if let Some(symbol) = &hit.symbol {
         let slug = slug(symbol);
         if !slug.is_empty() {
@@ -140,31 +144,53 @@ pub fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Whether the hit serves the ref's pinned page: a ref without a page
+/// part pins nothing (every chunk qualifies); a page-pinned ref matches
+/// only a chunk whose page URL path equals the pinned page, so a section
+/// title another page shares cannot win (issue #88).
+#[must_use]
+fn page_matches(hit: &Hit, pinned: Option<&str>) -> bool {
+    match pinned {
+        None => true,
+        Some(page) => hit.page_path().is_some_and(|hit_page| hit_page == page),
+    }
+}
+
 /// Finds the chunk that serves a parsed ref: the full section path
-/// first, then the last segment, then the fragment (symbol or title
-/// match). The placeholder segment matches a chunk without a section
+/// first, then the fragment (symbol or title match), then the last
+/// segment. The placeholder segment matches a chunk without a section
 /// path and a chunk whose heading slugs to empty. When several
 /// candidates remain, the lowest chunk id serves. `None` when nothing
 /// matches.
+///
+/// A page-pinned ref narrows the full-path match to chunks on the pinned
+/// page — the page part only ever narrows, so a page-qualified ref that
+/// no chunk on the pinned page satisfies falls through the fragment and
+/// last-segment ladder unchanged (docs/implementation/08 §Ref derivation
+/// owns the resolution rule).
 #[must_use]
 pub fn match_ref<'a>(chunks: &'a [Hit], parsed: &ParsedRef) -> Option<&'a Hit> {
     let want: Vec<String> = parsed.segments.iter().map(|s| segment(s)).collect();
-    // 1. The full section path matches the ref path exactly. The
-    //    placeholder path also matches a chunk without a section path
-    //    and a chunk whose heading slugs to empty.
+    let pinned_page = parsed.page.as_ref().map(|p| p.join("/"));
+    let pinned: Option<&str> = pinned_page.as_deref();
+    // 1. The full section path matches the ref path exactly, restricted
+    //    to the ref's pinned page when it names one. The placeholder path
+    //    also matches a chunk without a section path and a chunk whose
+    //    heading slugs to empty.
     let full: Vec<&Hit> = chunks
         .iter()
         .filter(|c| {
-            (want.len() == 1 && want[0] == HEAD_SEGMENT && c.section_path.is_empty())
-                || (c.section_path.len() == want.len()
-                    && c.section_path
-                        .iter()
-                        .map(|s| segment(s))
-                        .eq(want.iter().cloned()))
+            page_matches(c, pinned)
+                && ((want.len() == 1 && want[0] == HEAD_SEGMENT && c.section_path.is_empty())
+                    || (c.section_path.len() == want.len()
+                        && c.section_path
+                            .iter()
+                            .map(|s| segment(s))
+                            .eq(want.iter().cloned())))
         })
         .collect();
-    if full.len() == 1 {
-        return full.first().copied();
+    if !full.is_empty() && (pinned.is_some() || full.len() == 1) {
+        return full.iter().min_by_key(|hit| hit.chunk_id).copied();
     }
     // 2. The fragment names the chunk's symbol when the path is absent
     //    from the section paths.
@@ -212,6 +238,7 @@ mod tests {
 
     use super::{derive_ref, hex, match_ref, slug, to_result_item};
     use devdocs_model::VersionStatus;
+    use devdocs_model::docref::ParsedRef;
     use devdocs_store::Hit;
 
     fn hit(library: &str, version: &str, section: &[&str], symbol: Option<&str>) -> Hit {
@@ -316,7 +343,9 @@ mod tests {
         assert_eq!(item.source_url, "https://example.test/next");
     }
 
-    /// Ref derivation slugifies the path and the symbol.
+    /// Ref derivation slugifies the path and the symbol, qualifies the
+    /// page when the chunk carries a usable page URL, and stays
+    /// page-less otherwise. Every derived ref parses back.
     #[test]
     fn refs_derive_from_the_chunk_identity() {
         let with_symbol = hit("next.js", "16.2.9", &["Routing"], Some("use_router"));
@@ -327,6 +356,136 @@ mod tests {
 
         let no_symbol = hit("zod", "4.6.7", &["Parse"], None);
         assert_eq!(derive_ref(&no_symbol), "docs://zod/v4.6.7/parse");
+
+        let mut on_page = hit("next.js", "16.2.9", &["Routing"], Some("use_router"));
+        on_page.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        assert_eq!(
+            derive_ref(&on_page),
+            "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md\
+             @routing#use-router"
+        );
+        ParsedRef::parse(&derive_ref(&on_page))
+            .unwrap_or_else(|| panic!("the derived ref parses back: {}", derive_ref(&on_page)));
+
+        // A page URL that cannot be a page part leaves the ref page-less.
+        let mut unusable = hit("zod", "4.6.7", &["Parse"], None);
+        unusable.page_url = Some("https://zod.dev".to_owned());
+        assert_eq!(derive_ref(&unusable), "docs://zod/v4.6.7/parse");
+    }
+
+    /// A page-pinned ref serves the pinned page's chunk, not a same-title
+    /// section on another page — the #88 hole: the proxy page's Matcher
+    /// ref no longer resolves into the llms-full export copy that carries
+    /// the same breadcrumb, and the page-less ref keeps the old
+    /// lowest-chunk-id behavior.
+    #[test]
+    fn a_page_qualified_ref_stays_on_the_pinned_page() {
+        let mut export = hit("next.js", "16.2.9", &["Matcher"], Some("config"));
+        export.chunk_id = 1;
+        export.page_url = Some("https://nextjs.org/docs/llms-full.txt".to_owned());
+        let mut proxy = hit("next.js", "16.2.9", &["Matcher"], Some("config"));
+        proxy.chunk_id = 2;
+        proxy.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let chunks = vec![export, proxy];
+
+        let page_qualified = ParsedRef::parse(
+            "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md\
+             @matcher#config",
+        )
+        .unwrap();
+        assert_eq!(
+            match_ref(&chunks, &page_qualified).map(|h| h.chunk_id),
+            Some(2),
+            "the proxy page's chunk serves, not the export copy"
+        );
+
+        // Without the page part, the old ladder applies: the full-path
+        // match collides, and the lowest chunk id (the export copy) wins.
+        let bare = ParsedRef::parse("docs://next.js/v16.2.9/matcher#config").unwrap();
+        assert_eq!(match_ref(&chunks, &bare).map(|h| h.chunk_id), Some(1));
+    }
+
+    /// A page-pinned ref whose pinned page serves no full-path match
+    /// falls through the old fragment and last-segment ladder — the page
+    /// part narrows, it never widens.
+    #[test]
+    fn a_page_pinned_ref_without_a_page_match_falls_through() {
+        let mut on_page = hit("next.js", "16.2.9", &["Routing"], None);
+        on_page.chunk_id = 1;
+        on_page.page_url = Some("https://nextjs.org/docs/app/proxy.md".to_owned());
+        let mut elsewhere = hit("next.js", "16.2.9", &["Storage"], None);
+        elsewhere.chunk_id = 2;
+        elsewhere.page_url = Some("https://nextjs.org/docs/storage.md".to_owned());
+        let chunks = vec![on_page, elsewhere];
+
+        // The pinned page names only the Routing chunk, so the Storage
+        // section on it matches nothing and the last-segment ladder serves
+        // the lowest chunk id of the Storage title matches.
+        let drifted = ParsedRef::parse("docs://next.js/v16.2.9/docs/app/proxy.md@storage").unwrap();
+        assert_eq!(match_ref(&chunks, &drifted).map(|h| h.chunk_id), Some(2));
+    }
+
+    /// A page-pinned ref whose pinned page holds several full-path
+    /// matches stays on the pinned page — the lowest chunk id among the
+    /// pinned-page candidates serves, not a lower chunk id on another
+    /// page that the unfiltered fallback scans would pick up.
+    #[test]
+    fn a_page_pinned_ref_with_several_page_matches_stays_on_the_pinned_page() {
+        let mut export = hit("next.js", "16.2.9", &["Matcher"], None);
+        export.chunk_id = 1;
+        export.page_url = Some("https://nextjs.org/docs/llms-full.txt".to_owned());
+        let mut proxy_earlier = hit("next.js", "16.2.9", &["Matcher"], None);
+        proxy_earlier.chunk_id = 2;
+        proxy_earlier.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let mut proxy_later = hit("next.js", "16.2.9", &["Matcher"], None);
+        proxy_later.chunk_id = 3;
+        proxy_later.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let chunks = vec![export, proxy_earlier, proxy_later];
+
+        let pinned = ParsedRef::parse(
+            "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md\
+             @matcher",
+        )
+        .unwrap();
+        assert_eq!(
+            match_ref(&chunks, &pinned).map(|h| h.chunk_id),
+            Some(2),
+            "the pinned page's lowest chunk id serves, not the export copy"
+        );
+    }
+
+    /// The placeholder variant: two headless chunks on the pinned page
+    /// collide on `index`, and the ref stays on the pinned page instead
+    /// of serving a lower chunk id on another page.
+    #[test]
+    fn a_page_pinned_placeholder_ref_stays_on_the_pinned_page() {
+        let mut export = hit("next.js", "16.2.9", &[], None);
+        export.chunk_id = 1;
+        export.page_url = Some("https://nextjs.org/docs/llms-full.txt".to_owned());
+        let mut proxy_earlier = hit("next.js", "16.2.9", &[], None);
+        proxy_earlier.chunk_id = 2;
+        proxy_earlier.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let mut proxy_later = hit("next.js", "16.2.9", &[], None);
+        proxy_later.chunk_id = 3;
+        proxy_later.page_url =
+            Some("https://nextjs.org/docs/app/api-reference/file-conventions/proxy.md".to_owned());
+        let chunks = vec![export, proxy_earlier, proxy_later];
+
+        let pinned = ParsedRef::parse(
+            "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md\
+             @index",
+        )
+        .unwrap();
+        assert_eq!(
+            match_ref(&chunks, &pinned).map(|h| h.chunk_id),
+            Some(2),
+            "the pinned page's lowest chunk id serves, not the export copy"
+        );
     }
 
     /// The slug rule folds punctuation runs and trims the ends.

@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-15T09:00:00Z
+timestamp: 2026-11-15T10:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -33,7 +33,7 @@ One JSON object per line:
   "version": "16.2.9",
   "task_type": "exact_api",
   "question": "How do I rewrite an incoming request path in Next.js middleware?",
-  "expect_refs": ["docs://next.js/v16.2.9/proxy#rewrite"],
+  "expect_refs": ["docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md@app/proxy#rewrite"],
   "expect_symbols": ["middleware"],
   "grader": "ref_match",
   "notes": "accepts the Proxy section; the middleware page alone is a partial"
@@ -43,7 +43,7 @@ One JSON object per line:
 Field rules:
 
 - `task_type` comes from the research 8-category union (research: benchmark-protocol.md Step 3): `exact_api`, `how_to`, `discovery`, `migration`, `multi_library`, `agent_task`, `unanswerable`, `poisoned`.
-- `expect_refs` pins the acceptable `docs://` refs. `expect_symbols` pins required symbols for symbol-recall scoring. One of the two is required.
+- `expect_refs` pins the acceptable `docs://` refs, page-qualified — `docs://<library>/v<version>/<page>@<path>[#<symbol>]`, the page the chunk's page URL path relative to the source root (docs/implementation/08 §Ref derivation). `expect_symbols` pins required symbols for symbol-recall scoring. One of the two is required.
 - `grader` is `ref_match` (default), `symbol_match`, or `manual`. `unanswerable` questions expect an empty result set. A hit is a failure.
 - Version is exact. A question without a pinned version is invalid input for the harness.
 
@@ -110,7 +110,7 @@ Timing note: the harness measures the in-process pipeline plus, in a second pass
 
 The binary grader: partial counts as wrong. The research protocol is explicit (research: benchmark-protocol.md Step 6).
 
-Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate counts every question. Version correctness counts the questions where a result was served and excludes every unanswerable question: the metric grades served answers, and an unanswerable question pins no answer, so version grading has no referent there. A hallucinated hit on an unanswerable question is a failure-rate signal, not a version signal. The top result grades against the version the answer is pinned to: the question's own pin. A `multi_library` question grades against the version of the expected ref its top hit matches. When no expected ref matches the top hit, the question's own pin decides. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands. `ref_match` grades on the trailing segments of the section breadcrumb, so a section title that another page shares can count as the expected ref; page-qualified refs are tracked in #88. Symbol recall grades from the rung results within the retrieval headroom window (4× the page limit, docs/implementation/08 §Rungs), so a suite pinning more symbols than the window holds cannot reach full recall.
+Denominators: hit@5 counts only questions with non-empty `expect_refs`; symbol recall counts pinned symbols; failure rate counts every question. Version correctness counts the questions where a result was served and excludes every unanswerable question: the metric grades served answers, and an unanswerable question pins no answer, so version grading has no referent there. A hallucinated hit on an unanswerable question is a failure-rate signal, not a version signal. The top result grades against the version the answer is pinned to: the question's own pin. A `multi_library` question grades against the version of the expected ref its top hit matches. When no expected ref matches the top hit, the question's own pin decides. The harness grades `ref_match` and `symbol_match`; a suite that carries the `manual` grader makes a run exit 1 until manual grading lands. `ref_match` grades a pin page-qualified (#88): a pin that names a page — `docs://<library>/v<version>/<page>@<path>[#<symbol>]`, the page the chunk's page URL path relative to the source root — requires the hit's page to equal it exactly, so a section title another page shares cannot count as the expected ref; the breadcrumb still matches as a trailing run of the hit's segments, and a pin without a page part matches on the breadcrumb alone. Symbol recall grades from the rung results within the retrieval headroom window (4× the page limit, docs/implementation/08 §Rungs), so a suite pinning more symbols than the window holds cannot reach full recall.
 
 ## Gate table
 

@@ -6,13 +6,13 @@ expression: value
   "next_cursor": null,
   "results": [
     {
-      "ref": "docs://acme/v1.0/getting-started",
+      "ref": "docs://acme/v1.0/getting-started.md@getting-started",
       "served_version": "1.0",
       "title": "Getting Started",
       "version_status": "alias"
     },
     {
-      "ref": "docs://acme/v2.0/getting-started",
+      "ref": "docs://acme/v2.0/getting-started.md@getting-started",
       "served_version": "2.0",
       "title": "Getting Started",
       "version_status": "alias"

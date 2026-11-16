@@ -2,10 +2,17 @@
 
 // Fixture setup must abort the test on failure, so unwrap/expect are fine (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// Helper results are freely ignorable in test code; must_use adds noise (tracked in #87).
+#![allow(clippy::must_use_candidate)]
+// Each integration test file compiles this module separately, so helpers a
+// file does not use stay.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
+use devdocs_ingest::fixture::RecordedResponse;
 use rusqlite::Connection;
 
 /// The `devdocs` binary the subprocess pass needs.
@@ -136,4 +143,56 @@ pub fn fixture(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     ];
     std::fs::write(&suite_path, lines.join("\n") + "\n").unwrap();
     (db_path, suite_path, dir.join("runs"))
+}
+
+/// The committed fixture corpus root.
+pub fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/fixtures")
+}
+
+/// The recorded responses of one committed fixture.
+pub fn manifest_of(dir: &str) -> Vec<RecordedResponse> {
+    let path = fixtures_dir().join(dir).join("manifest.json");
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&text).expect("the committed manifest parses")
+}
+
+/// The lowercase hex encoding of a SHA-256 digest.
+pub fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// Runs the trim tool with isolated stdlib semantics (`-I`) on the given
+/// inputs and fails on a nonzero exit.
+pub fn run_trim(manifest: &Path, keep: &Path, out_manifest: &Path, out_inventory: &Path) {
+    let (success, stderr) = trim_output(manifest, keep, out_manifest, out_inventory);
+    assert!(success, "trim.py failed: {stderr}");
+}
+
+/// Runs the trim tool and returns whether it succeeded, with its stderr.
+pub fn trim_output(
+    manifest: &Path,
+    keep: &Path,
+    out_manifest: &Path,
+    out_inventory: &Path,
+) -> (bool, String) {
+    let output = Command::new("python3")
+        .arg("-I")
+        .arg(fixtures_dir().join("trim.py"))
+        .arg(manifest)
+        .arg(keep)
+        .arg(out_manifest)
+        .arg(out_inventory)
+        .output()
+        .expect("python3 runs the trim tool");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }

@@ -1,299 +1,17 @@
-//! The committed fixture corpus: every fixture loads for replay, the
-//! inventories match the manifest bytes, and the trim tool roundtrips
-//! (docs/implementation/14 §Fixture corpus).
+//! Reachability for the trim tool: the reachable closure from the kept
+//! indexes, the loud failure when a kept page has no covering index, the
+//! rescue of pages behind unreachable or dropped indexes, and the
+//! `Link: rel="describedby"` discovery (docs/implementation/14 §Trim
+//! tool).
 
 // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod common;
 
-use devdocs_ingest::fixture::{FixtureSet, RecordedResponse};
-use sha2::{Digest, Sha256};
+use devdocs_ingest::fixture::RecordedResponse;
 
-/// The committed fixture corpus root.
-fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/fixtures")
-}
-
-/// The recorded responses of one committed fixture.
-fn manifest_of(dir: &str) -> Vec<RecordedResponse> {
-    let path = fixtures_dir().join(dir).join("manifest.json");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_str(&text).expect("the committed manifest parses")
-}
-
-#[test]
-fn every_committed_fixture_manifest_loads_via_fixture_set() {
-    for dir in ["next.js/16.2.9", "zod/4.6.7"] {
-        let set =
-            FixtureSet::load(&fixtures_dir().join(dir)).unwrap_or_else(|e| panic!("{dir}: {e}"));
-        let response = manifest_of(dir);
-        let first = set
-            .serve(&url::Url::parse(&response[0].url).unwrap())
-            .expect("the first recorded URL is served");
-        assert_eq!(first.body, response[0].body);
-    }
-}
-
-#[test]
-fn manifest_urls_are_https_and_unique_with_success_statuses() {
-    for dir in ["next.js/16.2.9", "zod/4.6.7"] {
-        let responses = manifest_of(dir);
-        assert!(!responses.is_empty(), "{dir}: the manifest is not empty");
-        let mut seen = std::collections::HashSet::new();
-        for response in &responses {
-            assert!(
-                response.url.starts_with("https://"),
-                "{dir}: {} is not HTTPS",
-                response.url
-            );
-            assert!(
-                seen.insert(response.url.as_str()),
-                "{dir}: duplicate URL {}",
-                response.url
-            );
-            assert_eq!(response.status, 200, "{dir}: {}", response.url);
-        }
-    }
-}
-
-#[test]
-fn inventory_hashes_match_the_manifest_bytes() {
-    for dir in ["next.js/16.2.9", "zod/4.6.7"] {
-        let base = fixtures_dir().join(dir);
-        let responses = manifest_of(dir);
-        let bodies: std::collections::HashMap<&str, &str> = responses
-            .iter()
-            .map(|r| (r.url.as_str(), r.body.as_str()))
-            .collect();
-        let inventory = serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(base.join("inventory.json")).unwrap(),
-        )
-        .unwrap();
-        let rows = inventory["responses"].as_array().unwrap();
-        assert_eq!(rows.len(), bodies.len(), "{dir}: one inventory row per URL");
-        for row in rows {
-            let url = row["url"].as_str().unwrap();
-            assert!(
-                bodies.contains_key(url),
-                "{dir}: {url} missing from the manifest"
-            );
-            let body = bodies[url];
-            let digest = || {
-                let mut hasher = Sha256::new();
-                hasher.update(body.as_bytes());
-                hex(&hasher.finalize())
-            };
-            match row["trimmed_sha256"].as_str() {
-                Some(trimmed) => assert_eq!(trimmed, digest(), "{dir}: {url} trimmed hash"),
-                None => assert_eq!(
-                    row["original_sha256"].as_str().unwrap(),
-                    digest(),
-                    "{dir}: {url} original hash"
-                ),
-            }
-        }
-    }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
-/// Runs the trim tool with isolated stdlib semantics (`-I`) on the given
-/// inputs and fails on a nonzero exit.
-fn run_trim(manifest: &Path, keep: &Path, out_manifest: &Path, out_inventory: &Path) {
-    let (success, stderr) = trim_output(manifest, keep, out_manifest, out_inventory);
-    assert!(success, "trim.py failed: {stderr}");
-}
-
-/// Runs the trim tool and returns whether it succeeded, with its stderr.
-fn trim_output(
-    manifest: &Path,
-    keep: &Path,
-    out_manifest: &Path,
-    out_inventory: &Path,
-) -> (bool, String) {
-    let output = Command::new("python3")
-        .arg("-I")
-        .arg(fixtures_dir().join("trim.py"))
-        .arg(manifest)
-        .arg(keep)
-        .arg(out_manifest)
-        .arg(out_inventory)
-        .output()
-        .expect("python3 runs the trim tool");
-    (
-        output.status.success(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
-}
-
-#[test]
-fn the_trim_tool_roundtrips_the_committed_fixtures() {
-    let keep = fixtures_dir().join("trim-keep.txt");
-    for fixture in ["next.js/16.2.9", "zod/4.6.7"] {
-        let committed = fixtures_dir().join(fixture).join("manifest.json");
-        let out = tempfile::tempdir().unwrap();
-        run_trim(
-            &committed,
-            &keep,
-            &out.path().join("manifest.json"),
-            &out.path().join("inventory.json"),
-        );
-        let retrimmed = std::fs::read(out.path().join("manifest.json")).unwrap();
-        assert_eq!(
-            retrimmed,
-            std::fs::read(&committed).unwrap(),
-            "{fixture}: trim(trimmed) is the identity and the tool matches the committed bytes"
-        );
-    }
-}
-
-#[test]
-fn the_trim_tool_drops_retargets_and_rescues_an_empty_index() {
-    let dir = tempfile::tempdir().unwrap();
-    let manifest = dir.path().join("manifest.json");
-    std::fs::write(
-        &manifest,
-        r##"[
-            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n## A\n\n- [kept](https://x.test/kept.md)\n- [dropped](https://x.test/dropped)\n- [twin](https://x.test/twin)\n- [fenced](https://x.test/fenced)\n```\n- [in fence](https://x.test/in-fence)\n```\n"},
-            {"url": "https://x.test/kept.md", "status": 200, "headers": {}, "body": "# kept\n"},
-            {"url": "https://x.test/twin.md", "status": 200, "headers": {}, "body": "# twin\n"}
-        ]"##,
-    )
-    .unwrap();
-    let keep = dir.path().join("keep.txt");
-    std::fs::write(
-        &keep,
-        "https://x.test/llms.txt\nhttps://x.test/kept.md\nhttps://x.test/twin.md\n",
-    )
-    .unwrap();
-    let out = dir.path().join("trimmed.json");
-    run_trim(&manifest, &keep, &out, &dir.path().join("inventory.json"));
-
-    let trimmed: Vec<RecordedResponse> =
-        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    assert_eq!(trimmed.len(), 3, "the index and the two kept pages survive");
-    let index = &trimmed[0].body;
-    assert!(
-        index.contains("(https://x.test/kept.md)"),
-        "kept link stays: {index}"
-    );
-    assert!(
-        index.contains("(https://x.test/twin.md)"),
-        "the dropped page's kept .md twin is retargeted: {index}"
-    );
-    assert!(
-        !index.contains("x.test/dropped"),
-        "dropped links go: {index}"
-    );
-    assert!(
-        index.contains("- [in fence](https://x.test/in-fence)"),
-        "fenced lines are never link lines: {index}"
-    );
-    assert!(
-        !index.contains("(https://x.test/twin)"),
-        "the HTML twin link is gone: {index}"
-    );
-}
-
-#[test]
-fn the_trim_tool_retargets_only_the_destination_of_a_parenthetical_title() {
-    let dir = tempfile::tempdir().unwrap();
-    let manifest = dir.path().join("manifest.json");
-    std::fs::write(
-        &manifest,
-        r##"[
-            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Guide (https://x.test/guide)](https://x.test/guide)\n"},
-            {"url": "https://x.test/guide.md", "status": 200, "headers": {}, "body": "# guide\n"}
-        ]"##,
-    )
-    .unwrap();
-    let keep = dir.path().join("keep.txt");
-    std::fs::write(&keep, "https://x.test/llms.txt\nhttps://x.test/guide.md\n").unwrap();
-    let out = dir.path().join("trimmed.json");
-    run_trim(&manifest, &keep, &out, &dir.path().join("inventory.json"));
-
-    let trimmed: Vec<RecordedResponse> =
-        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    let index = &trimmed[0].body;
-    assert!(
-        index.contains("- [Guide (https://x.test/guide)](https://x.test/guide.md)"),
-        "the title keeps its parentheses, only the destination is retargeted: {index}"
-    );
-    assert!(
-        !index.contains("Guide(https"),
-        "the title is never corrupted into the destination: {index}"
-    );
-}
-
-#[test]
-fn the_trim_tool_refuses_to_rescue_an_empty_index_that_ends_inside_a_fence() {
-    let dir = tempfile::tempdir().unwrap();
-    let keep = dir.path().join("keep.txt");
-    std::fs::write(
-        &keep,
-        "https://x.test/llms.txt\nhttps://x.test/llms-full.txt\n",
-    )
-    .unwrap();
-
-    // The rewrite drops the index's only link line, and the body ends
-    // inside an unclosed fence: appending the export link there would
-    // stay fenced, so the fallback must fail loudly instead.
-    let fenced = dir.path().join("fenced.json");
-    std::fs::write(
-        &fenced,
-        r##"[
-            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [dropped](https://x.test/dropped)\n\n```\nunterminated\n"},
-            {"url": "https://x.test/llms-full.txt", "status": 200, "headers": {}, "body": "# X full\n"}
-        ]"##,
-    )
-    .unwrap();
-    let (_, stderr) = trim_output(
-        &fenced,
-        &keep,
-        &dir.path().join("out.json"),
-        &dir.path().join("out-inventory.json"),
-    );
-    assert!(
-        stderr.contains("ends inside an unclosed code fence"),
-        "the empty-index fallback refuses a body inside an unclosed fence: {stderr}"
-    );
-
-    // Negative control: the same input with the fence closed passes and
-    // gains the export link.
-    let closed = dir.path().join("closed.json");
-    std::fs::write(
-        &closed,
-        r##"[
-            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [dropped](https://x.test/dropped)\n\n```\nunterminated\n```\n"},
-            {"url": "https://x.test/llms-full.txt", "status": 200, "headers": {}, "body": "# X full\n"}
-        ]"##,
-    )
-    .unwrap();
-    let out = dir.path().join("closed-trimmed.json");
-    run_trim(
-        &closed,
-        &keep,
-        &out,
-        &dir.path().join("closed-inventory.json"),
-    );
-    let trimmed: Vec<RecordedResponse> =
-        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    let index = &trimmed[0].body;
-    assert!(
-        index.contains("- [Full documentation](https://x.test/llms-full.txt)"),
-        "the closed index gains the export link: {index}"
-    );
-}
+use common::{run_trim, trim_output};
 
 /// The redirect dual-entry recording: the subpath index is recorded under
 /// both the requested and the final URL, and the keep list holds only the
@@ -359,31 +77,42 @@ fn the_trim_tool_rescues_pages_of_an_unreachable_subpath_index() {
         std::fs::read(&out).unwrap(),
         "trim(trimmed) is the identity"
     );
+}
 
-    // Negative control: the root keeps the link to the requested URL, so
-    // the subpath index is reachable and every kept page is linked
-    // without a rescue — replay parity.
-    let keep_linked = dir.path().join("keep-linked.txt");
+/// Negative control for the unreachable-subpath rescue: the root keeps
+/// the link to the requested URL, so the subpath index is reachable and
+/// every kept page is linked without a rescue — replay parity.
+#[test]
+fn a_reachable_subpath_index_needs_no_rescue() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
     std::fs::write(
-        &keep_linked,
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Guide](https://x.test/guide/llms.txt)\n"},
+            {"url": "https://x.test/guide/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/v2/page.md)\n"},
+            {"url": "https://x.test/guide/v2/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/v2/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/guide/v2/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
         "https://x.test/llms.txt\nhttps://x.test/intro.md\n\
          https://x.test/guide/llms.txt\nhttps://x.test/guide/v2/llms.txt\n\
          https://x.test/guide/v2/page.md\n",
     )
     .unwrap();
-    let out_linked = dir.path().join("trimmed-linked.json");
-    let (_, stderr) = trim_output(
-        &manifest,
-        &keep_linked,
-        &out_linked,
-        &dir.path().join("inventory-linked.json"),
-    );
+    let out = dir.path().join("trimmed.json");
+    let (_, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
     assert!(
         !stderr.contains("no reachable index listed"),
         "the reachable index needs no rescue: {stderr}"
     );
     let linked: Vec<RecordedResponse> =
-        serde_json::from_str(&std::fs::read_to_string(&out_linked).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert!(
         linked[0].body.contains("(https://x.test/guide/llms.txt)"),
         "the root keeps the subpath index link: {}",
@@ -403,9 +132,48 @@ fn the_trim_tool_rescues_pages_of_an_unreachable_subpath_index() {
 /// The rescue host must cover the page: replay ingests a page only under
 /// the scope whose directory is the longest path prefix of the page
 /// (`most_specific_scope`), so a root index at `/docs/` can never host a
-/// page under `/api/` — the trim fails loudly — and a kept deeper index
-/// that covers the page hosts it over the shallower root, its rescue
-/// line landing in the record the rewrite pass already holds.
+/// page under `/api/`.
+#[test]
+fn the_trim_tool_fails_when_no_reachable_index_covers_a_kept_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/docs/llms.txt", "status": 200, "headers": {}, "body": "# Docs\n\n- [Api](https://x.test/api/llms.txt)\n- [Sub Api](https://x.test/docs/api/llms.txt)\n- [Intro](https://x.test/docs/intro.md)\n"},
+            {"url": "https://x.test/api/llms.txt", "status": 200, "headers": {}, "body": "# Api\n\n- [Page](https://x.test/api/intro.md)\n"},
+            {"url": "https://x.test/docs/api/llms.txt", "status": 200, "headers": {}, "body": "# Api\n"},
+            {"url": "https://x.test/docs/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/api/intro.md", "status": 200, "headers": {}, "body": "# api intro\n"},
+            {"url": "https://x.test/docs/api/intro.md", "status": 200, "headers": {}, "body": "# docs api intro\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    // The only listing of the /api page comes from the dropped /api
+    // index, and the /docs root does not cover /api — the replay would
+    // silently drop the page, so the trim fails loudly.
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
+        "https://x.test/docs/llms.txt\nhttps://x.test/docs/intro.md\nhttps://x.test/api/intro.md\n",
+    )
+    .unwrap();
+    let (_, stderr) = trim_output(
+        &manifest,
+        &keep,
+        &dir.path().join("out.json"),
+        &dir.path().join("inventory.json"),
+    );
+    assert!(
+        stderr.contains("no reachable index covers https://x.test/api/intro.md"),
+        "a page no reachable index covers fails loudly: {stderr}"
+    );
+}
+
+/// Positive control for the coverage check: a kept deeper index covers
+/// the page, so the rescue line lands there — not in the shallower root
+/// — in the record the rewrite pass already holds.
 #[test]
 fn the_trim_tool_rescues_pages_only_under_a_covering_reachable_index() {
     let dir = tempfile::tempdir().unwrap();
@@ -423,43 +191,15 @@ fn the_trim_tool_rescues_pages_only_under_a_covering_reachable_index() {
     )
     .unwrap();
 
-    // Negative control: the only listing of the /api page comes from the
-    // dropped /api index, and the /docs root does not cover /api — the
-    // replay would silently drop the page, so the trim fails loudly.
-    let keep = dir.path().join("keep-dropped.txt");
+    let keep = dir.path().join("keep.txt");
     std::fs::write(
         &keep,
-        "https://x.test/docs/llms.txt\nhttps://x.test/docs/intro.md\nhttps://x.test/api/intro.md\n",
-    )
-    .unwrap();
-    let (_, stderr) = trim_output(
-        &manifest,
-        &keep,
-        &dir.path().join("out-dropped.json"),
-        &dir.path().join("inventory-dropped.json"),
-    );
-    assert!(
-        stderr.contains("no reachable index covers https://x.test/api/intro.md"),
-        "a page no reachable index covers fails loudly: {stderr}"
-    );
-
-    // Positive control: the kept deeper index covers the page, so the
-    // rescue line lands there — not in the shallower root — in the
-    // record the rewrite pass already holds.
-    let keep_covered = dir.path().join("keep-covered.txt");
-    std::fs::write(
-        &keep_covered,
         "https://x.test/docs/llms.txt\nhttps://x.test/docs/api/llms.txt\n\
          https://x.test/docs/intro.md\nhttps://x.test/docs/api/intro.md\n",
     )
     .unwrap();
-    let out = dir.path().join("trimmed-covered.json");
-    let (_, stderr) = trim_output(
-        &manifest,
-        &keep_covered,
-        &out,
-        &dir.path().join("inventory-covered.json"),
-    );
+    let out = dir.path().join("trimmed.json");
+    let (_, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
     assert!(
         stderr.contains("no reachable index listed"),
         "the uncovered page is rescued loudly: {stderr}"
@@ -492,12 +232,7 @@ fn the_trim_tool_rescues_pages_only_under_a_covering_reachable_index() {
 /// The subpath index is discovered only through a kept page's
 /// `Link: rel="describedby"` header (relative target resolved against the
 /// page URL) — the root never links it. With the describer kept, the
-/// header queues the index and its page is linked without a rescue; with
-/// the describer dropped, the index is unreachable and the rescue must
-/// carry the page loudly; with the describer kept but the index dropped,
-/// trim fails loudly — the header is never rewritten, so the replay
-/// would follow it and miss. A keep list without the root index cannot
-/// seed the replay at all and fails.
+/// header queues the index and its page is linked without a rescue.
 #[test]
 fn the_trim_tool_follows_describedby_headers_for_reachability() {
     let dir = tempfile::tempdir().unwrap();
@@ -538,62 +273,109 @@ fn the_trim_tool_follows_describedby_headers_for_reachability() {
         "the reachable index keeps its page link: {}",
         index.body
     );
+}
 
-    // Dropped describer: the index is unreachable, so its page must be
-    // rescued into the reachable root instead of passing silently.
-    let keep_dropped = dir.path().join("keep-dropped.txt");
+/// The describer page is dropped: the describedby-discovered index is
+/// unreachable, so its page must be rescued into the reachable root
+/// instead of passing silently.
+#[test]
+fn the_trim_tool_rescues_pages_when_the_describedby_page_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
     std::fs::write(
-        &keep_dropped,
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</guide/llms.txt>; rel=\"describedby\", </style.css>; rel=\"stylesheet\""}, "body": "# api\n"},
+            {"url": "https://x.test/guide/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/guide/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
         "https://x.test/llms.txt\nhttps://x.test/intro.md\n\
          https://x.test/guide/llms.txt\nhttps://x.test/guide/page.md\n",
     )
     .unwrap();
-    let out_dropped = dir.path().join("trimmed-dropped.json");
-    let (_, stderr) = trim_output(
-        &manifest,
-        &keep_dropped,
-        &out_dropped,
-        &dir.path().join("inventory-dropped.json"),
-    );
+    let out = dir.path().join("trimmed.json");
+    let (_, stderr) = trim_output(&manifest, &keep, &out, &dir.path().join("inventory.json"));
     assert!(
         stderr.contains("no reachable index listed"),
         "the dropped describer leaves the index unreachable; the page is rescued: {stderr}"
     );
     let dropped: Vec<RecordedResponse> =
-        serde_json::from_str(&std::fs::read_to_string(&out_dropped).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert!(
         dropped[0].body.contains("(https://x.test/guide/page.md)"),
         "the rescued page line lands in the reachable root: {}",
         dropped[0].body
     );
+}
 
-    // A kept describer whose describedby header names a dropped index
-    // must fail loudly: the header is never rewritten, so the replay
-    // would follow it and miss the kept page's covering index.
-    let keep_no_index = dir.path().join("keep-no-index.txt");
+/// A kept describer whose describedby header names a dropped index must
+/// fail loudly: the header is never rewritten, so the replay would follow
+/// it and miss the kept page's covering index.
+#[test]
+fn the_trim_tool_fails_when_a_describedby_page_names_a_dropped_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
     std::fs::write(
-        &keep_no_index,
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</guide/llms.txt>; rel=\"describedby\", </style.css>; rel=\"stylesheet\""}, "body": "# api\n"},
+            {"url": "https://x.test/guide/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/guide/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(
+        &keep,
         "https://x.test/llms.txt\nhttps://x.test/intro.md\nhttps://x.test/api.html\n",
     )
     .unwrap();
     let (_, stderr) = trim_output(
         &manifest,
-        &keep_no_index,
-        &dir.path().join("out-no-index.json"),
-        &dir.path().join("inventory-no-index.json"),
+        &keep,
+        &dir.path().join("out.json"),
+        &dir.path().join("out-inventory.json"),
     );
     assert!(
         stderr.contains("describedby") && stderr.contains("https://x.test/guide/llms.txt"),
         "a kept page naming a dropped index fails loudly: {stderr}"
     );
+}
 
-    // A keep list without the root index cannot seed the replay: trim
-    // fails loudly instead of writing a corpus nothing can load.
-    let keep_no_root = dir.path().join("keep-no-root.txt");
-    std::fs::write(&keep_no_root, "https://x.test/intro.md\n").unwrap();
+/// A keep list without the root index cannot seed the replay: trim fails
+/// loudly instead of writing a corpus nothing can load.
+#[test]
+fn the_trim_tool_fails_without_the_root_index_to_seed() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r##"[
+            {"url": "https://x.test/llms.txt", "status": 200, "headers": {}, "body": "# X\n\n- [Intro](https://x.test/intro.md)\n- [Api](https://x.test/api.html)\n"},
+            {"url": "https://x.test/api.html", "status": 200, "headers": {"link": "</guide/llms.txt>; rel=\"describedby\", </style.css>; rel=\"stylesheet\""}, "body": "# api\n"},
+            {"url": "https://x.test/guide/llms.txt", "status": 200, "headers": {}, "body": "# Guide\n\n- [Page](https://x.test/guide/page.md)\n"},
+            {"url": "https://x.test/intro.md", "status": 200, "headers": {}, "body": "# intro\n"},
+            {"url": "https://x.test/guide/page.md", "status": 200, "headers": {}, "body": "# page\n"}
+        ]"##,
+    )
+    .unwrap();
+
+    let keep = dir.path().join("keep.txt");
+    std::fs::write(&keep, "https://x.test/intro.md\n").unwrap();
     let (_, stderr) = trim_output(
         &manifest,
-        &keep_no_root,
+        &keep,
         &dir.path().join("out.json"),
         &dir.path().join("out-inventory.json"),
     );

@@ -449,7 +449,7 @@ def reachable_linked_pages(root_url, scope_links, scope_pages, describedby_of):
 
 def select_covering_indexes(unlinked, candidates, reachable):
     """Maps each unlinked page to the record of its deepest covering
-    reachable index and the pages that index rescues."""
+    reachable index and the pages that the index rescues."""
     by_host = {}  # host index URL -> (record, rescued pages)
     for page in unlinked:
         covering = [

@@ -158,9 +158,8 @@ impl Error {
                     Some("run: devdocs add <source> --version <V>")
                 }
                 MissReason::LicenseBlocked => Some("run: devdocs source list"),
-                MissReason::QuarantinedOnly | MissReason::LowConfidence => {
-                    Some("run: devdocs sync [library]")
-                }
+                MissReason::QuarantinedOnly => Some("run: devdocs db quarantine list"),
+                MissReason::LowConfidence => Some("run: devdocs sync [library]"),
                 MissReason::SymbolAbsent => Some("run: devdocs search <symbol>"),
             },
             Self::Upstream { .. } => Some("run: devdocs sync [library]"),

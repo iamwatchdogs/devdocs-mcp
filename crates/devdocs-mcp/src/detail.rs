@@ -231,6 +231,7 @@ mod tests {
             attribution: Some(String::from("© Vercel")),
             confidence: 0.75,
             token_count: 42,
+            code_caution: false,
         }
     }
 

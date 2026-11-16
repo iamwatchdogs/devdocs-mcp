@@ -37,6 +37,12 @@ const QUARANTINE_PLACEHOLDER: &str = "{quarantine_clause}";
 /// through the [`QUARANTINE_PLACEHOLDER`] in the composed SQL.
 const UNSERVED_QUARANTINE_CLAUSE: &str = "AND c.quarantined = 0";
 
+/// The clause the quarantined-match count substitutes for the same
+/// placeholder — it reads exactly the rows [`UNSERVED_QUARANTINE_CLAUSE`]
+/// drops, so the miss classification counts what serving excluded
+/// (docs/implementation/07 §Injection filter).
+const QUARANTINED_ONLY_CLAUSE: &str = "AND c.quarantined = 1";
+
 /// One search or lookup result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -510,6 +516,24 @@ fn fts_source_set_clause(count: usize) -> String {
     format!("{FTS_MATCH_CLAUSE} AND s.source_id IN ({placeholders})")
 }
 
+/// Composes the quarantined-match count query from a WHERE clause: the
+/// shared chunk-id projection, the FTS join, the clause, and the bm25
+/// ordering with the limit. Like [`fts_sql`], but the quarantine
+/// placeholder substitutes [`QUARANTINED_ONLY_CLAUSE`] — the count reads
+/// exactly the rows the serving queries drop. Deterministic in
+/// `where_clause`, so `prepare_cached` stays effective.
+fn quarantined_sql(where_clause: &str) -> String {
+    format!(
+        "SELECT c.chunk_id \
+         FROM {FTS_FROM} \
+         WHERE {where_clause} \
+         ORDER BY bm25(chunks_fts, 5.0, 1.0) \
+         LIMIT ?2"
+    )
+    .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+    .replace(QUARANTINE_PLACEHOLDER, QUARANTINED_ONLY_CLAUSE)
+}
+
 /// Composes one ordinal-ordered query (symbol lookups, full-chunk reads):
 /// one projection column list, one query-specific suffix column at index
 /// 13, the FROM/JOIN, and the clause. Deterministic in its arguments, so
@@ -662,6 +686,71 @@ impl Store {
         let rows = stmt.query_map(rusqlite::params_from_iter(bind), fts_hit)?;
         rows.collect::<Result<Vec<Hit>, _>>()
             .map_err(StoreError::Sql)
+    }
+
+    /// Counts the quarantined chunks an FTS expression matches within the
+    /// scope, bounded by `limit` (docs/implementation/07 §Injection
+    /// filter): the miss classification reads this when the serving rungs
+    /// fused empty, to answer `quarantined_only` instead of
+    /// `low_confidence`. Non-empty `source_ids` scope the count to the
+    /// pinned source set, then a `library` name narrows it
+    /// case-insensitively, and neither gives the every-active-source
+    /// scope — the same narrowing the serving FTS queries apply, only
+    /// counting the rows those queries drop (`quarantined = 1`).
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    pub fn count_quarantined_matches(
+        &self,
+        match_expr: &str,
+        library: Option<&str>,
+        source_ids: &[i64],
+        limit: u32,
+    ) -> Result<usize, StoreError> {
+        if source_ids.is_empty() && library.is_none() {
+            return self.count_quarantined_in(FTS_MATCH_CLAUSE, params![match_expr, limit]);
+        }
+        if !source_ids.is_empty() {
+            let clause = fts_source_set_clause(source_ids.len());
+            let mut bind = Vec::with_capacity(source_ids.len() + 2);
+            bind.push(rusqlite::types::Value::from(match_expr.to_owned()));
+            bind.push(rusqlite::types::Value::from(i64::from(limit)));
+            bind.extend(
+                source_ids
+                    .iter()
+                    .map(|id| rusqlite::types::Value::from(*id)),
+            );
+            return self.count_quarantined_in(&clause, rusqlite::params_from_iter(bind));
+        }
+        self.count_quarantined_in(
+            &format!("{FTS_MATCH_CLAUSE}{FTS_LIBRARY_PREDICATE}"),
+            params![match_expr, limit, library.unwrap_or_default()],
+        )
+    }
+
+    /// Runs one composed quarantined-match count query: the scope clause
+    /// carries the `{license_clause}` and `{quarantine_clause}`
+    /// placeholders, which [`quarantined_sql`] substitutes; the caller's
+    /// bind list carries the match expression at `?1` and the limit at
+    /// `?2`, then any scope values.
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    fn count_quarantined_in(
+        &self,
+        clause: &str,
+        bind: impl rusqlite::Params,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let sql = quarantined_sql(clause);
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(bind, |row| row.get::<_, i64>(0))?;
+        let mut count = 0usize;
+        for row in rows {
+            row.map_err(StoreError::Sql)?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     /// Every chunk of one source in ordinal order — the `open` read path.

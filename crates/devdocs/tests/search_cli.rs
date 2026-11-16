@@ -699,3 +699,32 @@ fn migration_questions_retrieve_both_versions() {
     assert!(served.contains(&"2.0"), "both versions serve: {served:?}");
     assert!(served.contains(&"1.0"), "both versions serve: {served:?}");
 }
+
+/// A query whose only matches sit in quarantined chunks exits 2 with the
+/// `quarantined_only` miss reason and the quarantine-list hint — the
+/// operator learns the corpus carries the match but the filter held it
+/// (docs/implementation/07 §Injection filter, docs/implementation/08
+/// §Error codes). The flags seed behind ingest through the testkit.
+#[test]
+fn a_quarantined_only_match_exits_two_with_the_quarantine_hint() {
+    let (env, config) = indexed_env();
+    let cfg = ["--config", config.to_str().expect("config path")];
+    devdocs_testkit::open_migrated_and(&env.root.join("data").join("docs.db"), |conn| {
+        conn.execute("UPDATE chunks SET quarantined = 1", [])
+            .map(|_| ())
+    })
+    .expect("the corpus quarantines");
+
+    let (code, stdout, stderr) = output(env.cmd(), &["search", "client", "--json", cfg[0], cfg[1]]);
+    assert_eq!(code, 2, "stdout: {stdout} stderr: {stderr}");
+    let error: Value = serde_json_from(&stderr);
+    assert_eq!(error["error"], "NO_RESULT");
+    assert_eq!(error["miss_reason"], "quarantined_only");
+    assert!(
+        error["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("devdocs db quarantine list"),
+        "stderr: {stderr}"
+    );
+}

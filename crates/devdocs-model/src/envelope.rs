@@ -74,6 +74,14 @@ pub struct ResultItem {
     pub confidence: f64,
     /// The token count of the snippet.
     pub token_count: u64,
+    /// Whether a filter rule annotated the chunk's code with a caution;
+    /// content-derived, so it survives a release
+    /// (docs/implementation/07 §Injection filter). Absent from the JSON
+    /// when false, so identical-DB output stays byte-identical
+    /// (docs/implementation/08 §CLI contract); older envelopes without
+    /// the key deserialize as false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code_caution: bool,
 }
 
 /// A code example in a result item.
@@ -279,6 +287,7 @@ mod tests {
             attribution: None,
             confidence: 1.0,
             token_count: 4,
+            code_caution: false,
         };
 
         let without = serde_json::to_string(&base).unwrap();
@@ -295,6 +304,53 @@ mod tests {
         assert!(
             text.contains(r#""attribution":"CC-BY-4.0 — (c) Acme Corp""#),
             "set attribution must serialize: {text}"
+        );
+        let back: ResultItem = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, with);
+    }
+
+    /// The result item carries `code_caution` only when the chunk carries
+    /// the content-derived caution: the field is skipped in the JSON when
+    /// false and present when true, so identical-DB output stays
+    /// byte-identical (docs/implementation/08 §CLI contract, docs/07
+    /// §Injection filter).
+    #[test]
+    fn result_item_serializes_code_caution_only_when_set() {
+        use super::{Example, ResultItem, VersionStatus};
+
+        let base = ResultItem {
+            doc_ref: String::from("docs://acme/v1.0/intro"),
+            title: String::from("Intro"),
+            section: String::from("Intro"),
+            snippet: String::from("text"),
+            examples: Vec::<Example>::new(),
+            source_url: String::from("https://docs.acme.test/intro.md"),
+            source_commit: String::from("abc"),
+            requested_version: None,
+            served_version: String::from("1.0"),
+            version_status: VersionStatus::Verified,
+            content_hash: String::from("deadbeef"),
+            license_status: String::from("approved_snippet"),
+            attribution: None,
+            confidence: 1.0,
+            token_count: 4,
+            code_caution: false,
+        };
+
+        let without = serde_json::to_string(&base).unwrap();
+        assert!(
+            !without.contains("code_caution"),
+            "false code_caution must be skipped: {without}"
+        );
+
+        let with = ResultItem {
+            code_caution: true,
+            ..base.clone()
+        };
+        let text = serde_json::to_string(&with).unwrap();
+        assert!(
+            text.contains(r#""code_caution":true"#),
+            "set code_caution must serialize: {text}"
         );
         let back: ResultItem = serde_json::from_str(&text).unwrap();
         assert_eq!(back, with);

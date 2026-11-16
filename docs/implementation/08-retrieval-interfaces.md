@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-17T11:06:00Z
+timestamp: 2026-11-17T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -82,7 +82,7 @@ Entered only on low confidence or an explicit `miss_reason` match (research: ret
 
 A cold miss returns `not_indexed` with a sync hint. An abstention is a valid result (research: retrieval-design.md §3.7).
 
-`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`, `symbol_absent` — the last one the exact symbol lookup's miss when the target resolved but no symbol matched (hint names `devdocs search <symbol>`). The JSON error on exit 2 carries `miss_reason` and a `hint`; a cold miss — the library or the requested version absent — carries `error = "PKG_NOT_INDEXED"`; a license-blocked miss carries `error = "NOT_AVAILABLE"` with `miss_reason: license_blocked` (docs/implementation/09 §License gate enforcement points); every other valid-query miss `error = "NO_RESULT"` (docs/implementation/05 §Error model).
+`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`, `symbol_absent` — the last one the exact symbol lookup's miss when the target resolved but no symbol matched (hint names `devdocs search <symbol>`), and `quarantined_only` the miss when the rungs matched only quarantined chunks — the injection filter held every match — with the hint naming `devdocs db quarantine list` (docs/implementation/07 §Injection filter). The JSON error on exit 2 carries `miss_reason` and a `hint`; a cold miss — the library or the requested version absent — carries `error = "PKG_NOT_INDEXED"`; a license-blocked miss carries `error = "NOT_AVAILABLE"` with `miss_reason: license_blocked` (docs/implementation/09 §License gate enforcement points); every other valid-query miss `error = "NO_RESULT"` (docs/implementation/05 §Error model).
 
 ## Result envelope
 
@@ -104,13 +104,16 @@ The unified shape for CLI JSON and MCP structured output (research: retrieval-de
     "content_hash": "<hex sha256>",
     "license_status": "approved_snippet",
     "confidence": 0.94,
-    "token_count": 142
+    "token_count": 142,
+    "code_caution": false
   }],
   "truncated": false,
   "next_cursor": null,
   "served_at": "2026-10-28T00:00:00Z"
 }
 ```
+
+`code_caution` appears only when a filter rule annotated the chunk's code with a caution — the key is absent from the JSON when false, so identical-DB output stays byte-identical (docs/implementation/07 §Injection filter). A review-flagged chunk still serves, but its fused confidence carries the fixed × 0.5 penalty (docs/implementation/07 §Injection filter). The served snippet and page text pass through the output-side secret redaction (docs/implementation/09 §Secrets and redaction).
 
 Session dedup: with `--session <id>` (and session id in MCP calls), served chunk ids land in `session_trajectory`, and later queries in the same session down-rank already-served chunks instead of re-serving identical text (research: retrieval-design.md §3.8. The Ref measurement motivating it: −5,500 tokens average per request).
 

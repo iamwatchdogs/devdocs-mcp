@@ -5,6 +5,7 @@ pub mod config;
 pub mod docref;
 pub mod envelope;
 pub mod error;
+pub mod redaction;
 pub mod source;
 
 pub use chunk::Chunk;
@@ -15,4 +16,5 @@ pub use envelope::{
     SourceListVersion, SourceSummary, VersionStatus, empty_envelope, now_rfc3339,
 };
 pub use error::{Error, ErrorEnvelope, MissReason, UpstreamCode};
+pub use redaction::{RedactionKind, redact};
 pub use source::{LicenseStatus, SourceId, SourceKind, SourceRecord};

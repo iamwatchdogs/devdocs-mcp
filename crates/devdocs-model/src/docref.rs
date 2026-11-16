@@ -46,8 +46,7 @@ impl ParsedRef {
             None => (tail, None),
         };
         let (version_segment, segment_text) = path.split_once('/')?;
-        // "v", not 'v': alphanumeric char literals trip Lizard's Rust lexer,
-        // which then merges parse with the next impl in its report.
+        // "v", not 'v': Lizard's Rust lexer trips on 'v' (docs/implementation/03 §Git hooks).
         let version = version_segment.strip_prefix("v")?;
         if version.is_empty() {
             return None;

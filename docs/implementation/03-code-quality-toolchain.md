@@ -3,7 +3,7 @@ type: guide
 title: Code Quality Toolchain
 description: The pinned toolchain, formatter policy, lint table, MSRV policy, docs policy, and the pull-request checklist for devdocs. Tool versions verified 2026-10-28, scan-gate tools 2026-11-12.
 tags: [devdocs, toolchain, rustfmt, clippy, msrv, opengrep, lizard, jscpd, trivy]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-16T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -108,7 +108,7 @@ Clippy churn note. Clippy 1.91 through 1.99 renamed and moved several lints (for
 
 `just trivy` runs `trivy fs` with `--scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --skip-dirs target`. The Rust crates are scanned through their `Cargo.lock`, and the rest of the tree is scanned for hard-coded secrets. LOW and MEDIUM findings stay visible but do not fail the gate; triage items go into `.trivyignore`. It is not part of `just ci` and not a CI job — the dependency review workflow gates advisory bumps on PRs (gap named per the agent-ready-repo contract).
 
-`just lizard` runs lizard over `crates/` with `-l rust -C 25 -L 150` and fails on any violation. The limits start above the current worst function (CCN 24, 103 lines), so the gate starts green; tighten them as the outliers refactor. The Rust lexer has known bugs and merges functions that lack a separating blank line, so keep one blank line between test functions (see `crates/devdocs-store/src/license/tests/mod.rs`). It is not part of `just ci` and not a CI job — Codacy lists Lizard as a non-gating complexity metric on PRs (gap named per the agent-ready-repo contract).
+`just lizard` runs lizard over `crates/` with `-l rust -C 25 -L 150` and fails on any violation. The limits start above the current worst function (CCN 24, 103 lines), so the gate starts green; tighten them as the outliers refactor. Lizard's Rust lexer at or before ~1.19 (Codacy's pinned version included) loses the function end at an alphanumeric char literal (e.g. `'v'`) and merges that function's record into the following one; blank-line separation does not prevent it — quote the literal (`"v"`) or run Lizard >= 1.26 (see `crates/devdocs-model/src/docref.rs`). It is not part of `just ci` and not a CI job — Codacy lists Lizard as a non-gating complexity metric on PRs (gap named per the agent-ready-repo contract).
 
 `just jscpd` runs jscpd over `crates/` with the `.jscpd.json` config: rust format, a 50-token minimum clone, `**/tests/**` excluded (fixture repetition is expected there), and a 3% clone-ratio threshold against a 1.5% baseline. A ratio above the threshold fails the push. It is not part of `just ci` and not a CI job — Codacy runs jscpd as a non-gating metric on PRs (gap named per the agent-ready-repo contract).
 

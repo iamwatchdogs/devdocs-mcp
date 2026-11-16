@@ -83,47 +83,23 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     let date = report::now_rfc3339();
     let run_dir = fresh_run_dir(&runs_root, &date, &suite.name)?;
 
-    // The operator config is snapshotted into the run dir before anything
-    // measures it: the plan resolution, the warmup, and every timed child
-    // read the snapshot, so a mid-run edit of the original file cannot
-    // mix two configurations into one gate table (docs/implementation/14
-    // §Harness flow). The snapshot passes the same parse the original
-    // passed at run start: a copy raced with an edit is an input error,
-    // not a subprocess failure.
-    let child_config = child_config_file(options.config.as_deref(), &run_dir)?;
-    if options.config.is_some() {
-        validate_config(&child_config)?;
-    }
+    let child_config = prepare_child_config(options.config.as_deref(), &run_dir)?;
 
-    // The fixture database comes from the store schema, never a copy: the
-    // open runs the same fschecks and pragmas, and the migration is
-    // idempotent (docs/implementation/06).
     let db_path = options
         .db
         .clone()
         .unwrap_or_else(|| run_dir.join("fixture.db"));
-    let store = Store::open(&db_path)?;
-    store.migrate()?;
+    let store = open_fixture_store(&db_path)?;
 
     // The scoring pass must search with the same plan the timed
     // subprocess resolves from `--config`, so a gate row never mixes
     // quality from defaults with latency from the config.
     let plan = resolve_plan(&child_config)?;
     let mut passes = in_process_pass(&store, &suite, &plan)?;
-    // The child's user-config layer lives in an empty scratch dir: its
-    // XDG_CONFIG_HOME names it, so the spawned search never reads the
-    // operator's user config, however broken (docs/implementation/14
-    // §Regression gate).
-    let config_home = run_dir.join("child-config-home");
-    std::fs::create_dir(&config_home).map_err(|source| EvalError::Io {
-        action: "create",
-        path: config_home.clone(),
-        source,
-    })?;
     let p95_ms = subprocess_pass(
         options,
+        &run_dir,
         &db_path,
-        &config_home,
         &child_config,
         &suite,
         &mut passes.rows,
@@ -133,21 +109,16 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
     let corpus = store.list_corpus()?;
     drop(store);
 
-    let metrics = SuiteMetrics::new(&passes.graded);
-    let gate_rows = gates::evaluate(&metrics, Some(p95_ms));
-
-    let db_hash = hash_file(&db_path)?;
-    let bundle = RunData {
-        suite: &suite,
-        date: &date,
-        metrics,
+    let (metrics, gate_rows) = score_and_write(
+        &run_dir,
+        &suite,
+        &date,
+        &baseline_path,
+        &corpus,
+        &db_path,
         p95_ms,
-        gates: &gate_rows,
-        db_hash: &db_hash,
-        baseline_path: &baseline_path,
-        corpus: &corpus,
-    };
-    write_artifacts(&run_dir, &bundle, &passes)?;
+        &passes,
+    )?;
 
     let all_gates_pass = gates::all_pass(&gate_rows);
     Ok(RunOutcome {
@@ -157,6 +128,33 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
         p95_ms,
         all_gates_pass,
     })
+}
+
+/// The operator config is snapshotted into the run dir before anything
+/// measures it: the plan resolution, the warmup, and every timed child
+/// read the snapshot, so a mid-run edit of the original file cannot
+/// mix two configurations into one gate table (docs/implementation/14
+/// §Harness flow). The snapshot passes the same parse the original
+/// passed at run start: a copy raced with an edit is an input error,
+/// not a subprocess failure.
+fn prepare_child_config(
+    options_config: Option<&Path>,
+    run_dir: &Path,
+) -> Result<PathBuf, EvalError> {
+    let child_config = child_config_file(options_config, run_dir)?;
+    if options_config.is_some() {
+        validate_config(&child_config)?;
+    }
+    Ok(child_config)
+}
+
+/// The fixture database comes from the store schema, never a copy: the
+/// open runs the same fschecks and pragmas, and the migration is
+/// idempotent (docs/implementation/06).
+fn open_fixture_store(db_path: &Path) -> Result<Store, EvalError> {
+    let store = Store::open(db_path)?;
+    store.migrate()?;
+    Ok(store)
 }
 
 /// Loads and validates the suite by name or direct path.
@@ -356,24 +354,65 @@ fn child_config_file(options_config: Option<&Path>, run_dir: &Path) -> Result<Pa
 /// [`EvalError::Subprocess`] when the binary is missing or a spawn fails.
 fn subprocess_pass(
     options: &RunOptions,
+    run_dir: &Path,
     db_path: &Path,
-    config_home: &Path,
     config: &Path,
     suite: &Suite,
     rows: &mut [QuestionResult],
 ) -> Result<f64, EvalError> {
+    // The child's user-config layer lives in an empty scratch dir: its
+    // XDG_CONFIG_HOME names it, so the spawned search never reads the
+    // operator's user config, however broken (docs/implementation/14
+    // §Regression gate).
+    let config_home = run_dir.join("child-config-home");
+    std::fs::create_dir(&config_home).map_err(|source| EvalError::Io {
+        action: "create",
+        path: config_home.clone(),
+        source,
+    })?;
     let bin = subprocess::locate_devdocs(options.devdocs_bin.as_deref())?;
     // One warmup call; the cold start is excluded (docs/implementation/14).
-    let warmup = subprocess::run_once(&bin, db_path, config, config_home, &suite.questions[0])?;
+    let warmup = subprocess::run_once(&bin, db_path, config, &config_home, &suite.questions[0])?;
     check_exit(warmup, "warmup")?;
     let mut samples = Vec::with_capacity(rows.len());
     for (row, question) in rows.iter_mut().zip(&suite.questions) {
-        let sample = subprocess::run_once(&bin, db_path, config, config_home, question)?;
+        let sample = subprocess::run_once(&bin, db_path, config, &config_home, question)?;
         check_exit(sample, &question.id)?;
         samples.push(sample.wall_ms);
         row.subprocess = sample;
     }
     Ok(metrics::p95(&samples))
+}
+
+/// Scores the run, hashes the database, and writes the artifacts into
+/// the run dir; returns the metrics and the evaluated gate rows.
+#[allow(clippy::too_many_arguments)] // the phase reads what run() resolved
+fn score_and_write(
+    run_dir: &Path,
+    suite: &Suite,
+    date: &str,
+    baseline_path: &Path,
+    corpus: &[CorpusEntry],
+    db_path: &Path,
+    p95_ms: f64,
+    passes: &InProcess,
+) -> Result<(SuiteMetrics, Vec<Gate>), EvalError> {
+    let metrics = SuiteMetrics::new(&passes.graded);
+    let gate_rows = gates::evaluate(&metrics, Some(p95_ms));
+
+    let db_hash = hash_file(db_path)?;
+    let bundle = RunData {
+        suite,
+        date,
+        metrics,
+        p95_ms,
+        gates: &gate_rows,
+        db_hash: &db_hash,
+        baseline_path,
+        corpus,
+    };
+    write_artifacts(run_dir, &bundle, passes)?;
+    Ok((metrics, gate_rows))
 }
 
 /// Everything the artifacts need, assembled once by the run.

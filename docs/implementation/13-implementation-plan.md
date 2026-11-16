@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-16T09:00:00Z
+timestamp: 2026-11-17T10:10:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -67,7 +67,7 @@ impl Store {
 ```
 
 2. `publish_generation` implements the atomic swap from [07](07-ingest-pipeline.md) inside one transaction.
-3. `search_fts` builds and binds the MATCH expression. The query builder is a separate pure function so proptest can hammer it.
+3. `search_fts` binds the MATCH expression. The builder is a separate pure function owned by this milestone, so proptest can hammer it. [08](08-retrieval-interfaces.md) §Search fixes the construction.
 
 Tests: migration up/down on a temp file. FTS5 bm25-weight and snippet behavior. Publish-then-search round trip. Concurrent open with WAL.
 
@@ -165,27 +165,33 @@ All three steps landed on 2026-11-12. The settled shape lives in [08](08-retriev
 2. Run the harness. Produce the gate report.
 3. Fix what the gate surfaces. Re-run. The gate table must show PASS or a documented triage before Phase 2 starts.
 
-All three steps landed on 2026-11-13. The golden set holds 48 questions across next.js 16.2.9, zod 4.6.7 (recorded via llms.txt), and serde 1.0.229 (git-tag fixture replay), covering seven of the 8 task types (the poisoned case is not yet in the corpus; the tracked report records this). The official gate run (`just eval-corpus && just eval`, run dir `2026-11-13-pilot-7`) reads PASS on every Phase 1 row — symbol recall 1.000, hit@5 1.000, p95 48.9 ms, version correctness 1.000, cost $0 — with the Retrieval-failures row INCONCLUSIVE (the −49% gate needs the M4 baseline measurement, step 4 of M11 below) and `just eval` exiting 2 by design until that baseline lands. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report, the CLI demo, and the MCP spot-check live at `eval/reports/2026-11-13-pilot/`.
+All three steps landed on 2026-11-13. The golden set holds 48 questions across next.js 16.2.9, zod 4.6.7 (recorded via llms.txt), and serde 1.0.229 (git-tag fixture replay), covering seven of the 8 task types (the poisoned case is not yet in the corpus; the tracked report records this). The official gate run (`just eval-corpus && just eval`, run dir `2026-11-13-pilot-7`) reads PASS on every Phase 1 row — symbol recall 1.000, hit@5 1.000, p95 48.9 ms, version correctness 1.000, cost $0 — with the Retrieval-failures row INCONCLUSIVE (the −49% gate needs the failure-rate baseline, step 5 of M11 below. The Phase 1 gate report records that baseline) and `just eval` exiting 2 by design until that baseline lands. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report, the CLI demo, and the MCP spot-check live at `eval/reports/2026-11-13-pilot/`.
 
 ## M11 — Quality pass (4 days)
 
+The ticket set splits the milestone: M11a (#16) owns steps 1 and 2, M11b (#19) owns steps 3 to 5.
+
 1. Injection filter v0 with the rule table from [07](07-ingest-pipeline.md). Quarantine ops.
-2. Session dedup (`session_trajectory`) and `--session`.
-3. Surface trust metadata (`fetched_at`, extractor identity) in results.
-4. Measure the −49% failure delta versus the M4 baseline on the golden set. If the delta is smaller, tune segmentation and headers before adding anything new.
+2. Secret redaction at ingest and at output ([09](09-security-implementation.md)).
+3. Session dedup (`session_trajectory`) and `--session`.
+4. Surface trust metadata (`fetched_at`, extractor identity) in results.
+5. Measure the −49% failure delta versus the failure rate the Phase 1 gate report records. If the delta is smaller, tune segmentation and headers before adding anything new.
 
 ## M12 — Embeddings optional (5 days)
+
+The ticket set splits the milestone: M12a (#17) owns steps 1 and 2, M12b (#20) owns steps 3 and 4, and the sync ticket (#21) owns step 5.
 
 1. Feature `embeddings`: fastembed with bge-small-en-v1.5. Embed at ingest. Store binary-quantized blobs ([06](06-data-model.md)).
 2. Query-side embedding and the vector rung. RRF fusion live with k = 60.
 3. Gate: hit@3 improves on the golden set at p95 < 400 ms. The feature-off build is byte-identical in behavior to M11.
+4. Sync (#21): the explicit `devdocs sync [library]` command ([07](07-ingest-pipeline.md) §Refresh policy). No daemon and no background service (§Do-not-build list).
 
 ## Risk register
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | tree-sitter grammar churn breaks extraction | Medium | Medium | Pinned binding 0.25.8 + grammar pins. Landed without the extraction trait: the regex fallback is not built, and the structured-source half of ingest step 6 is the trigger to add the seam. TS already deferred |
-| FTS5 query builder produces invalid MATCH on odd input | Medium | Low | Property test with an escaper. Every token quoted. Fuzz in CI monthly |
+| FTS5 query builder produces invalid MATCH on odd input | Medium | Low | Property test with an escaper. Every token quoted. Fuzz in CI monthly. The monthly fuzz campaign is a recorded deferral ([12](12-roadmap-milestones.md) §Deferred work register) |
 | reqwest DNS hook changes in a future 0.x | Low | High | The guard wraps reqwest behind one type. The connect-time re-check is independent code that works with or without the hook |
 | rust-trafilatura or dom_smoothie stalls | Low | Low | Both are interchangeable behind the extractor boundary. Htmd is the noted alternate ([10](10-dependency-audit.md)) |
 | rmcp breaking changes (3.x moved fast: 16 releases in 2026) | Medium | Medium | Caret range `3.8.0`; the deny gate refuses an exact pin on the open RUSTSEC-2026-0462 (fixed in 3.9.0). Contract tests catch behavior drift at bump time ([08](08-retrieval-interfaces.md)). rmcp folds EOF and read errors into one `ConnectionClosed`; devdocs distinguishes them in a transport wrapper that captures the stdin read error ([08](08-retrieval-interfaces.md)) |
@@ -196,7 +202,7 @@ All three steps landed on 2026-11-13. The golden set holds 48 questions across n
 ## Do-not-build list
 
 1. No plugin system. The adapter trait is the extension point.
-2. No daemon, no background service. One process per command.
+2. No daemon, no background service. One process per command. The deferral record in [12](12-roadmap-milestones.md) §Deferred work register holds the sync trigger.
 3. No remote registry or sync service. Config is local files.
 4. No LLM calls anywhere in the core. Retrieval is deterministic. Cost stays $0 per query.
 5. No HTML crawl in Phase 1, and only with robots plus license gates later.

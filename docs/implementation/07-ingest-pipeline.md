@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-15T00:00:00Z
+timestamp: 2026-11-17T10:20:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -95,12 +95,16 @@ Implemented shape (M6): the rules above land as follows.
 
 ## OpenAPI adapter
 
+Not scheduled in any milestone. The deferral record in [12](12-roadmap-milestones.md) §Deferred work register holds the decision and the trigger. The `oas3` pin stays the chosen parser ([01](01-tech-stack-decision.md)).
+
 - Parse with the `oas3` crate (0.22.0, verified active 2026-10-28).
 - Emit one chunk per operation: method + path as the symbol (`GET /v1/files`), summary as the title, description, parameters table, and the first request/response example. The API-specification-alone evidence supports signature-first chunks (research: retrieval-design.md §1, CloudAPIBench ablation).
 - Emit one chunk per schema object with its properties. Symbols take the schema name.
 - `$ref` cycles produce a warning and a skipped chunk, never a hang.
 
 ## HTML adapter (last resort)
+
+Last-resort-only and not scheduled in any milestone. The deferral record in [12](12-roadmap-milestones.md) §Deferred work register holds the decision and the trigger.
 
 - Pre-strip with `lol_html` (3.0.2): remove `script`, `style`, `noscript`, `iframe`, `svg`, nav and footer containers by common selectors.
 - Extract main content with `dom_smoothie` (0.19.0) in Markdown output mode. On extraction failure or empty output, fall back to `rust-trafilatura` (2.2.8). Record which extractor produced each chunk.
@@ -190,7 +194,7 @@ Attribution: the operator records the `attribution` line on the config entry. `o
 Order matters. Each stage is a pure function over `RawDocument` streams, so snapshots test it deterministically.
 
 1. **Media split.** JSON/YAML documents route to the OpenAPI-shaped path. Markdown routes to segmentation. HTML routes through the HTML extractor first, which emits Markdown. In this slice the HTML extractor does not exist yet: the ingest loop skips a link whose body starts with a doctype or an `html` tag (case-insensitive, after leading whitespace and a leading BOM), and counts it as skipped. This check looks only at the start of the body. A body that starts with an HTML comment or an XML declaration is not skipped, and HTML inside markdown is not removed, so markup can reach the chunks.
-2. **Dedup.** Exact by SHA-256 across the corpus. Near-dup (cosine over embeddings) is phase 3, feature-gated. Implemented (M3b): the dedup runs at page granularity before the chrome strip, so a duplicate page cannot skew the frequency counts; the hash is the store's canonical hash (CRLF folds to LF), and the dropped count lands in the ingest events.
+2. **Dedup.** Exact by SHA-256 across the corpus. Near-dup (cosine over embeddings) is a recorded deferral ([12](12-roadmap-milestones.md) §Deferred work register). It is feature-gated behind `embeddings`. Implemented (M3b): the dedup runs at page granularity before the chrome strip, so a duplicate page cannot skew the frequency counts; the hash is the store's canonical hash (CRLF folds to LF), and the dropped count lands in the ingest events.
 3. **Chrome strip.** For HTML: the adapter extracts main content before this stage. For Markdown: strip leading site navigation blocks, "edit this page" links, cookie banners, and repeated boilerplate detected by exact-match frequency across the source (a block identical in more than 60% of pages is chrome, except headings). Implemented (M3b): the corpus buffers first, so the strip runs over the whole source; the pattern rules match link-only blocks before the first heading (leading navigation), short edit-link phrasing, and short cookie banners (a cookie mention that also carries a link or the accept/consent call to action); the frequency rule counts distinct pages, not occurrences, and needs at least two pages. A dropped block collapses with the whitespace runs around it, so kept bytes survive byte-exactly and the chunks reassemble the stripped body. Pattern drops report as chrome pattern drops, frequency drops as chrome drops, and the segmenter reports its content-less skips as skipped blocks.
 4. **Segmentation.** Algorithm below.
 5. **Contextual headers.** Prepend the breadcrumb and version to every chunk body: `[{library} {version} › {section path}]` (research: architecture.md §L2. Measured effect −49% retrieval failures, −67% with reranking).
@@ -247,10 +251,12 @@ Velocity-stratified, config-driven (research: architecture.md §L1). Defaults:
 
 | Source class | refresh_days default | Trigger |
 |---|---|---|
-| Core stack libraries (in project lockfiles) | 2 | scheduled + on-demand (`devdocs sync`) |
-| Actively queried, not in lockfiles | 7 | scheduled |
-| Everything else | 30 | on demand only |
+| Core stack libraries (in project lockfiles) | 2 | explicit `devdocs sync` |
+| Actively queried, not in lockfiles | 7 | explicit `devdocs sync` |
+| Everything else | 30 | explicit `devdocs sync` |
 
 - `devdocs sync` checks all approved sources against `refresh_days`, respects ETag/If-None-Match for HTTP sources, and skips anything unchanged by hash.
 - Never refresh a source whose stored license state is below `approved_fetch`. The sync gate reads the store authority and runs the expiry sweep first. A terminal state (`denied`, `expired`, `revoked`) blocks sync; terminal sources emit `not_available` on direct queries and drop from search (docs/implementation/07 §License gate).
 - Every response carries `fetched_at`, so staleness is visible at answer time (research: architecture.md, risk table).
+
+There is no scheduler and no daemon. `devdocs sync` (#21) is an explicit command. It runs the refresh check against `refresh_days` when the operator runs it. The do-not-build list ([13](13-implementation-plan.md)) bans background services.

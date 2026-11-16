@@ -347,6 +347,14 @@ pub struct StoredChunk {
     pub token_count: i64,
     /// The chunk position inside the source.
     pub ordinal: i64,
+    /// The injection filter's quarantine flag.
+    pub quarantined: bool,
+    /// The injection filter's review flag.
+    pub review_flagged: bool,
+    /// The comma-joined rule names, or `None` for a clean chunk.
+    pub rule_names: Option<String>,
+    /// The caution annotation on the chunk's code fences.
+    pub code_caution: bool,
 }
 
 /// Reads every chunk row of every active source, joined with its source
@@ -358,7 +366,8 @@ pub fn read_chunks(path: &Path) -> Result<Vec<StoredChunk>, rusqlite::Error> {
     let conn = Connection::open(path)?;
     let mut statement = conn.prepare(
         "SELECT c.source_id, s.library, s.version, c.content_hash, c.section_path, c.text, \
-                c.token_count, c.ordinal \
+                c.token_count, c.ordinal, c.quarantined, c.review_flagged, c.rule_names, \
+                c.code_caution \
          FROM chunks c JOIN sources s ON s.source_id = c.source_id \
          WHERE s.active = 1 \
          ORDER BY s.library, s.version, c.ordinal",
@@ -373,6 +382,10 @@ pub fn read_chunks(path: &Path) -> Result<Vec<StoredChunk>, rusqlite::Error> {
             text: row.get(5)?,
             token_count: row.get(6)?,
             ordinal: row.get(7)?,
+            quarantined: row.get(8)?,
+            review_flagged: row.get(9)?,
+            rule_names: row.get(10)?,
+            code_caution: row.get(11)?,
         })
     })?;
     rows.collect()

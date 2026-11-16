@@ -31,6 +31,7 @@ ctrlc.workspace = true
 devdocs-model.workspace = true
 devdocs-store.workspace = true
 ignore.workspace = true
+regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-17T10:20:00Z
+timestamp: 2026-11-17T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -193,11 +193,14 @@ Attribution: the operator records the `attribution` line on the config entry. `o
 
 Order matters. Each stage is a pure function over `RawDocument` streams, so snapshots test it deterministically.
 
+0. **ANSI strip.** Implemented (M11a): before dedup, every page body runs the ANSI-strip pass (`devdocs_ingest::text::strip_ansi`). The pass removes CSI sequences, OSC sequences, other ECMA-48 escapes, and bare C0 control bytes. It keeps `\n`, `\r`, and `\t`. The pass runs in the same `spawn_blocking` region as the dedup, so the dedup hash, the chrome counts, and every token count downstream compute on clean text.
 1. **Media split.** JSON/YAML documents route to the OpenAPI-shaped path. Markdown routes to segmentation. HTML routes through the HTML extractor first, which emits Markdown. In this slice the HTML extractor does not exist yet: the ingest loop skips a link whose body starts with a doctype or an `html` tag (case-insensitive, after leading whitespace and a leading BOM), and counts it as skipped. This check looks only at the start of the body. A body that starts with an HTML comment or an XML declaration is not skipped, and HTML inside markdown is not removed, so markup can reach the chunks.
 2. **Dedup.** Exact by SHA-256 across the corpus. Near-dup (cosine over embeddings) is a recorded deferral ([12](12-roadmap-milestones.md) §Deferred work register). It is feature-gated behind `embeddings`. Implemented (M3b): the dedup runs at page granularity before the chrome strip, so a duplicate page cannot skew the frequency counts; the hash is the store's canonical hash (CRLF folds to LF), and the dropped count lands in the ingest events.
 3. **Chrome strip.** For HTML: the adapter extracts main content before this stage. For Markdown: strip leading site navigation blocks, "edit this page" links, cookie banners, and repeated boilerplate detected by exact-match frequency across the source (a block identical in more than 60% of pages is chrome, except headings). Implemented (M3b): the corpus buffers first, so the strip runs over the whole source; the pattern rules match link-only blocks before the first heading (leading navigation), short edit-link phrasing, and short cookie banners (a cookie mention that also carries a link or the accept/consent call to action); the frequency rule counts distinct pages, not occurrences, and needs at least two pages. A dropped block collapses with the whitespace runs around it, so kept bytes survive byte-exactly and the chunks reassemble the stripped body. Pattern drops report as chrome pattern drops, frequency drops as chrome drops, and the segmenter reports its content-less skips as skipped blocks.
 4. **Segmentation.** Algorithm below.
 5. **Contextual headers.** Prepend the breadcrumb and version to every chunk body: `[{library} {version} › {section path}]` (research: architecture.md §L2. Measured effect −49% retrieval failures, −67% with reranking).
+
+   Implemented shape (M11a, the redaction pass): at chunk assembly, before the token count and the content hash, every chunk body runs the secret redaction pass (`devdocs_model::redaction::redact`). Markers replace secret-shaped spans. The stored hash covers the redacted body, so the stored hash and text never diverge and the store's drift check stays sound. Redaction is idempotent, so it never fights the boundary spans the segmentation already fixed. The marker count lands in the ingest events as `redactions`.
 6. **Symbol extraction.** Tree-sitter pass over fenced code blocks (per grammar) plus structured sources (OpenAPI operations, front-matter routes). Populates `chunks.symbol` and `symbols`.
 
    Implemented shape (M5, fences only):
@@ -226,15 +229,17 @@ Goal: chunk shape with heading, breadcrumb, signature, example, and explanation 
 
 Scope: flag, quarantine, and report. Do not attempt language-model detection in v0. The rules are cheap and auditable (research: security-licensing.md §2 item 3).
 
-| Rule | Action |
-|---|---|
-| Directives addressed to a model ("ignore previous instructions", "disregard your rules", "system prompt") in text outside code blocks | quarantine |
-| Instructions that request action ("visit", "download", "run", "curl this", exfiltration verbs) outside code blocks | quarantine |
-| Hidden text: HTML comments larger than 2k chars, zero-width-heavy spans, text-colored-on-text patterns (pre-strip leftovers) | quarantine |
-| A fenced code block whose info string or first line is a shell command that writes outside the workspace (`curl | sh`, `rm -rf`, `git push --force`) | keep, annotate result with `code_caution: true` |
-| Link-to-text ratio above 0.5 in a chunk | flag for review, serve with `confidence` penalty |
+| Rule | Name | Action |
+|---|---|---|
+| Directives addressed to a model ("ignore previous instructions", "disregard your rules", "system prompt") in text outside code blocks | `model_directive` | quarantine |
+| Instructions that request action ("visit this", "download this", "run this", "curl this", exfiltration verbs like "send your API key") outside code blocks. Phrase level: a bare verb ("run the tests") does not fire | `action_request` | quarantine |
+| Hidden text: HTML comments larger than 2k chars, zero-width-heavy spans (`U+200B`–`U+200F`, `U+2060`, `U+FEFF` above 5% of the characters), text-colored-on-text patterns (pre-strip leftovers) | `hidden_text` | quarantine |
+| A fenced code block whose info string or first line is a shell command that writes outside the workspace (`curl | sh`, `rm -rf`, `git push --force`, `sudo `, `chmod 777`) | (annotation, not a rule name) | keep, annotate result with `code_caution: true` |
+| Link-to-text ratio above 0.5 in a chunk | `link_ratio` | flag for review, serve with `confidence` penalty |
 
-Quarantined chunks are visible with `devdocs db quarantine list` and can be released by an operator flag. The tool never serves a quarantined chunk.
+Implemented shape (M11a, filter v0): `devdocs_ingest::filter::run` scores one chunk's text. A small CommonMark fence scanner (up to three spaces of indent, open and close on runs of three or more backticks or tildes, a fence closes on a marker-only line with at least the opening run of the same character, an unterminated fence runs to the end of the text) computes the text outside fenced code blocks. The quarantine rules and the review rule match that out-of-code text only — fenced content is data a tutorial quotes. The caution shapes match each fence's info string and first body line. Per-hit warnings log the rule name and the first 16 hex characters of the chunk's content hash, never the matched text (.agents/instructions/observability). The counters land in the ingest events as `quarantined_chunks`, `review_flagged_chunks`, `code_caution_blocks`, and `redactions`, and flow into the `--json` add envelope.
+
+Quarantined chunks are visible with `devdocs db quarantine list` and can be released by an operator flag. The tool never serves a quarantined chunk. A review-flagged chunk still serves, but the fused score carries a fixed confidence penalty of × 0.5 at serving time — the serving-side factor lands with the next step; the flag stores now.
 
 ## Atomic publish
 

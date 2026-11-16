@@ -594,9 +594,16 @@ impl<'a> IngestJob<'a> {
         origin_url: &str,
     ) -> Result<RunState, IngestError> {
         // Dedup first, so a duplicate page cannot skew the chrome
-        // frequency counts; then the chrome strip.
+        // frequency counts; then the chrome strip. The ANSI pre-stage runs
+        // before both: the dedup hash, the chrome counts, and every token
+        // count downstream compute on clean text
+        // (docs/implementation/07 §Normalization pipeline, the ANSI
+        // pre-stage).
         let (dedup_dropped, chrome_report, docs) = tokio::task::spawn_blocking(move || {
             let mut docs = docs;
+            for doc in &mut docs {
+                doc.body = crate::text::strip_ansi(&doc.body);
+            }
             let dropped = dedup_pages(&mut docs);
             let report = crate::chrome::strip_chrome(&mut docs);
             (dropped, report, docs)
@@ -635,8 +642,24 @@ impl<'a> IngestJob<'a> {
             run.events.skipped_blocks += stats.skipped_blocks;
             run.events.unknown_fence_languages += stats.unknown_fence_languages;
             run.events.unsupported_fence_languages += stats.unsupported_fence_languages;
+            run.events.redactions += stats.redactions;
             for chunk in chunks {
                 let (symbols, symbol) = chunk_symbols(&chunk.header, &chunk.symbols);
+                // The injection filter scores the chunk's text and fills
+                // the flags (docs/implementation/07 §Injection filter).
+                let report = crate::filter::run(&chunk.text);
+                let quarantined = !report.quarantine_rules.is_empty();
+                let review_flagged = !report.review_rules.is_empty();
+                run.events.quarantined_chunks += usize::from(quarantined);
+                run.events.review_flagged_chunks += usize::from(review_flagged);
+                run.events.code_caution_blocks += usize::from(report.code_caution);
+                log_filter_report(&report, &chunk.content_hash);
+                let rule_names = report
+                    .quarantine_rules
+                    .iter()
+                    .chain(report.review_rules.iter())
+                    .map(|rule| (*rule).to_owned())
+                    .collect();
                 run.new_chunks.push(NewChunk {
                     section_path: chunk.section_path,
                     symbols,
@@ -646,13 +669,10 @@ impl<'a> IngestJob<'a> {
                     content_hash: chunk.content_hash,
                     ordinal: u32::try_from(run.new_chunks.len()).unwrap_or(u32::MAX),
                     page_url: doc.page_url.clone(),
-                    // The injection filter step (docs/implementation/07
-                    // §Injection filter) fills the flags; the pipeline
-                    // ships clean chunks until that step lands.
-                    quarantined: false,
-                    review_flagged: false,
-                    rule_names: Vec::new(),
-                    code_caution: false,
+                    quarantined,
+                    review_flagged,
+                    rule_names,
+                    code_caution: report.code_caution,
                 });
             }
             run.events.pages += 1;
@@ -1007,6 +1027,34 @@ fn dedup_pages(docs: &mut Vec<PageDocument>) -> usize {
         tracing::debug!(dropped, "duplicate pages collapsed by content hash");
     }
     dropped
+}
+
+/// Logs one stderr line per filter hit: the rule name plus the first 16
+/// hex characters of the chunk's content hash. Provenance only — never
+/// the matched text or the chunk content
+/// (.agents/instructions/observability).
+fn log_filter_report(report: &crate::filter::FilterReport, content_hash: &[u8; 32]) {
+    use std::fmt::Write as _;
+    let mut hash_hex = String::with_capacity(16);
+    for byte in &content_hash[..8] {
+        let _ = write!(hash_hex, "{byte:02x}");
+    }
+    for rule in &report.quarantine_rules {
+        tracing::warn!(rule = *rule, hash = %hash_hex, "chunk quarantined by the injection filter");
+    }
+    for rule in &report.review_rules {
+        tracing::warn!(
+            rule = *rule,
+            hash = %hash_hex,
+            "chunk review-flagged by the injection filter"
+        );
+    }
+    if report.code_caution {
+        tracing::warn!(
+            hash = %hash_hex,
+            "chunk carries a code fence that writes outside the workspace"
+        );
+    }
 }
 
 /// Segments one page body off the async path. The blocking thread owns the

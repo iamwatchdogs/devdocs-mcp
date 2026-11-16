@@ -201,7 +201,15 @@ fn generated_pages_satisfy_the_segmentation_properties() {
                 chunk.content_hash,
                 devdocs_store::content_hash(&chunk.body)
             );
-            prop_assert_eq!(&page[chunk.page_range.clone()], &chunk.body);
+            // The body is the redaction pass applied to a byte-exact
+            // slice: markers replace secret spans, boundaries never move
+            // (docs/implementation/07 §Normalization pipeline, the
+            // redaction pass).
+            prop_assert_eq!(
+                devdocs_model::redaction::redact(&page[chunk.page_range.clone()]),
+                chunk.body.as_str(),
+                "chunk bodies are redacted byte-exact slices of the page"
+            );
         }
     });
 }
@@ -246,11 +254,61 @@ fn stripped_corpora_reassemble_from_their_chunks() {
             assert_no_content_lost(&doc.body, &chunks)?;
             for chunk in &chunks {
                 prop_assert_eq!(
-                    &doc.body[chunk.page_range.clone()],
-                    &chunk.body,
-                    "chunk bodies are byte-exact slices of the stripped body"
+                    devdocs_model::redaction::redact(&doc.body[chunk.page_range.clone()]),
+                    chunk.body.as_str(),
+                    "chunk bodies are redacted byte-exact slices of the stripped body"
                 );
             }
         }
+    });
+}
+
+/// The redaction pass property over secret-carrying pages
+/// (docs/implementation/07 §Normalization pipeline, the redaction pass):
+/// redaction is idempotent on every chunk body, the stored hash matches
+/// the redacted body, the per-chunk marker count sums into the segment
+/// stats, and chunk boundaries never move.
+#[test]
+fn secret_pages_satisfy_the_redaction_properties() {
+    let secret_page = page_strategy().prop_map(|page| {
+        format!(
+            "{page}\n\nThe setup prints token ghp_0123456789abcdefghijklmnopqrstuvwxyz \
+             in prose.\n\n```http\nAuthorization: Bearer abc123def456ghi789\n```\n"
+        )
+    });
+    proptest!(Config::with_cases(256), |(page in secret_page)| {
+        let segmenter = Segmenter::with_limits(40, 8).unwrap();
+        let (chunks, stats) = segmenter.segment_with_stats("lib", "1.0", &page);
+        let mut markers = 0usize;
+        for chunk in &chunks {
+            let redacted = devdocs_model::redaction::redact(&chunk.body);
+            // Idempotent: re-redacting redacted output changes nothing.
+            prop_assert_eq!(
+                devdocs_model::redaction::redact(&redacted),
+                redacted.as_str(),
+                "redaction must be idempotent"
+            );
+            markers += redacted.matches("[REDACTED:").count();
+            // The stored hash is the hash of the redacted body.
+            prop_assert_eq!(
+                chunk.content_hash,
+                devdocs_store::content_hash(&chunk.body),
+                "the stored hash must cover the redacted body"
+            );
+            // Boundaries never move: the span stays a valid slice of the
+            // page, and the body is the redaction of exactly that slice.
+            prop_assert!(chunk.page_range.start < chunk.page_range.end);
+            prop_assert!(chunk.page_range.end <= page.len());
+            prop_assert_eq!(
+                devdocs_model::redaction::redact(&page[chunk.page_range.clone()]),
+                chunk.body.as_str(),
+                "redaction must not move a chunk boundary"
+            );
+        }
+        prop_assert!(markers > 0, "the secret fixture must redact");
+        prop_assert_eq!(
+            stats.redactions, markers,
+            "the segment stats must carry every marker"
+        );
     });
 }

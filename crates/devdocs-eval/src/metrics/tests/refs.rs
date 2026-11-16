@@ -3,7 +3,7 @@
 
 use crate::metrics::{RetrievedRef, hit_at_5, ref_match, ref_matches};
 
-use super::{hit, on_page, refs};
+use super::{hit, on_page, ref_list};
 
 #[test]
 fn references_render_with_and_without_a_symbol() {
@@ -64,9 +64,9 @@ fn hit_at_5_counts_only_the_top_five() {
     let hits: Vec<RetrievedRef> = (1..=8)
         .map(|i| hit(i, "next.js", "16.2.9", &format!("page{i}"), None))
         .collect();
-    let at_three = refs(&["docs://next.js/v16.2.9/page3"]);
-    let at_six = refs(&["docs://next.js/v16.2.9/page6"]);
-    let absent = refs(&["docs://next.js/v16.2.9/other"]);
+    let at_three = ref_list(&["docs://next.js/v16.2.9/page3"]);
+    let at_six = ref_list(&["docs://next.js/v16.2.9/page6"]);
+    let absent = ref_list(&["docs://next.js/v16.2.9/other"]);
 
     assert!(hit_at_5(&at_three, &hits));
     assert!(!hit_at_5(&at_six, &hits), "rank 6 is outside the top five");

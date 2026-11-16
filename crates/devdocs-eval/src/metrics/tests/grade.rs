@@ -4,7 +4,7 @@
 use crate::metrics::grade_question;
 use crate::suite::{Grader, TaskType};
 
-use super::{hit, question, refs};
+use super::{hit, question, ref_list};
 
 #[test]
 fn unanswerable_questions_pass_only_with_no_hits() {
@@ -22,7 +22,7 @@ fn ref_grader_needs_any_expected_ref() {
     let q = question(
         Grader::RefMatch,
         TaskType::ExactApi,
-        refs(&[
+        ref_list(&[
             "docs://next.js/v16.2.9/proxy",
             "docs://next.js/v16.2.9/config",
         ]),
@@ -39,7 +39,7 @@ fn ref_grader_needs_any_expected_ref() {
 #[test]
 fn symbol_grader_needs_full_recall() {
     let mut q = question(Grader::SymbolMatch, TaskType::ExactApi, Vec::new());
-    q.expect_symbols = Some(refs(&["middleware", "rewrite"]));
+    q.expect_symbols = Some(ref_list(&["middleware", "rewrite"]));
 
     let hits = vec![
         hit(1, "next.js", "16.2.9", "proxy", Some("middleware")),
@@ -61,7 +61,7 @@ fn a_manual_grader_never_passes() {
     let q = question(
         Grader::Manual,
         TaskType::ExactApi,
-        refs(&["docs://next.js/v16.2.9/proxy"]),
+        ref_list(&["docs://next.js/v16.2.9/proxy"]),
     );
     let hits = vec![hit(1, "next.js", "16.2.9", "proxy", None)];
     assert!(
@@ -73,7 +73,7 @@ fn a_manual_grader_never_passes() {
 #[test]
 fn symbols_count_only_from_the_pinned_library_and_version() {
     let mut q = question(Grader::SymbolMatch, TaskType::ExactApi, Vec::new());
-    q.expect_symbols = Some(refs(&["middleware"]));
+    q.expect_symbols = Some(ref_list(&["middleware"]));
 
     let foreign_version = vec![hit(1, "next.js", "16.1.0", "proxy", Some("middleware"))];
     let score = grade_question(&q, &foreign_version, &foreign_version);
@@ -93,7 +93,7 @@ fn version_correctness_checks_the_top_result() {
     let q = question(
         Grader::RefMatch,
         TaskType::ExactApi,
-        refs(&["docs://next.js/v16.2.9/proxy"]),
+        ref_list(&["docs://next.js/v16.2.9/proxy"]),
     );
     let exact = vec![hit(1, "next.js", "16.2.9", "proxy", None)];
     assert_eq!(
@@ -125,7 +125,7 @@ fn a_multi_library_top_hit_grades_against_the_matched_ref() {
     let q = question(
         Grader::RefMatch,
         TaskType::MultiLibrary,
-        refs(&["docs://serde/v1.0.229/derive"]),
+        ref_list(&["docs://serde/v1.0.229/derive"]),
     );
     let serde_hit = vec![hit(1, "serde", "1.0.229", "derive", None)];
     assert_eq!(

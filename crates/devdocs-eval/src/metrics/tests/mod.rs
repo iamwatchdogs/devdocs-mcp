@@ -33,7 +33,7 @@ fn on_page(mut r: RetrievedRef, page: &str) -> RetrievedRef {
     r
 }
 
-fn refs(list: &[&str]) -> Vec<String> {
+fn ref_list(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| (*s).to_owned()).collect()
 }
 

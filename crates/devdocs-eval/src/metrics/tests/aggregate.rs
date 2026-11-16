@@ -4,7 +4,7 @@
 use crate::metrics::{Fraction, QuestionScore, SuiteMetrics, grade_question};
 use crate::suite::{Grader, TaskType};
 
-use super::{hit, question, refs};
+use super::{hit, question, ref_list};
 
 #[test]
 fn symbol_recall_counts_found_over_pinned() {
@@ -32,7 +32,7 @@ fn an_abstention_leaves_the_version_correctness_denominator() {
     let q = question(
         Grader::RefMatch,
         TaskType::ExactApi,
-        refs(&["docs://next.js/v16.2.9/proxy"]),
+        ref_list(&["docs://next.js/v16.2.9/proxy"]),
     );
     let unans = question(Grader::RefMatch, TaskType::Unanswerable, Vec::new());
 
@@ -72,11 +72,11 @@ fn suite_aggregates_use_the_documented_denominators() {
     let q_ref = question(
         Grader::RefMatch,
         TaskType::ExactApi,
-        refs(&["docs://next.js/v16.2.9/proxy"]),
+        ref_list(&["docs://next.js/v16.2.9/proxy"]),
     );
     let q_sym = {
         let mut q = question(Grader::SymbolMatch, TaskType::ExactApi, Vec::new());
-        q.expect_symbols = Some(refs(&["a", "b"]));
+        q.expect_symbols = Some(ref_list(&["a", "b"]));
         q
     };
     let q_unans = question(Grader::RefMatch, TaskType::Unanswerable, Vec::new());

@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-16T00:00:00Z
+timestamp: 2026-11-17T10:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -34,7 +34,7 @@ Order, highest first:
 | `uv.lock` | toml | `[[package]]` rows |
 | `pyproject.toml` | toml | `[project] dependencies` for the request, lockfile for the pin |
 | `go.mod` | internal line parser | `require (...)` blocks |
-| `Gemfile.lock` | internal line parser | `GEM specs` section (phase 2) |
+| `Gemfile.lock` | internal line parser | `GEM specs` section (phase 2; deferred in [12](12-roadmap-milestones.md) §Deferred work register) |
 
 3. Query text mentions (`next.js 16`) as a weak hint. A leading `v` on a mention version is stripped, so the hint matches the index's bare version spelling.
 4. Fallback: no library filter. Search all approved sources. An explicit version that the index carries narrows the fallback to that version; an absent version follows the fallback ladder (§Version policy). A library the lockfile or a query mention named that is absent from the index degrades to this fallback too — the flag layer is the only source that names a library hard.

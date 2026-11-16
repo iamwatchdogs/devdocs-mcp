@@ -528,6 +528,88 @@ fn a_quarantined_chunk_drops_out_of_every_serving_read() {
     );
 }
 
+/// A quarantined chunk never serves through the symbol-search ladder
+/// either: a `symbols` row on a quarantined chunk drops out of every match
+/// mode, while its exact-symbol twin on a served chunk keeps serving, and
+/// the quarantined text never reads back (docs/implementation/07
+/// §Injection filter).
+#[test]
+fn a_quarantined_chunk_drops_out_of_the_symbol_search() {
+    let dir = tempdir().unwrap();
+    let store = devdocs_testkit::open_migrated(&dir.path().join("docs.db")).unwrap();
+    let conn = Connection::open(dir.path().join("docs.db")).unwrap();
+    let source_id = devdocs_testkit::seed_source(&conn, "next.js", true).unwrap();
+    // The served twin carries the same symbol name.
+    devdocs_testkit::seed_chunk(
+        &conn,
+        source_id,
+        0,
+        "[\"Routing\"]",
+        Some("served_function"),
+        "served_function routes requests to handlers.",
+    )
+    .unwrap();
+    // The quarantined twin: same symbol name, secret-carrying text.
+    let quarantined_chunk = devdocs_testkit::seed_flagged_chunk(
+        &conn,
+        source_id,
+        1,
+        "[\"Routing\"]",
+        Some("served_function"),
+        "served_function hides ghp_0123456789abcdefghijklmnopqrstuvwxyz in plain sight.",
+        devdocs_testkit::ChunkFlags {
+            quarantined: true,
+            rule_names: Some("prompt_directive"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // `seed_chunk` fills only `chunks.symbol`; the search drives off the
+    // `symbols` table, so the rows land here for both chunks.
+    conn.execute(
+        "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('served_function', ?1, 'function')",
+        [quarantined_chunk],
+    )
+    .unwrap();
+    let served_chunk: i64 = conn
+        .query_row("SELECT chunk_id FROM chunks WHERE ordinal = 0", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    conn.execute(
+        "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('served_function', ?1, 'function')",
+        [served_chunk],
+    )
+    .unwrap();
+    drop(conn);
+
+    for mode in [
+        devdocs_store::SymbolMatch::Exact,
+        devdocs_store::SymbolMatch::CaseSensitivePrefix,
+        devdocs_store::SymbolMatch::CaseInsensitive,
+    ] {
+        let hits = store
+            .search_symbols(
+                "served_function",
+                mode,
+                devdocs_store::SymbolScope::All,
+                10,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "mode {mode:?}: only the served twin resolves"
+        );
+        assert_ne!(hits[0].chunk_id, quarantined_chunk);
+        assert!(
+            !hits[0].text.contains("ghp_"),
+            "mode {mode:?}: the quarantined text must never read back"
+        );
+    }
+}
+
 /// `code_caution` and `review_flagged` ride the serving reads on `Hit`,
 /// so the retrieval layer can annotate results without a second read.
 #[test]

@@ -421,7 +421,9 @@ impl Store {
     /// ordering stays deterministic in the mode and scope. The
     /// unserved-license clause drops sources that cannot serve content at
     /// query time
-    /// (docs/implementation/09 §License gate enforcement points, point 3).
+    /// (docs/implementation/09 §License gate enforcement points, point 3),
+    /// and the unserved-quarantine clause drops quarantined chunks
+    /// (docs/implementation/07 §Injection filter).
     pub fn search_symbols(
         &self,
         symbol: &str,
@@ -455,13 +457,15 @@ impl Store {
                             ORDER BY {quality} DESC, sym.symbol, sym.kind\
                         ) AS rn \
                  FROM {SYMBOL_FROM} \
-                 WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}{scope_clause}\
+                 WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}\
+                       {QUARANTINE_PLACEHOLDER}{scope_clause}\
              ) \
              WHERE rn = 1 \
              ORDER BY quality DESC, chunk_id \
              LIMIT ?2 OFFSET ?{offset_idx}"
         )
-        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE);
+        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+        .replace(QUARANTINE_PLACEHOLDER, UNSERVED_QUARANTINE_CLAUSE);
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let mut stmt = conn.prepare_cached(&sql)?;
         if let Some(value) = scope_value {

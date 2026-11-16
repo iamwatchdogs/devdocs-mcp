@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-14T00:00:00Z
+timestamp: 2026-11-16T09:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -165,7 +165,7 @@ All three steps landed on 2026-11-12. The settled shape lives in [08](08-retriev
 2. Run the harness. Produce the gate report.
 3. Fix what the gate surfaces. Re-run. The gate table must show PASS or a documented triage before Phase 2 starts.
 
-All three steps landed on 2026-11-13. The golden set holds 48 questions across next.js 16.2.9, zod 4.6.7 (recorded via llms.txt), and serde 1.0.229 (git-tag fixture replay), covering all 8 task types. The official gate run (`just eval-corpus && just eval`, run dir `2026-11-13-pilot-7`) reads PASS on every Phase 1 row — symbol recall 1.000, hit@5 1.000, p95 48.9 ms, version correctness 1.000, cost $0 — with the Retrieval-failures row INCONCLUSIVE (the −49% gate needs the M4 baseline measurement, step 4 of M11 below) and `just eval` exiting 2 by design until that baseline lands. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report, the CLI demo, and the MCP spot-check live at `eval/reports/2026-11-13-pilot/`.
+All three steps landed on 2026-11-13. The golden set holds 48 questions across next.js 16.2.9, zod 4.6.7 (recorded via llms.txt), and serde 1.0.229 (git-tag fixture replay), covering seven of the 8 task types (the poisoned case is not yet in the corpus; the tracked report records this). The official gate run (`just eval-corpus && just eval`, run dir `2026-11-13-pilot-7`) reads PASS on every Phase 1 row — symbol recall 1.000, hit@5 1.000, p95 48.9 ms, version correctness 1.000, cost $0 — with the Retrieval-failures row INCONCLUSIVE (the −49% gate needs the M4 baseline measurement, step 4 of M11 below) and `just eval` exiting 2 by design until that baseline lands. The version-correctness definition was fixed before the run: abstentions leave the denominator ([01](01-tech-stack-decision.md)). The tracked gate report, the CLI demo, and the MCP spot-check live at `eval/reports/2026-11-13-pilot/`.
 
 ## M11 — Quality pass (4 days)
 
@@ -188,7 +188,7 @@ All three steps landed on 2026-11-13. The golden set holds 48 questions across n
 | FTS5 query builder produces invalid MATCH on odd input | Medium | Low | Property test with an escaper. Every token quoted. Fuzz in CI monthly |
 | reqwest DNS hook changes in a future 0.x | Low | High | The guard wraps reqwest behind one type. The connect-time re-check is independent code that works with or without the hook |
 | rust-trafilatura or dom_smoothie stalls | Low | Low | Both are interchangeable behind the extractor boundary. Htmd is the noted alternate ([10](10-dependency-audit.md)) |
-| rmcp breaking changes (3.x moved fast: 16 releases in 2026) | Medium | Medium | Caret range `3.8.0`; the deny gate refuses an exact pin on the open RUSTSEC-2026-0462 (fixed in 3.9.0). Contract tests catch behavior drift at bump time ([08](08-retrieval-interfaces.md)) |
+| rmcp breaking changes (3.x moved fast: 16 releases in 2026) | Medium | Medium | Caret range `3.8.0`; the deny gate refuses an exact pin on the open RUSTSEC-2026-0462 (fixed in 3.9.0). Contract tests catch behavior drift at bump time ([08](08-retrieval-interfaces.md)). rmcp folds EOF and read errors into one `ConnectionClosed`; devdocs distinguishes them in a transport wrapper that captures the stdin read error ([08](08-retrieval-interfaces.md)) |
 | Golden set too small to trust the gates | Medium | High | Grow to GPT2-style sizing (300 tasks) before any external adoption claim ([14](14-benchmark-eval.md)) |
 | Solo-project bus factor | High | Medium | This guide is the bus insurance: every decision and command is written down. CI is the enforcer |
 | SQLite FTS5 edge cases on CJK or mixed-script docs | Medium | Low | unicode61 covers most. Note the limitation in README. Trigram tokenizer is a documented future option |

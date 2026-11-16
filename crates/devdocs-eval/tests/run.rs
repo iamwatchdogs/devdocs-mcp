@@ -2,12 +2,15 @@
 //! database, a tiny suite, and the real `devdocs` binary for the
 //! subprocess pass.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
 
 use devdocs_eval::gates::GateStatus;
 use devdocs_eval::run::{RunOptions, run};
+#[cfg(unix)]
+use devdocs_testkit::sh_quote;
 
 /// Runs the fixture suite once and returns the outcome with its temp dir
 /// and the fixture database path.
@@ -172,13 +175,26 @@ fn config_recording_bin(dir: &std::path::Path, log: &std::path::Path) -> std::pa
         &bin,
         format!(
             "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != \"--config\" ]; do shift; done\n\
-             printf '%s\\n' \"$2\" >> \"{}\"\n",
-            log.display()
+             printf '%s\\n' \"$2\" >> {}\n",
+            sh_quote(log)
         ),
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     bin
+}
+
+/// The config recorder's log redirection survives a quote in the log
+/// path: the script POSIX-escapes the interpolated path, so `/bin/sh`
+/// reads it back as one literal word (`$` and backticks included).
+#[cfg(unix)]
+#[test]
+fn the_config_recorder_escapes_the_log_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("o'brien config log");
+    config_recording_bin(dir.path(), &log);
+    let script = std::fs::read_to_string(dir.path().join("devdocs-config-recorder.sh")).unwrap();
+    assert!(script.contains(&sh_quote(&log)), "{script}");
 }
 
 /// With an operator `--config`, the run dir holds the snapshot the run

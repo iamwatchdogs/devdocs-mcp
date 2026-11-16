@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-15T10:00:00Z
+timestamp: 2026-11-16T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -143,7 +143,7 @@ Commands:
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
 
-`devdocs mcp` serves until the client closes stdin; the server then exits 0 with no error output, also when stdin closes before the initialize handshake.
+`devdocs mcp` serves until the client closes stdin; the server then exits 0 with no error output, also when stdin closes before the initialize handshake. A stdin read failure before the initialize handshake exits 3 and prints the `UPSTREAM_ERROR` envelope on stderr.
 
 `add` dispatches on the source kind (docs/implementation/07 §Priority ladder): an explicit `--kind` wins, then the config `[sources.<name>].kind`, then `llms_txt`. Accepted kinds today: `llms_txt` and `git`. For `git` (docs/implementation/07 §Git adapter), the `--version` value is the pin and is required — a value of exactly 40 hex characters pins a commit, anything else pins a tag, and a leading `-` is refused as a `USAGE` error (exit 1) before any git invocation; a non-SHA pin that names no tag fails as a `USAGE` error (exit 1, `GIT_PIN_NOT_TAG`) from the tag fetch; the docs walk reads the config `[ingest] git_extensions` key. A successful `add --json` report carries `commit_sha` (the captured commit, `null` for `llms_txt`), and every `list --json` item carries `commit_sha: string | null`.
 
@@ -206,6 +206,8 @@ Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — r
 
 The MCP path serves with an empty project context and never walks lockfiles. The CLI keeps the lockfile walk (§Version resolution). No tool carries a cursor parameter. Pagination stays a CLI feature (`--cursor C`, §CLI contract).
 
+rmcp folds a clean stdin EOF and a stdin read error into the same `ServerInitializeError::ConnectionClosed`. The adapter separates the two with a transport read guard on stdin; the exit behavior of each case is the §CLI contract.
+
 Gates:
 
 - The MCP path and the CLI path must produce identical results for the same query against the same DB, minus the `served_at` field, when both sides run with an empty project context. The gate runs the CLI in a clean cwd with no lockfiles; a CLI run from a directory with lockfiles can differ, because the CLI resolves versions from lockfiles (§Version resolution) and the MCP path never walks them (§MCP adapter). The gate lives in `devdocs/tests/mcp_contract.rs`: a 50-query corpus, each entry compared against the spawned CLI (research: architecture.md Phase 2 gate).
@@ -222,7 +224,7 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 | `NO_RESULT` | 2 | Valid query, nothing served |
 | `PKG_NOT_INDEXED` | 2 | Library or version absent from an explicitly named request. Hint names the add command. A lockfile- or mention-named absent library falls through to the fallback search instead |
 | `FETCH_BLOCKED` | 3 | Fetch guard or license gate refused |
-| `UPSTREAM_ERROR` | 3 | Network, git, or parse failure |
+| `UPSTREAM_ERROR` | 3 | Network, git, parse, or transport read failure |
 | `BUDGET_EXCEEDED` | 4 | Budget consumed with no deliverable content |
 | `HASH_MISMATCH` | 3 | Index drifted. Re-sync suggested |
 | `NOT_AVAILABLE` | 2 | The license gate refused the source: `expired`, `revoked`, or `denied`. Carries `miss_reason: license_blocked`; the hint names `run: devdocs source list` |

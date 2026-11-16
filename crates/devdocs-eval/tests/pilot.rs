@@ -1,6 +1,7 @@
 //! The shipped pilot suite passes harness validation and meets the Phase 0
 //! sizing rules (docs/implementation/14 §Pilot).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeSet;

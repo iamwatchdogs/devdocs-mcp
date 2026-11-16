@@ -16,6 +16,7 @@
 //! requested URL — recording covers such sites only through their absolute
 //! links; upgrade when a real gate run needs redirecting relative links.
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -27,6 +28,66 @@ use crate::fixture::RecordedResponse;
 /// The lower-cased header name the replay path reads: the v2 link
 /// relations ride the `Link:` headers (llmstxt.org v2).
 const LINK_HEADER: &str = "link";
+
+/// How often the manifest replace retries while Windows reports the
+/// destination busy, and how long one retry waits. The in-process race
+/// clears on the first retry; the budget also covers a real-time
+/// scanner holding the fresh file for a few hundred milliseconds.
+const MANIFEST_REPLACE_RETRIES: u32 = 10;
+const MANIFEST_REPLACE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Windows: replacing the manifest is not atomic against a concurrent
+/// open — `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` fails while another
+/// writer's replace is in flight or a real-time scanner holds the file,
+/// so the replace is retried. The errors are matched by their raw OS
+/// code — access denied (5), sharing violation (32), lock violation
+/// (33) — because std maps the sharing codes onto unstable
+/// `io::ErrorKind` variants.
+#[cfg(windows)]
+fn is_replace_busy(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33))
+}
+
+/// POSIX: rename(2) replaces an open destination atomically, so a
+/// failure is genuine and never retried.
+#[cfg(not(windows))]
+fn is_replace_busy(_error: &std::io::Error) -> bool {
+    false
+}
+
+/// Renames the filled temp file onto `manifest`, retrying the same
+/// rename with a short backoff while the replace reports the
+/// destination transiently busy; `persist` hands the temp file back on
+/// failure, so no attempt rewrites the body.
+fn replace_manifest(mut tmp: tempfile::NamedTempFile, manifest: &Path) -> Result<(), IngestError> {
+    let mut busy = "the replace never reported a busy state".to_owned();
+    for attempt in 0..MANIFEST_REPLACE_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(MANIFEST_REPLACE_BACKOFF);
+        }
+        match tmp.persist(manifest) {
+            // tempfile 3.10+ hands the open `File` back on success too;
+            // dropping it releases the handle.
+            Ok(_file) => return Ok(()),
+            Err(e) if is_replace_busy(&e.error) => {
+                busy = e.error.to_string();
+                tmp = e.file;
+            }
+            Err(e) => {
+                return Err(IngestError::Fixture {
+                    path: manifest.display().to_string(),
+                    message: e.error.to_string(),
+                });
+            }
+        }
+    }
+    Err(IngestError::Fixture {
+        path: manifest.display().to_string(),
+        message: format!(
+            "the manifest replace stayed busy for {MANIFEST_REPLACE_RETRIES} attempts: {busy}"
+        ),
+    })
+}
 
 /// Collects the responses of one ingest run and writes them as a fixture
 /// manifest.
@@ -66,9 +127,13 @@ impl Recorder {
     /// Writes `<dir>/manifest.json`: one JSON array of recorded responses,
     /// the serialization `FixtureSet::load` parses.
     ///
-    /// The body lands in a sibling `manifest.json.tmp` first and renames
-    /// onto the manifest, so a failed write never leaves a truncated
-    /// manifest behind (atomic-enough: same-directory rename).
+    /// The body lands in a unique same-directory temp file first and
+    /// renames onto the manifest, so a failed write never leaves a
+    /// truncated manifest behind, and two recorders writing one directory
+    /// concurrently never race on a shared temp name. The replace
+    /// retries with a short backoff while Windows reports the
+    /// destination transiently busy — its rename-replace is not atomic
+    /// against a concurrent open.
     ///
     /// # Errors
     /// [`IngestError::Fixture`] when the directory or the file cannot be
@@ -84,16 +149,20 @@ impl Recorder {
             path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
-        let tmp = dir.join("manifest.json.tmp");
-        std::fs::write(&tmp, json).map_err(|e| IngestError::Fixture {
-            path: tmp.display().to_string(),
-            message: e.to_string(),
-        })?;
-        std::fs::rename(&tmp, &manifest).map_err(|e| IngestError::Fixture {
+        // A unique temp per write: concurrent recorders into one dir
+        // would otherwise race on a shared `manifest.json.tmp` and tear
+        // the rename target.
+        let tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| IngestError::Fixture {
             path: manifest.display().to_string(),
             message: e.to_string(),
         })?;
-        Ok(())
+        tmp.as_file()
+            .write_all(json.as_bytes())
+            .map_err(|e| IngestError::Fixture {
+                path: manifest.display().to_string(),
+                message: e.to_string(),
+            })?;
+        replace_manifest(tmp, &manifest)
     }
 
     /// Records or replaces the entry for `url`'s exact string.
@@ -134,6 +203,7 @@ impl Recorder {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::Recorder;
@@ -235,5 +305,29 @@ mod tests {
         std::fs::write(&file, "text").unwrap();
         let error = recorder.write(&file).unwrap_err();
         assert!(matches!(error, crate::error::IngestError::Fixture { .. }));
+    }
+
+    /// Two recorders writing one directory concurrently both succeed and
+    /// leave one parseable manifest: the unique per-write temp files never
+    /// race on a shared name.
+    #[test]
+    fn concurrent_writers_leave_one_parseable_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let dir = dir.path().to_owned();
+                std::thread::spawn(move || {
+                    let recorder = Recorder::new();
+                    let url = Url::parse(&format!("https://docs.acme.test/{i}.md")).unwrap();
+                    recorder.record(&url, &url, 200, &[], "body");
+                    recorder.write(&dir)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let text = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&text).unwrap();
     }
 }

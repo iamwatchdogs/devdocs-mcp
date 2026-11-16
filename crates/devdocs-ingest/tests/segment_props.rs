@@ -3,6 +3,7 @@
 //! ends inside a fenced code block, every fence lands whole inside one
 //! chunk, and the header/hash contract holds for every chunk.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fmt::Write as _;

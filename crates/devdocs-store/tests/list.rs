@@ -1,5 +1,6 @@
 //! Tests for the source listing (docs/08 §CLI contract: `devdocs list`).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use devdocs_model::source::{LicenseStatus, SourceKind, SourceRecord};

@@ -8,6 +8,7 @@
 //! ([`FetchGuard::with_loopback_allowed_for_tests`]); production paths
 //! never set it, and the guard's own unit tests pin that.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;

@@ -34,6 +34,7 @@ pub use temp::{TempClone, install_signal_cleanup};
 /// that serializes the tests creating a `TempClone`.
 #[cfg(test)]
 pub(crate) mod test_util {
+    // Fixture setup must abort the test on failure, so unwrap/expect are fine (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::path::Path;

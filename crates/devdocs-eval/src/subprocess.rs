@@ -127,6 +127,24 @@ fn path_binary(path_var: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Whether a variable name carries the `DEVDOCS_` prefix. Windows
+/// environment names are case-insensitive but case-preserving
+/// (`GetEnvironmentVariableW`), so a lowercase-prefixed `devdocs_*`
+/// variable still resolves for the child and must match the strip.
+#[cfg(windows)]
+fn is_devdocs_env_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes()
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"DEVDOCS_"))
+}
+
+/// Non-Windows: environment names are case-sensitive, so the byte prefix
+/// test is exact.
+#[cfg(not(windows))]
+fn is_devdocs_env_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"DEVDOCS_")
+}
+
 /// Removes every `DEVDOCS_*` variable from the child environment.
 ///
 /// The env config layer merges *after* the `--config` layer
@@ -140,7 +158,7 @@ fn strip_devdocs_env(
     // OsString, not String: `env::vars()` panics on any non-UTF-8
     // variable, so the scan itself must run on raw bytes (the same
     // pattern the testkit `GIT_*` strip uses).
-    for (name, _) in vars.filter(|(name, _)| name.as_encoded_bytes().starts_with(b"DEVDOCS_")) {
+    for (name, _) in vars.filter(|(name, _)| is_devdocs_env_name(name)) {
         command.env_remove(name);
     }
 }
@@ -241,6 +259,7 @@ fn run_once_deadline(
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::path::PathBuf;
@@ -248,6 +267,8 @@ mod tests {
 
     use super::{Question, locate_devdocs, run_once_deadline};
     use crate::suite::{Grader, TaskType};
+    #[cfg(unix)]
+    use devdocs_testkit::sh_quote;
 
     /// A one-question stand-in for the suite loader.
     fn question() -> Question {
@@ -446,14 +467,12 @@ mod tests {
         let args_file = dir.join(format!("{name}.args"));
         let env_file = dir.join(format!("{name}.env"));
         let xdg_file = dir.join(format!("{name}.xdg"));
-        // shortcut: a literal `'` inside a path still breaks the
-        // quoting; upgrade to POSIX escaping if a test ever trips on it
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nenv | grep '^DEVDOCS_' > \
-             '{}'\nprintf '%s\\n' \"${{XDG_CONFIG_HOME-}}\" > '{}'\nexit 0\n",
-            args_file.display(),
-            env_file.display(),
-            xdg_file.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nenv | grep '^DEVDOCS_' > \
+             {}\nprintf '%s\\n' \"${{XDG_CONFIG_HOME-}}\" > {}\nexit 0\n",
+            sh_quote(&args_file),
+            sh_quote(&env_file),
+            sh_quote(&xdg_file)
         );
         stub(dir, name, &body);
         args_file
@@ -508,6 +527,36 @@ mod tests {
             removed,
             vec!["DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT", "DEVDOCS_SEARCH_RRF_K"]
         );
+    }
+
+    /// Windows environment names are case-insensitive but
+    /// case-preserving, so a lowercase-prefixed variable resolves for the
+    /// child and the strip must still match it (the unix suite skips
+    /// this — its names are case-sensitive).
+    #[cfg(windows)]
+    #[test]
+    fn the_spawn_strips_a_mixed_case_devdocs_var() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                (
+                    OsString::from("devdocs_SEARCH_RRF_K"),
+                    OsString::from("123"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["devdocs_SEARCH_RRF_K"]);
     }
 
     /// A non-UTF-8 variable — prefixed or not — must not panic the strip:
@@ -614,6 +663,41 @@ mod tests {
         assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
         drop(dir);
         let _ = std::fs::remove_dir(&spaced_root);
+    }
+
+    /// The recorder stub's redirections survive a single quote in the
+    /// path: the generated script POSIX-escapes every interpolated path
+    /// (each embedded `'` becomes `'\''`), so the quote cannot terminate
+    /// a shell word and the recorded files still land.
+    #[cfg(unix)]
+    #[test]
+    fn the_recorder_stub_survives_paths_with_quotes() {
+        let quoted_root = std::env::temp_dir().join("eval'test dir");
+        std::fs::create_dir_all(&quoted_root).unwrap();
+        let dir = tempfile::tempdir_in(&quoted_root).unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config_home = dir.path().join("config-home");
+        run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &config_home,
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        // All three redirections landed inside the quoted dir with the
+        // expected content — nothing split at the quote.
+        let args = std::fs::read_to_string(dir.path().join("devdocs.args")).unwrap();
+        assert!(args.contains("search"), "{args}");
+        let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
+        assert!(env.is_empty(), "{env}");
+        let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
+        assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
+        drop(dir);
+        let _ = std::fs::remove_dir(&quoted_root);
     }
 
     /// Every spawn carries `--config <path>`: the operator `--config`, or

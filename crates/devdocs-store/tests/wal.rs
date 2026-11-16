@@ -5,6 +5,7 @@
 //! (docs/implementation/05 §Concurrency model, sqlite.org/wal.html):
 //! readers see a consistent snapshot while a writer holds the lock.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Duration;

@@ -8,6 +8,7 @@
 //! (docs/implementation/08 §CLI contract and §MCP adapter; the corpus
 //! lives in `mcp_corpus.rs`).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

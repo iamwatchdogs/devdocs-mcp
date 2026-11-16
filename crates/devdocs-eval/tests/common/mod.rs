@@ -1,5 +1,6 @@
 //! Shared fixtures for the harness integration tests.
 
+// Fixture setup must abort the test on failure, so unwrap/expect are fine (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};

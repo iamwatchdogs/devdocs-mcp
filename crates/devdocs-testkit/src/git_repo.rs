@@ -28,6 +28,37 @@ pub struct DocsRepo {
     pub default_sha: String,
 }
 
+/// Whether a variable name carries the `GIT_` prefix. Windows
+/// environment names are case-insensitive but case-preserving
+/// (`GetEnvironmentVariableW`), so a mixed-case `Git_INDEX_FILE`
+/// variable still resolves for the child and must match the strip.
+#[cfg(windows)]
+fn is_git_env_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes()
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"GIT_"))
+}
+
+/// Non-Windows: environment names are case-sensitive, so the byte prefix
+/// test is exact.
+#[cfg(not(windows))]
+fn is_git_env_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"GIT_")
+}
+
+/// Removes every inherited `GIT_*` variable from the child environment.
+fn strip_git_env(
+    command: &mut Command,
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    // OsString, not String: `env::vars()` panics on any non-UTF-8
+    // variable, so the scan itself must run on raw bytes (the same
+    // pattern the devdocs-eval subprocess strip uses).
+    for (name, _) in vars.filter(|(name, _)| is_git_env_name(name)) {
+        command.env_remove(name);
+    }
+}
+
 /// Run `git` with `args` in `dir` and return trimmed stdout. The
 /// isolation env and argv-only invocation keep the child off the host's
 /// interactive and system configuration and off any enclosing repo.
@@ -48,11 +79,7 @@ where
     // more, all aimed at the enclosing repo. Strip every inherited
     // `GIT_*` var — the list grows across git versions — then pin the
     // isolation vars this fixture needs.
-    for (name, _) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"GIT_") {
-            git.env_remove(name);
-        }
-    }
+    strip_git_env(&mut git, std::env::vars_os());
     git.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
     let output = git.output()?;
@@ -203,6 +230,7 @@ pub fn materialize(source: &Path, fixture: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use tempfile::tempdir;
@@ -292,5 +320,61 @@ mod tests {
             !fixture.path().join("link.md").exists(),
             "the symlink must not reach the fixture"
         );
+    }
+
+    /// The strip removes every inherited `GIT_*` variable: the unit check
+    /// drives [`super::strip_git_env`] with a made-up environment — the
+    /// same shape the devdocs-eval subprocess strip test uses.
+    #[test]
+    fn the_git_fn_strips_the_git_env_vars() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_git_env(
+            &mut command,
+            [
+                (OsString::from("GIT_DIR"), OsString::from("/enclosing/.git")),
+                (
+                    OsString::from("GIT_INDEX_FILE"),
+                    OsString::from("/enclosing/index"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["GIT_DIR", "GIT_INDEX_FILE"]);
+    }
+
+    /// Windows environment names are case-insensitive but
+    /// case-preserving, so a mixed-case `GIT_*` variable resolves for
+    /// the child and the strip must still match it (the unix suite skips
+    /// this — its names are case-sensitive).
+    #[cfg(windows)]
+    #[test]
+    fn the_git_fn_strips_a_mixed_case_git_var() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_git_env(
+            &mut command,
+            [
+                (OsString::from("Git_INDEX_FILE"), OsString::from("x")),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["Git_INDEX_FILE"]);
     }
 }

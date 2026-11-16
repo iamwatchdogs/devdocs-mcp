@@ -13,6 +13,17 @@ use rusqlite::Connection;
 
 use devdocs_store::{Store, StoreError};
 
+/// Quotes a path as one POSIX shell word for a generated `/bin/sh`
+/// script: the path is wrapped in single quotes and every embedded `'`
+/// becomes the close-quote, escaped-quote, reopen-quote idiom (`'\''`),
+/// so any path — spaces, quotes, `$`, and backticks included — stays one
+/// literal shell word the shell never splits or expands.
+#[cfg(unix)]
+#[must_use]
+pub fn sh_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
 /// The shared base test config: the fetch, index, search, and ingest
 /// values every pipeline test starts from, with no sources — the caller
 /// registers its own `[sources.<name>]` entry, so no test writes a
@@ -320,6 +331,7 @@ pub fn read_chunks(path: &Path) -> Result<Vec<StoredChunk>, rusqlite::Error> {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use rusqlite::Connection;

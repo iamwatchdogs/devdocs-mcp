@@ -248,7 +248,7 @@ fn argv_recorder(dir: &Path, name: &str) -> PathBuf {
         &bin,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nexit 0\n",
-            args_file.display()
+            devdocs_testkit::sh_quote(&args_file)
         ),
     )
     .unwrap();
@@ -276,6 +276,13 @@ fn the_global_config_flag_reaches_the_subprocess_spawn() {
     )
     .unwrap();
     let args_file = argv_recorder(&env.root, "devdocs-stub");
+    // The stub quotes the args-file path, so a spaced TMPDIR keeps the
+    // redirect one literal word (mirror of run.rs's recorder probe).
+    let script = std::fs::read_to_string(env.root.join("devdocs-stub")).unwrap();
+    assert!(
+        script.contains(&devdocs_testkit::sh_quote(&args_file)),
+        "{script}"
+    );
 
     let mut args: Vec<String> = vec![
         String::from("eval"),

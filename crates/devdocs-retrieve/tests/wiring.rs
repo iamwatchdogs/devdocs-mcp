@@ -2,6 +2,7 @@
 //! store-open path with its data-directory creation, and the attribution
 //! join the CLI edge and the MCP edge both run.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use devdocs_model::config::{Config, SourceConfig};

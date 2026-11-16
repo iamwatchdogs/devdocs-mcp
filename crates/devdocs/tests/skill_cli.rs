@@ -3,6 +3,7 @@
 //! and the companion workflow over the live search/open surfaces
 //! (docs/implementation/08 §The skill companion).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

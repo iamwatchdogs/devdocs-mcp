@@ -3,6 +3,7 @@
 //! migration rung, miss reasons, and cursor resume, and the `open` and
 //! `verify` ref paths.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use devdocs_model::MissReason;

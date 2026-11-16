@@ -1,6 +1,7 @@
 //! CLI-level tests through the real harness binary (the repo's `assert_cmd`
 //! convention, as in crates/devdocs/tests/cli.rs).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

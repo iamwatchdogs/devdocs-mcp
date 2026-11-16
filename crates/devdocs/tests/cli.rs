@@ -2,6 +2,7 @@
 //! usage remap, stdout purity, and the config subcommands
 //! (docs/implementation/04 §CLI end-to-end).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

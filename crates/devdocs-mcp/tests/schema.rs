@@ -3,6 +3,7 @@
 //! in-process rmcp client (docs/implementation/04: contract tests live
 //! here; docs/implementation/08 §MCP adapter owns the shape).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;

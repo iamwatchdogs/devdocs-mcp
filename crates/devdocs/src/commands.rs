@@ -696,6 +696,7 @@ fn map_license_refusal(error: StoreError) -> Error {
 }
 
 /// The JSON report one transition prints on stdout.
+// Each parameter is one report field; a params struct adds ceremony (tracked in #87).
 #[allow(clippy::too_many_arguments)]
 fn transition_report(
     name: &str,
@@ -933,6 +934,7 @@ fn map_ingest_error(error: devdocs_ingest::IngestError) -> Error {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::collections::BTreeMap;

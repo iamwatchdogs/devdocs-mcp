@@ -74,6 +74,7 @@ pub fn pack(fused: Vec<(Hit, f64)>, limit: usize, max_tokens: u64) -> Packed {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::pack;

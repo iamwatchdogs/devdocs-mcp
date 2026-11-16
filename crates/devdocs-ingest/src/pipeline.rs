@@ -646,6 +646,13 @@ impl<'a> IngestJob<'a> {
                     content_hash: chunk.content_hash,
                     ordinal: u32::try_from(run.new_chunks.len()).unwrap_or(u32::MAX),
                     page_url: doc.page_url.clone(),
+                    // The injection filter step (docs/implementation/07
+                    // §Injection filter) fills the flags; the pipeline
+                    // ships clean chunks until that step lands.
+                    quarantined: false,
+                    review_flagged: false,
+                    rule_names: Vec::new(),
+                    code_caution: false,
                 });
             }
             run.events.pages += 1;

@@ -38,6 +38,21 @@ pub struct NewChunk {
     /// The linked-page URL the chunk's body came from; `None` for chunks
     /// without one (docs/implementation/07 §llms.txt adapter).
     pub page_url: Option<String>,
+    /// Whether the injection filter quarantined the chunk: a quarantined
+    /// chunk is stored but excluded from every serving read until an
+    /// operator releases it (docs/implementation/07 §Injection filter).
+    pub quarantined: bool,
+    /// Whether the filter flagged the chunk for operator review. A
+    /// review flag alone does not block the serve; the chunk shows up in
+    /// `quarantine list` (docs/implementation/07 §Injection filter).
+    pub review_flagged: bool,
+    /// The filter rules that fired on the chunk, comma-joined into
+    /// `chunks.rule_names` on write; empty for a clean chunk.
+    pub rule_names: Vec<String>,
+    /// Whether a rule annotated the chunk's code with a caution that is
+    /// content-derived and survives a release
+    /// (docs/implementation/07 §Injection filter).
+    pub code_caution: bool,
 }
 
 /// A documented symbol and its kind, stored in `chunks.symbol` and
@@ -405,11 +420,17 @@ fn insert_chunks(
     let mut insert = tx
         .prepare(
             "INSERT INTO chunks(source_id, content_hash, section_path, symbol, text, \
-             token_count, ordinal, page_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             token_count, ordinal, page_url, quarantined, review_flagged, rule_names, \
+             code_caution) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )
         .map_err(StoreError::Sql)?;
     for chunk in chunks {
         let section_path = serde_json::to_string(&chunk.section_path)?;
+        let rule_names = if chunk.rule_names.is_empty() {
+            None
+        } else {
+            Some(chunk.rule_names.join(","))
+        };
         insert
             .execute(params![
                 source_id,
@@ -420,6 +441,10 @@ fn insert_chunks(
                 i64::from(chunk.token_count),
                 i64::from(chunk.ordinal),
                 chunk.page_url.as_deref(),
+                i64::from(chunk.quarantined),
+                i64::from(chunk.review_flagged),
+                rule_names,
+                i64::from(chunk.code_caution),
             ])
             .map_err(StoreError::Sql)?;
         let chunk_id = tx.last_insert_rowid();

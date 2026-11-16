@@ -3,7 +3,7 @@ type: guide
 title: Data Model
 description: The complete SQLite schema for devdocs, the FTS5 configuration, the migration system, and the hashing policy. Targets SQLite 3.54 bundled in rusqlite 0.41.
 tags: [devdocs, sqlite, fts5, schema, migrations]
-timestamp: 2026-11-12T00:00:00Z
+timestamp: 2026-11-17T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -150,6 +150,20 @@ Later migration `0003_page_url.sql` adds the linked-page URL to chunks. The colu
 ```sql
 ALTER TABLE chunks ADD COLUMN page_url TEXT;
 ```
+
+Later migration `0005_quarantine_flags.sql` adds the quality-pass flags to chunks (docs/implementation/07 §Injection filter). The migration is non-destructive: existing chunks carry the defaults and stay served.
+
+```sql
+ALTER TABLE chunks ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chunks ADD COLUMN review_flagged INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chunks ADD COLUMN rule_names TEXT;
+ALTER TABLE chunks ADD COLUMN code_caution INTEGER NOT NULL DEFAULT 0;
+```
+
+- `chunks.quarantined` marks a chunk the injection filter refused. Every serving query carries `AND c.quarantined = 0`, so a quarantined chunk never serves, not even on an exact-text match. An operator release clears the flag (docs/implementation/07 §Injection filter).
+- `chunks.review_flagged` marks a chunk that serves but needs operator review. The flag does not block the serve; the chunk shows up in the quarantine list.
+- `chunks.rule_names` records the filter rules that fired, comma-joined. NULL when no rule fired.
+- `chunks.code_caution` annotates content-derived code caution. The flag is not review state and survives a release.
 
 ## FTS5 design decisions
 

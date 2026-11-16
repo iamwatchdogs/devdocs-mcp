@@ -63,6 +63,10 @@ fn chunk(ordinal: u32, symbol: Option<(&str, &str)>, body: &str) -> NewChunk {
         content_hash: content_hash(body),
         ordinal,
         page_url: None,
+        quarantined: false,
+        review_flagged: false,
+        rule_names: Vec::new(),
+        code_caution: false,
     }
 }
 
@@ -469,6 +473,38 @@ fn publish_is_searchable_right_away() {
     let hits = rig.store.search_fts(&expr, 10).unwrap();
     assert_eq!(hits.len(), 1, "publish-then-search round trip");
     assert_eq!(hits[0].symbol.as_deref(), Some("use_router"));
+}
+
+/// A flagged chunk publishes with its quarantine state and reads back
+/// through the serving reads with the flags intact.
+#[test]
+fn a_flagged_chunk_publishes_and_reads_back() {
+    let rig = rig();
+    let mut flagged = chunk(0, None, "A chunk the injection filter flagged.");
+    flagged.quarantined = false;
+    flagged.review_flagged = true;
+    flagged.rule_names = vec!["link_ratio".to_owned(), "hidden_text".to_owned()];
+    flagged.code_caution = true;
+    rig.store
+        .publish_generation(&source(LicenseStatus::ApprovedIndex), &[flagged])
+        .unwrap();
+
+    let stored: (i64, i64, Option<String>, i64) = rig
+        .conn
+        .query_row(
+            "SELECT quarantined, review_flagged, rule_names, code_caution FROM chunks",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (0, 1, Some("link_ratio,hidden_text".to_owned()), 1));
+
+    // The review flag alone does not block the serve; the flags ride Hit.
+    let source_id = rig.store.find_source("next.js", "16.2.9").unwrap().unwrap();
+    let hits = rig.store.source_chunks(source_id).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].review_flagged);
+    assert!(hits[0].code_caution);
 }
 
 /// A second publish replaces the chunk set: the old body drops out of the

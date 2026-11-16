@@ -25,6 +25,18 @@ const LICENSE_PLACEHOLDER: &str = "{license_clause}";
 const UNSERVED_LICENSE_CLAUSE: &str =
     "AND s.license_status NOT IN ('denied', 'expired', 'revoked', 'pending_review')";
 
+/// The placeholder the serving queries carry for the quarantine filter;
+/// [`fts_sql`] and [`plain_sql`] substitute
+/// [`UNSERVED_QUARANTINE_CLAUSE`] for it when they compose the final SQL.
+const QUARANTINE_PLACEHOLDER: &str = "{quarantine_clause}";
+
+/// The WHERE clause that drops quarantined chunks out of every serving
+/// read at query time (docs/implementation/07 §Injection filter): a
+/// quarantined chunk stays stored for the operator list but never serves,
+/// even on an exact-text match. One string, shared by every serving query
+/// through the [`QUARANTINE_PLACEHOLDER`] in the composed SQL.
+const UNSERVED_QUARANTINE_CLAUSE: &str = "AND c.quarantined = 0";
+
 /// One search or lookup result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -62,6 +74,13 @@ pub struct Hit {
     pub source_commit: Option<String>,
     /// The source's license approval stage.
     pub license_status: String,
+    /// Whether a filter rule annotated the chunk's code with a caution;
+    /// content-derived, so it survives a release
+    /// (docs/implementation/07 §Injection filter).
+    pub code_caution: bool,
+    /// Whether the filter flagged the chunk for operator review; does not
+    /// block the serve (docs/implementation/07 §Injection filter).
+    pub review_flagged: bool,
 }
 
 impl Hit {
@@ -104,7 +123,7 @@ fn section_path(
 /// The chunk and source columns both queries share, in a fixed order:
 /// `chunk_id, source_id, library, version, section_path, symbol, text,
 /// token_count, content_hash, origin_url, commit_sha, license_status,
-/// page_url` at indices 0..13.
+/// page_url, code_caution, review_flagged` at indices 0..15.
 struct BaseColumns {
     chunk_id: i64,
     source_id: i64,
@@ -119,6 +138,8 @@ struct BaseColumns {
     source_commit: Option<String>,
     license_status: String,
     page_url: Option<String>,
+    code_caution: bool,
+    review_flagged: bool,
 }
 
 /// Reads [`BaseColumns`] from a row laid out at the shared column order.
@@ -138,6 +159,8 @@ fn base_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaseColumns> {
         source_commit: row.get(10)?,
         license_status: row.get(11)?,
         page_url: row.get(12)?,
+        code_caution: row.get(13)?,
+        review_flagged: row.get(14)?,
     })
 }
 
@@ -155,7 +178,7 @@ fn hash_bytes(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<[u8; 32]>
 }
 
 /// Maps an FTS row laid out at the shared column order to a [`Hit`] with
-/// its `snippet()` fragment and bm25 rank (indices 13, 14).
+/// its `snippet()` fragment and bm25 rank (indices 15, 16).
 fn fts_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
     let base = base_columns(row)?;
     Ok(Hit {
@@ -166,15 +189,17 @@ fn fts_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         section_path: base.section_path,
         symbol: base.symbol,
         symbol_kind: None,
-        snippet: Some(row.get(13)?),
+        snippet: Some(row.get(15)?),
         text: base.text,
         token_count: base.token_count,
-        rank: Some(row.get(14)?),
+        rank: Some(row.get(16)?),
         content_hash: base.content_hash,
         source_url: base.source_url,
         source_commit: base.source_commit,
         license_status: base.license_status,
         page_url: base.page_url,
+        code_caution: base.code_caution,
+        review_flagged: base.review_flagged,
     })
 }
 
@@ -189,7 +214,7 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         version: base.version,
         section_path: base.section_path,
         symbol: base.symbol,
-        symbol_kind: row.get(13)?,
+        symbol_kind: row.get(15)?,
         snippet: None,
         text: base.text,
         token_count: base.token_count,
@@ -199,6 +224,8 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         source_commit: base.source_commit,
         license_status: base.license_status,
         page_url: base.page_url,
+        code_caution: base.code_caution,
+        review_flagged: base.review_flagged,
     })
 }
 
@@ -206,17 +233,18 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
 /// fixed order the row readers ([`base_columns`]) index: `chunk_id`,
 /// `source_id`, `library`, `version`, `section_path`, the symbol slot,
 /// `text`, `token_count`, `content_hash`, `origin_url`, `commit_sha`,
-/// `license_status`, `page_url` at indices 0..13. Each query appends its
-/// query-specific suffix columns behind them. The `$symbol` slot is the
-/// only difference between [`BASE_COLUMNS`] and [`SYMBOL_BASE_COLUMNS`],
-/// so a column added to one list cannot silently miss the other.
+/// `license_status`, `page_url`, `code_caution`, `review_flagged` at
+/// indices 0..15. Each query appends its query-specific suffix columns
+/// behind them. The `$symbol` slot is the only difference between
+/// [`BASE_COLUMNS`] and [`SYMBOL_BASE_COLUMNS`], so a column added to one
+/// list cannot silently miss the other.
 macro_rules! base_columns {
     ($symbol:literal) => {
         concat!(
             "c.chunk_id, c.source_id, s.library, s.version, c.section_path, ",
             $symbol,
             "c.text, c.token_count, c.content_hash, s.origin_url, s.commit_sha, \
-             s.license_status, c.page_url"
+             s.license_status, c.page_url, c.code_caution, c.review_flagged"
         )
     };
 }
@@ -231,7 +259,7 @@ const BASE_COLUMNS: &str = base_columns!("c.symbol, ");
 const SYMBOL_BASE_COLUMNS: &str = base_columns!("sym.symbol, ");
 
 /// The FTS suffix columns behind [`BASE_COLUMNS`]: the `snippet()` fragment
-/// at index 13 and the bm25 rank at index 14, with the documented weights.
+/// at index 15 and the bm25 rank at index 16, with the documented weights.
 const FTS_COLUMNS: &str = "snippet(chunks_fts, 1, '<mark>', '</mark>', '…', 16), \
      bm25(chunks_fts, 5.0, 1.0)";
 
@@ -245,8 +273,12 @@ const FTS_FROM: &str = "chunks_fts \
 /// predicate: the FTS match plus the active-source filter, then the
 /// `{license_clause}` placeholder ([`UNSERVED_LICENSE_CLAUSE`]) that drops
 /// unserved-license sources at query time
-/// (docs/implementation/09 §License gate enforcement points, point 3).
-const FTS_MATCH_CLAUSE: &str = "chunks_fts MATCH ?1 AND s.active = 1 {license_clause}";
+/// (docs/implementation/09 §License gate enforcement points, point 3),
+/// then the `{quarantine_clause}` placeholder
+/// ([`UNSERVED_QUARANTINE_CLAUSE`]) that drops quarantined chunks
+/// (docs/implementation/07 §Injection filter).
+const FTS_MATCH_CLAUSE: &str =
+    "chunks_fts MATCH ?1 AND s.active = 1 {license_clause} {quarantine_clause}";
 
 /// The library-scoped predicate, bound to `?3`, appended to
 /// [`FTS_MATCH_CLAUSE`] before the limit — so the limit counts
@@ -278,9 +310,9 @@ const SYMBOL_FROM: &str = "symbols sym \
      CROSS JOIN sources s ON s.source_id = c.source_id";
 
 /// The symbol-lookup WHERE clause: the exact symbol of one source, active
-/// only, with the unserved-license placeholder.
+/// only, with the unserved-license and quarantine placeholders.
 const SYMBOL_CLAUSE: &str =
-    "sym.symbol = ?1 AND c.source_id = ?2 AND s.active = 1 {license_clause}";
+    "sym.symbol = ?1 AND c.source_id = ?2 AND s.active = 1 {license_clause} {quarantine_clause}";
 
 /// How a symbol query matches the stored `symbols.symbol` values, from the
 /// strongest shape down (docs/implementation/08 §Retrieval ladder, the
@@ -441,8 +473,9 @@ const SOURCE_CHUNKS_FROM: &str = "chunks c \
      JOIN sources s ON s.source_id = c.source_id";
 
 /// The full-chunk-read WHERE clause: every chunk of one active source,
-/// with the unserved-license placeholder.
-const SOURCE_CHUNKS_CLAUSE: &str = "c.source_id = ?1 AND s.active = 1 {license_clause}";
+/// with the unserved-license and quarantine placeholders.
+const SOURCE_CHUNKS_CLAUSE: &str =
+    "c.source_id = ?1 AND s.active = 1 {license_clause} {quarantine_clause}";
 
 /// Composes one FTS query from a WHERE clause: the shared projection, the
 /// FTS join, the clause, and the bm25 ordering with the limit. Deterministic
@@ -457,6 +490,7 @@ fn fts_sql(where_clause: &str) -> String {
          LIMIT ?2"
     )
     .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+    .replace(QUARANTINE_PLACEHOLDER, UNSERVED_QUARANTINE_CLAUSE)
 }
 
 /// Composes the pinned-source-set clause: [`FTS_MATCH_CLAUSE`] plus
@@ -489,6 +523,7 @@ fn plain_sql(columns: &str, from_clause: &str, where_clause: &str, suffix_column
          ORDER BY c.ordinal"
     )
     .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+    .replace(QUARANTINE_PLACEHOLDER, UNSERVED_QUARANTINE_CLAUSE)
 }
 
 /// The source lookup SQL: the lowest active source id for one exact

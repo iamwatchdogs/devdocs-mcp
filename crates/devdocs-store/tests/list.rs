@@ -47,6 +47,10 @@ fn published_sources_list_in_order() {
         content_hash: devdocs_store::content_hash("hello"),
         ordinal: 0,
         page_url: None,
+        quarantined: false,
+        review_flagged: false,
+        rule_names: Vec::new(),
+        code_caution: false,
     }];
     store
         .publish_generation(
@@ -107,6 +111,10 @@ fn a_corrupt_license_status_fails_the_listing() {
                 content_hash: devdocs_store::content_hash("hello"),
                 ordinal: 0,
                 page_url: None,
+                quarantined: false,
+                review_flagged: false,
+                rule_names: Vec::new(),
+                code_caution: false,
             }],
         )
         .unwrap();

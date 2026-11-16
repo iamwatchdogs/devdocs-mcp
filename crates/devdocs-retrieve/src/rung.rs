@@ -311,6 +311,10 @@ mod tests {
                 content_hash: content_hash(text),
                 page_url: None,
                 ordinal: u32::try_from(ordinal).unwrap_or(0),
+                quarantined: false,
+                review_flagged: false,
+                rule_names: Vec::new(),
+                code_caution: false,
             })
             .collect();
         store.publish_generation(&record, &new_chunks).unwrap();

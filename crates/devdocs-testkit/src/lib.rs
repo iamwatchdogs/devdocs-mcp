@@ -180,7 +180,9 @@ pub fn seed_source(conn: &Connection, library: &str, active: bool) -> Result<i64
     Ok(conn.last_insert_rowid())
 }
 
-/// Inserts one chunk row with a fixed hash and returns its id.
+/// Inserts one chunk row with a fixed hash and returns its id. The
+/// quarantine and review columns rely on their schema defaults, so a
+/// seeded chunk stays served.
 pub fn seed_chunk(
     conn: &Connection,
     source_id: i64,
@@ -199,6 +201,51 @@ pub fn seed_chunk(
             symbol,
             text,
             ordinal
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// The quarantine and review state [`seed_flagged_chunk`] writes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChunkFlags<'a> {
+    /// `chunks.quarantined`: excluded from every serving read.
+    pub quarantined: bool,
+    /// `chunks.review_flagged`: listed for review, still served.
+    pub review_flagged: bool,
+    /// The comma-joined filter rule list; `None` stores NULL.
+    pub rule_names: Option<&'a str>,
+    /// `chunks.code_caution`: content-derived caution.
+    pub code_caution: bool,
+}
+
+/// Inserts one flagged chunk row with a fixed hash and returns its id:
+/// [`seed_chunk`] plus the quarantine and review state the serving and
+/// quarantine tests drive.
+pub fn seed_flagged_chunk(
+    conn: &Connection,
+    source_id: i64,
+    ordinal: i64,
+    section_path: &str,
+    symbol: Option<&str>,
+    text: &str,
+    flags: ChunkFlags<'_>,
+) -> Result<i64, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO chunks(source_id, content_hash, section_path, symbol, text, token_count, \
+         ordinal, quarantined, review_flagged, rule_names, code_caution) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 8, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            source_id,
+            &[7u8; 32][..],
+            section_path,
+            symbol,
+            text,
+            ordinal,
+            i64::from(flags.quarantined),
+            i64::from(flags.review_flagged),
+            flags.rule_names,
+            i64::from(flags.code_caution),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -227,6 +274,8 @@ pub fn sample_hit(chunk_id: i64, token_count: u32) -> devdocs_store::Hit {
         page_url: None,
         source_commit: None,
         license_status: "approved_index".to_owned(),
+        code_caution: false,
+        review_flagged: false,
     }
 }
 

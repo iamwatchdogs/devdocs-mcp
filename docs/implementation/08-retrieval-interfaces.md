@@ -91,7 +91,7 @@ The unified shape for CLI JSON and MCP structured output (research: retrieval-de
 ```json
 {
   "results": [{
-    "ref": "docs://next.js/v16.2.9/proxy#rewrite",
+    "ref": "docs://next.js/v16.2.9/docs/proxy@routing/proxy#rewrite",
     "title": "Proxy rewrite",
     "section": "Routing > Proxy",
     "snippet": "...",
@@ -114,7 +114,9 @@ The unified shape for CLI JSON and MCP structured output (research: retrieval-de
 
 Session dedup: with `--session <id>` (and session id in MCP calls), served chunk ids land in `session_trajectory`, and later queries in the same session down-rank already-served chunks instead of re-serving identical text (research: retrieval-design.md §3.8. The Ref measurement motivating it: −5,500 tokens average per request).
 
-Ref derivation: a chunk with an empty section path (content before the first heading), and any path segment whose heading has no ASCII alphanumerics (non-ASCII or punctuation-only text slugs to empty), gets the placeholder segment `index` in its ref — `docs://<library>/v<version>/index`. A symbol that slugs to empty leaves the fragment out. A ref that names several chunks (two pages with the same section title, or several chunks under the placeholder) serves the lowest chunk id.
+Ref derivation: `docs://<library>/v<version>/<page>@<path>[#<fragment>]` — the page part qualifies the served page and is optional. The page is the chunk's page URL path relative to the source root (the path component of the linked page URL after the authority); a chunk without a usable page URL derives the page-less form. A chunk with an empty section path (content before the first heading), and any path segment whose heading has no ASCII alphanumerics (non-ASCII or punctuation-only text slugs to empty), gets the placeholder segment `index` in its path — `docs://<library>/v<version>/index`. A symbol that slugs to empty leaves the fragment out.
+
+Ref resolution (`open`, `verify`): the ref's full section path matches first, restricted to the ref's pinned page when it names one — a section title another page shares cannot win. When nothing matches exactly, the resolution falls back deliberately: the fragment names a symbol, then a section title, and finally the last path segment matches the last section segment of any chunk; when several candidates remain, the lowest chunk id serves. The page part only ever narrows: a page-pinned ref whose page serves no full-path match falls through the same ladder unchanged, and a page-less ref resolves exactly as before.
 
 ## CLI contract
 
@@ -122,7 +124,7 @@ Commands:
 
 | Command | Purpose |
 |---|---|
-| `devdocs add <source> [--version V] [--kind K]` | Ingest a source through the ladder |
+| `devdocs add <source> [--version V] [--kind K] [--fixture DIR] [--record-to DIR]` | Ingest a source through the ladder; `--fixture` replays offline (llms.txt: recorded responses, git: a materialized fixture tree, [07](07-ingest-pipeline.md) §Live-response recording and §Git adapter), `--record-to` records them |
 | `devdocs sync [library]` | Refresh stale approved sources |
 | `devdocs list [--json]` | List indexed libraries and versions |
 | `devdocs search "query" [--library L] [--version V] [--limit N] [--cursor C] [--max-tokens T] [--json]` | Hybrid search |
@@ -137,7 +139,7 @@ Commands:
 | `devdocs mcp [--transport stdio]` | Start the MCP server on stdio |
 | `devdocs db migrate|vacuum|stats|quarantine list` | Database operations |
 | `devdocs config init|show|validate|path` | Configuration operations |
-| `devdocs eval run <suite> [--json]` | Run a golden-set suite (see [14](14-benchmark-eval.md)) |
+| `devdocs eval run <suite> [--db PATH] [--config PATH] [--golden-dir DIR] [--runs-dir DIR] [--devdocs-bin PATH] [--json]` | Run a golden-set suite through the eval harness; prints the gate table, or the `--json` outcome object; exit 2 on any gate FAIL or INCONCLUSIVE ([14](14-benchmark-eval.md) §Harness flow) |
 
 Global flags: `--json` (machine output on stdout), `--db <path>`, `--config <path>`, `--max-tokens <n>`, `--timeout-ms <n>`, `--verbose` (trace logs on stderr), `--quiet`.
 
@@ -226,6 +228,7 @@ Stable `UPPER_SNAKE` codes in JSON errors and MCP errors:
 | `BUDGET_EXCEEDED` | 4 | Budget consumed with no deliverable content |
 | `HASH_MISMATCH` | 3 | Index drifted. Re-sync suggested |
 | `NOT_AVAILABLE` | 2 | The license gate refused the source: `expired`, `revoked`, or `denied`. Carries `miss_reason: license_blocked`; the hint names `run: devdocs source list` |
+| `EVAL_GATE` | 2 | An eval run completed, but a gate is FAIL or INCONCLUSIVE. The detail names the blocked gates ([14](14-benchmark-eval.md) §Harness flow) |
 
 A non-SHA pin that names no tag emits `error: USAGE` (exit 1); `GIT_PIN_NOT_TAG` appears only as the prefix of the `detail` string, not as an error code.
 

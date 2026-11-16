@@ -2,12 +2,15 @@
 //! database, a tiny suite, and the real `devdocs` binary for the
 //! subprocess pass.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
 
 use devdocs_eval::gates::GateStatus;
 use devdocs_eval::run::{RunOptions, run};
+#[cfg(unix)]
+use devdocs_testkit::sh_quote;
 
 /// Runs the fixture suite once and returns the outcome with its temp dir
 /// and the fixture database path.
@@ -24,6 +27,7 @@ fn run_fixture() -> (
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     (dir, db, outcome)
@@ -74,10 +78,54 @@ fn a_run_scores_and_writes_parseable_artifacts() {
 }
 
 #[test]
+fn the_artifacts_name_the_corpus_and_the_host() {
+    let (_dir, _db, outcome) = run_fixture();
+
+    // One corpus row per distinct source: the llms_txt carrier without a
+    // commit sha and the git row with one (docs/implementation/14 §Run
+    // artifacts, docs/implementation/06 §Schema).
+    let results: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("results.json")).unwrap(),
+    )
+    .unwrap();
+    let corpus = results["corpus"].as_array().unwrap();
+    assert_eq!(corpus.len(), 2, "{corpus:?}");
+    let git = corpus
+        .iter()
+        .find(|entry| entry["kind"] == "git")
+        .expect("the git source row");
+    assert_eq!(git["library"], serde_json::json!("test-lib"));
+    assert_eq!(git["version"], serde_json::json!("1.0.0"));
+    assert_eq!(
+        git["origin_url"],
+        serde_json::json!("https://example.test/test-lib.git")
+    );
+    assert_eq!(git["commit_sha"], serde_json::json!(common::GIT_SHA));
+    let llms = corpus
+        .iter()
+        .find(|entry| entry["kind"] == "llms_txt")
+        .expect("the llms_txt source row");
+    assert_eq!(llms["commit_sha"], serde_json::Value::Null);
+
+    // The manifest mirrors the corpus and records the host spec.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(outcome.run_dir.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["corpus"], results["corpus"]);
+    let host = &manifest["host"];
+    assert_eq!(host["os"].as_str().unwrap(), std::env::consts::OS);
+    assert_eq!(host["arch"].as_str().unwrap(), std::env::consts::ARCH);
+    assert!(host["cores"].as_u64().unwrap() > 0);
+    assert!(host["cpu"].is_null() || host["cpu"].is_string());
+}
+
+#[test]
 fn a_run_renders_the_report_and_judges_the_gates() {
     let (_dir, _db, outcome) = run_fixture();
 
-    // The report carries the gate table, the breakdown, and the stub note.
+    // The report carries the gate table, the breakdown, and the live-path
+    // corpus note.
     let md = std::fs::read_to_string(outcome.run_dir.join("report.md")).unwrap();
     assert!(md.contains("## Gate table"));
     assert!(md.contains("exact_api"));
@@ -85,11 +133,12 @@ fn a_run_renders_the_report_and_judges_the_gates() {
         md.contains("not recorded"),
         "no sidecar: minutes unrecorded"
     );
-    assert!(md.contains("Phase 0 stub"));
+    assert!(md.contains("the live hybrid pipeline"));
 
     // Deterministic gates: hit@5 is 1/2 (the absent ref misses), symbol
-    // recall is 1/1, and version correctness is 2/3 (the abstention has no
-    // top hit). The absent ref keeps the table honest: not all PASS.
+    // recall is 1/1, and version correctness is 2/2 (the abstention leaves
+    // the denominator; both served top hits are on-pin). The absent ref
+    // keeps the table honest: not all PASS.
     let status = |name: &str| {
         outcome
             .gates
@@ -100,9 +149,92 @@ fn a_run_renders_the_report_and_judges_the_gates() {
     };
     assert_eq!(status("hit@5"), GateStatus::Fail);
     assert_eq!(status("Symbol recall"), GateStatus::Pass);
-    assert_eq!(status("Version correctness"), GateStatus::Fail);
+    assert_eq!(status("Version correctness"), GateStatus::Pass);
     assert_eq!(status("Cost per 1,000 queries"), GateStatus::Pass);
     assert!(!outcome.all_gates_pass);
+}
+
+/// With no operator `--config`, the run dir holds the empty defaults
+/// file every spawned child loaded (the child cannot fall back to
+/// project discovery through its inherited cwd).
+#[test]
+fn a_run_without_a_config_writes_a_defaults_file_for_the_child() {
+    let (_dir, _db, outcome) = run_fixture();
+    let defaults = outcome.run_dir.join("child-defaults.toml");
+    assert!(defaults.is_file(), "{}", defaults.display());
+    assert_eq!(std::fs::read(&defaults).unwrap(), b"");
+}
+
+/// A stub `devdocs` that appends the value of every `--config` argument
+/// to a log file and exits 0.
+#[cfg(unix)]
+fn config_recording_bin(dir: &std::path::Path, log: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("devdocs-config-recorder.sh");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != \"--config\" ]; do shift; done\n\
+             printf '%s\\n' \"$2\" >> {}\n",
+            sh_quote(log)
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// The config recorder's log redirection survives a quote in the log
+/// path: the script POSIX-escapes the interpolated path, so `/bin/sh`
+/// reads it back as one literal word (`$` and backticks included).
+#[cfg(unix)]
+#[test]
+fn the_config_recorder_escapes_the_log_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("o'brien config log");
+    config_recording_bin(dir.path(), &log);
+    let script = std::fs::read_to_string(dir.path().join("devdocs-config-recorder.sh")).unwrap();
+    assert!(script.contains(&sh_quote(&log)), "{script}");
+}
+
+/// With an operator `--config`, the run dir holds the snapshot the run
+/// measured with: every spawned child — the warmup and one call per
+/// question — received the run-dir `child-config.toml`, not the
+/// operator's original path, so a mid-run edit of the original cannot
+/// reach a timed child.
+#[cfg(unix)]
+#[test]
+fn a_run_with_a_config_snapshots_it_and_every_child_loads_the_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, suite, runs) = common::fixture(dir.path());
+    let config = dir.path().join("corpus.toml");
+    std::fs::write(&config, "[search]\nlimit_default = 3\n").unwrap();
+    let log = dir.path().join("config-log");
+    let outcome = run(&RunOptions {
+        suite: suite.display().to_string(),
+        db: Some(db),
+        golden_dir: Some(dir.path().join("golden")),
+        runs_dir: Some(runs),
+        devdocs_bin: Some(config_recording_bin(dir.path(), &log)),
+        config: Some(config.clone()),
+    })
+    .unwrap();
+
+    // The snapshot lands in the run dir with the operator's bytes.
+    let snapshot = outcome.run_dir.join("child-config.toml");
+    assert!(snapshot.is_file(), "{}", snapshot.display());
+    assert_eq!(
+        std::fs::read(&snapshot).unwrap(),
+        std::fs::read(&config).unwrap()
+    );
+
+    // Every spawned call received the snapshot path, never the original.
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 4, "warmup + one per question");
+    for line in calls.lines() {
+        assert_eq!(std::path::Path::new(line), snapshot, "{line}");
+        assert_ne!(std::path::Path::new(line), config, "{line}");
+    }
 }
 
 #[test]
@@ -121,6 +253,7 @@ fn an_invalid_suite_is_input_error_exit_one() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -143,6 +276,7 @@ fn a_manual_grader_suite_is_refused() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -171,6 +305,7 @@ fn a_failing_subprocess_call_fails_the_run() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(failing_bin(dir.path())),
+        config: None,
     });
     let err = outcome.unwrap_err();
     assert_eq!(err.exit_code(), 3, "{err}");
@@ -187,6 +322,7 @@ fn a_second_run_of_one_suite_gets_its_own_directory() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(dir.path().join("runs")),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     };
     let first = run(&options(db.clone())).unwrap();
     let second = run(&options(db)).unwrap();
@@ -214,6 +350,7 @@ fn a_suite_resolves_by_name_from_the_golden_dir() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     assert_eq!(outcome.metrics.failure_rate.total, 3);
@@ -231,6 +368,7 @@ fn a_direct_suite_path_without_the_jsonl_suffix_keeps_its_stem() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     // The manifest names the suite after the file stem.
@@ -263,6 +401,7 @@ fn a_baseline_record_reaches_the_manifest_and_the_report() {
         golden_dir: Some(dir.path().join("golden")),
         runs_dir: Some(runs),
         devdocs_bin: Some(common::devdocs_bin()),
+        config: None,
     })
     .unwrap();
     let manifest: serde_json::Value = serde_json::from_str(

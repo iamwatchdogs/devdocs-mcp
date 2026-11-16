@@ -4,6 +4,7 @@
 //! `rel="alternate"` markers. Accept a changed snapshot only after reading
 //! the diff.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use insta::{assert_json_snapshot, assert_snapshot};

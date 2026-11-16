@@ -126,7 +126,7 @@ fn p95_gate(p95_ms: Option<f64>) -> Gate {
         gate: "p95 latency",
         measured: p95_ms.map_or_else(
             || "not measured".to_owned(),
-            |ms| format!("{ms:.1} ms (subprocess, after one warmup; placeholder CLI before M4)"),
+            |ms| format!("{ms:.1} ms (subprocess `devdocs search`, after one warmup)"),
         ),
         threshold: "< 400 ms",
         phase: 1,
@@ -136,6 +136,7 @@ fn p95_gate(p95_ms: Option<f64>) -> Gate {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{GateStatus, all_pass, evaluate};
@@ -182,6 +183,21 @@ mod tests {
         let recall = gates.iter().find(|g| g.gate == "Symbol recall").unwrap();
         assert_eq!(recall.status, GateStatus::Inconclusive);
         assert_eq!(recall.measured, "no denominator");
+        assert!(!all_pass(&gates));
+    }
+
+    /// An all-unanswerable suite serves nothing, so version correctness has
+    /// no denominator: the gate is INCONCLUSIVE, also a block.
+    #[test]
+    fn an_empty_version_correctness_denominator_is_inconclusive() {
+        let m = metrics((1, 1), (1, 1), (0, 1), (0, 0));
+        let gates = evaluate(&m, Some(50.0));
+        let version = gates
+            .iter()
+            .find(|g| g.gate == "Version correctness")
+            .unwrap();
+        assert_eq!(version.status, GateStatus::Inconclusive);
+        assert_eq!(version.measured, "no denominator");
         assert!(!all_pass(&gates));
     }
 

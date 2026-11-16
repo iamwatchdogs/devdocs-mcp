@@ -5,6 +5,7 @@
 //! link-local, and metadata forms always fail. The checks here run at the
 //! synchronous `check` level; the wiremock suite covers the network path.
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

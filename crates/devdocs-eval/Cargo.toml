@@ -20,12 +20,14 @@ time.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+devdocs-ingest.workspace = true
 devdocs-testkit.workspace = true
 insta.workspace = true
 proptest.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

@@ -343,6 +343,7 @@ pub(crate) fn warn_on_mode_drift(path: &Path) {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{covering_mount_fstype_from_lines, decode_mountinfo_escapes};

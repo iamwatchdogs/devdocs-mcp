@@ -3,6 +3,7 @@
 //! defensive tests pin the never-panics contract over untrusted fence
 //! content (docs/implementation/09 §Content filtering).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use devdocs_ingest::symbols::{extract, grammar_for};

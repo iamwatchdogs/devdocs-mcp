@@ -1,7 +1,7 @@
 //! Source listings: the `devdocs list` discovery surface
 //! (docs/implementation/08 §CLI contract).
 
-use devdocs_model::SourceSummary;
+use devdocs_model::{CorpusEntry, SourceSummary};
 
 use crate::error::StoreError;
 use crate::store::Store;
@@ -54,5 +54,34 @@ impl Store {
             sources.push(row?);
         }
         Ok(sources)
+    }
+
+    /// Lists the corpus identity the run artifacts name: one entry per
+    /// source row — the `(library, version, kind, origin_url)` key is
+    /// UNIQUE (docs/implementation/06 §Schema) — with the capture commit
+    /// when one is recorded, ordered for a stable serialization.
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] when the query fails.
+    pub fn list_corpus(&self) -> Result<Vec<CorpusEntry>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut statement = conn.prepare(
+            "SELECT library, version, kind, origin_url, commit_sha FROM sources \
+             ORDER BY library, version, kind, origin_url",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(CorpusEntry {
+                library: row.get(0)?,
+                version: row.get(1)?,
+                kind: row.get(2)?,
+                origin_url: row.get(3)?,
+                commit_sha: row.get(4)?,
+            })
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
     }
 }

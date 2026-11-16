@@ -214,6 +214,7 @@ fn verify_private_dir(_path: &Path) -> Result<(), IngestError> {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::path::{Path, PathBuf};

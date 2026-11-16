@@ -63,3 +63,6 @@ desktop.ini
 
 # Codacy analysis CLI local state (per-machine; init via codacy-analysis)
 /.codacy/
+
+# Python bytecode caches from the eval regression check
+__pycache__/

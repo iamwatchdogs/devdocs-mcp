@@ -12,6 +12,7 @@ pub mod guard;
 pub mod license;
 pub mod llms_txt;
 pub mod pipeline;
+pub mod record;
 pub mod relations;
 pub mod resolver;
 
@@ -28,5 +29,6 @@ pub use license::{
 };
 pub use llms_txt::{LlmsLink, LlmsSection, LlmsTxtIndex, parse_llms_txt};
 pub use pipeline::{GitPin, IngestJob, IngestOutcome, TOTAL_INGEST_CAP};
+pub use record::Recorder;
 pub use segment::{PreparedChunk, Segmenter, contextual_header};
 pub use symbols::{ExtractedSymbol, extract, grammar_for};

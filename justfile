@@ -234,12 +234,68 @@ features:
     cargo check --locked -p devdocs-ingest --no-default-features
     cargo check --locked -p devdocs-ingest --features symbols
 
-# Run the default eval suite and print the gate table (docs/implementation/14).
-# A gate that is not PASS exits 2 — the honest state until the retrieval
-# core lands at M4.
+# Unsets every inherited DEVDOCS_* variable except DEVDOCS_HOME. The config
+# loader applies env values after --config (flags > env > project), so an
+# operator export like DEVDOCS_FETCH_MAX_BYTES would change the corpus build,
+# and an invalid value aborts it. Enumerated from env (bash 3.2 has no
+# ${!VAR@}); the eval search subprocess strips the same set
+# (devdocs-eval/src/subprocess.rs). Each recipe line runs in its own shell,
+# so the loop prefixes every add command instead of running once above them.
+strip_devdocs_env := 'for v in $(env | sed -n "s/^\(DEVDOCS_[A-Z_]*\)=.*/\1/p"); do [ "$v" = DEVDOCS_HOME ] || unset "$v"; done;'
+
+# Rebuild the gitignored eval corpus database from the committed fixtures,
+# fully offline (docs/implementation/14 §Fixture corpus). Each library's
+# first add bootstraps its license gate at approved_index; every call is
+# pinned to the corpus config and DB, so no user state is touched. Each
+# add also pins XDG_CONFIG_HOME to the empty eval/runs/xdg-config so the
+# user config layer is skipped — the same isolation the eval harness gives
+# its spawned search.
+eval-corpus:
+    cargo build --locked -p devdocs
+    rm -f eval/runs/corpus.db eval/runs/corpus.db-shm eval/runs/corpus.db-wal
+    mkdir -p eval/runs
+    rm -rf eval/runs/xdg-config
+    mkdir -p eval/runs/xdg-config
+    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
+        --config eval/corpus.toml --db eval/runs/corpus.db \
+        add https://nextjs.org/docs/llms.txt --version 16.2.9 --fixture eval/fixtures/next.js/16.2.9
+    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
+        --config eval/corpus.toml --db eval/runs/corpus.db \
+        add https://zod.dev/llms.txt --version 4.6.7 --fixture eval/fixtures/zod/4.6.7
+    {{strip_devdocs_env}} DEVDOCS_HOME="$PWD/eval/runs/home" XDG_CONFIG_HOME="$PWD/eval/runs/xdg-config" cargo run --locked -q -p devdocs -- \
+        --config eval/corpus.toml --db eval/runs/corpus.db \
+        add https://github.com/serde-rs/serde --kind git --version 1.0.229 --fixture eval/fixtures/serde/1.0.229
+
+# Run the default eval suite against the corpus database and print the gate
+# table (docs/implementation/14). A gate that is not PASS exits 2.
 eval:
     cargo build --locked -p devdocs
-    cargo run -p devdocs-eval -- run pilot
+    @if [ ! -f eval/runs/corpus.db ]; then \
+        echo "eval/runs/corpus.db is missing: run 'just eval-corpus' first (offline, no network)"; \
+        exit 1; \
+    fi
+    cargo run --locked -p devdocs-eval -- run pilot --db eval/runs/corpus.db --config eval/corpus.toml
+
+# The CI-facing eval gate (docs/implementation/14 §Regression gate): run the
+# suite, then compare the fresh gate table against the committed tracked
+# report with eval/regression_check.py. `just eval` exits 2 by design while
+# the Retrieval-failures row is INCONCLUSIVE (its M4 baseline is M11 work);
+# that accepted exit is tolerated here — the recipe fails only when a gate
+# row that was PASS in the tracked report regresses. The run dir `just eval`
+# reported is passed through as the fresh report: two concurrent eval-ci
+# calls in one checkout would otherwise race the newest-report glob and
+# compare the other run's report (the glob stays the fallback).
+eval-ci:
+    @code=0; out="$(just eval)" || code=$?; printf '%s\n' "$out"; \
+      if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then exit "$code"; fi; \
+      echo "just eval exit code accepted (0 = all gates PASS, 2 = the accepted INCONCLUSIVE row)"; \
+      run_dir="$(printf '%s\n' "$out" | sed -n 's/^run: \(.*\) — .*/\1/p')"; \
+      if [ -n "$run_dir" ]; then \
+        python3 eval/regression_check.py --fresh "$run_dir/report.md"; \
+      else \
+        echo "no run dir in 'just eval' output; comparing the newest eval/runs report"; \
+        python3 eval/regression_check.py; \
+      fi
 
 # Public API break detection between releases.
 semver:
@@ -272,3 +328,5 @@ ci:
     @just docs
     @just deny
     @just features
+    @just eval-corpus
+    @just eval-ci

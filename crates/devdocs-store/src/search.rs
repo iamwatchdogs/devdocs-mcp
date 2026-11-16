@@ -71,6 +71,16 @@ impl Hit {
     pub fn result_source_url(&self) -> &str {
         self.page_url.as_deref().unwrap_or(&self.source_url)
     }
+
+    /// The chunk's page URL path relative to the source root, when the
+    /// chunk carries a usable page URL — the page part a `docs://` ref
+    /// qualifies it with (docs/implementation/08 §Ref derivation).
+    #[must_use]
+    pub fn page_path(&self) -> Option<String> {
+        self.page_url
+            .as_deref()
+            .and_then(devdocs_model::docref::page_path)
+    }
 }
 
 /// Reads a `chunks.section_path` JSON string array out of a row column.

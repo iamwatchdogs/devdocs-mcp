@@ -87,6 +87,7 @@ pub(crate) fn validate_ref(
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{ParsedRef, TaskType, ensure_pinned_version, validate_ref};
@@ -141,6 +142,11 @@ mod tests {
             "docs://next.js/v16.2.9/a?b",
             "docs://next.js/v16.2.9/proxy#",
             "docs://next.js/v16.2.9/proxy#a b",
+            // Broken page parts.
+            "docs://next.js/v16.2.9/@proxy",
+            "docs://next.js/v16.2.9/docs/proxy.md@",
+            "docs://next.js/v16.2.9/docs//proxy.md@proxy",
+            "docs://next.js/v16.2.9/docs/a b.md@proxy",
         ];
         for r in cases {
             let err = validate_ref(r, "next.js", "16.2.9", TaskType::ExactApi).unwrap_err();
@@ -159,6 +165,11 @@ mod tests {
                 "16.2.9",
             ),
             ("docs://zod/v4.6.7/parse", "zod", "4.6.7"),
+            (
+                "docs://next.js/v16.2.9/docs/app/proxy.md@app/proxy#rewrite",
+                "next.js",
+                "16.2.9",
+            ),
         ] {
             validate_ref(r, library, version, TaskType::ExactApi)
                 .unwrap_or_else(|e| panic!("{r}: {e}"));
@@ -230,11 +241,18 @@ mod tests {
             library in "[a-z][a-z0-9.]{2,15}",
             version in r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}",
             segment in "[a-z][a-z0-9-]{0,15}",
+            page_segment in "[a-z][a-z0-9.-]{0,15}",
             fragment in "[a-z][a-z0-9-]{0,15}",
             depth in 1usize..4,
+            paged in proptest::bool::ANY,
         ) {
             let path = std::iter::repeat_n(segment.as_str(), depth).collect::<Vec<_>>().join("/");
-            let r = format!("docs://{library}/v{version}/{path}#{fragment}");
+            let page = format!("{page_segment}.md");
+            let r = if paged {
+                format!("docs://{library}/v{version}/{page}@{path}#{fragment}")
+            } else {
+                format!("docs://{library}/v{version}/{path}#{fragment}")
+            };
             super::validate_ref(&r, &library, &version, super::TaskType::ExactApi)
                 .unwrap_or_else(|e| panic!("{r}: {e}"));
         }

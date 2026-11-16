@@ -86,6 +86,11 @@ pub enum Command {
         /// the network (docs/implementation/13 §M3 step 5).
         #[arg(long, value_name = "DIR")]
         fixture: Option<PathBuf>,
+        /// Record the live responses of this run into the directory, as a
+        /// fixture replay for a later `--fixture` run
+        /// (docs/implementation/07 §Live-response recording).
+        #[arg(long, value_name = "DIR")]
+        record_to: Option<PathBuf>,
     },
     /// Refresh stale approved sources.
     Sync {
@@ -287,8 +292,18 @@ pub enum ConfigOp {
 pub enum EvalOp {
     /// Run one golden-set suite.
     Run {
-        /// The suite name.
+        /// The suite name under the golden dir, or a direct `.jsonl` path.
         suite: String,
+        /// The directory that holds the golden suites.
+        #[arg(long, value_name = "DIR")]
+        golden_dir: Option<PathBuf>,
+        /// The directory that holds the run artifacts.
+        #[arg(long, value_name = "DIR")]
+        runs_dir: Option<PathBuf>,
+        /// The `devdocs` binary for the harness subprocess pass; located
+        /// when absent.
+        #[arg(long, value_name = "PATH")]
+        devdocs_bin: Option<PathBuf>,
     },
 }
 
@@ -304,12 +319,14 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             version,
             kind,
             fixture,
+            record_to,
         } => run_add_command(
             cli,
             source,
             version.as_deref(),
             kind.as_deref(),
             fixture.as_deref(),
+            record_to.as_deref(),
         ),
         Command::List => run_list_command(cli),
         Command::Db {
@@ -340,7 +357,8 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             cursor,
         } => run_symbol_command(cli, target, symbol, *cursor),
         Command::Mcp { transport } => run_mcp_command(cli, transport),
-        Command::Sync { .. } | Command::Db { .. } | Command::Eval { .. } => print_placeholder(),
+        Command::Eval { op } => run_eval_command(cli, op),
+        Command::Sync { .. } | Command::Db { .. } => print_placeholder(),
     }
 }
 
@@ -399,6 +417,7 @@ fn run_add_command(
     version: Option<&str>,
     kind: Option<&str>,
     fixture: Option<&std::path::Path>,
+    record_to: Option<&std::path::Path>,
 ) -> Result<(), Error> {
     // Only the llms.txt and git adapters exist in this slice; a silent
     // flag drop would run the wrong pipeline with no error.
@@ -411,7 +430,7 @@ fn run_add_command(
         )));
     }
     let config = Config::load(&overrides(cli))?;
-    let result = crate::commands::run_add(&config, source, version, kind, fixture)?;
+    let result = crate::commands::run_add(&config, source, version, kind, fixture, record_to)?;
     if cli.json {
         print_line(&result)
     } else {
@@ -442,6 +461,64 @@ fn run_db_migrate_command(cli: &Cli, force: bool) -> Result<(), Error> {
     let config = Config::load(&overrides(cli))?;
     let result = crate::commands::run_db_migrate(&config, force)?;
     print_line(&result)
+}
+
+/// Runs `devdocs eval run <suite>` (docs/implementation/14 §Harness flow):
+/// proxies to the eval harness with the same flags — `--db` arrives on the
+/// global flag layer, the rest are the subcommand's. The gate table (or
+/// the `--json` outcome object) prints to stdout first; a run whose gate
+/// table holds any FAIL or INCONCLUSIVE then fails with [`Error::EvalGate`]
+/// for the exit code, so stdout keeps its result envelope on every exit.
+fn run_eval_command(cli: &Cli, op: &EvalOp) -> Result<(), Error> {
+    let EvalOp::Run {
+        suite,
+        golden_dir,
+        runs_dir,
+        devdocs_bin,
+    } = op;
+    let outcome = crate::commands::run_eval_run(
+        suite,
+        cli.db.as_deref(),
+        golden_dir.as_deref(),
+        runs_dir.as_deref(),
+        devdocs_bin.as_deref(),
+        cli.config.as_deref(),
+    )?;
+    if cli.json {
+        print_line(&serde_json::json!({
+            "run_dir": outcome.run_dir.display().to_string(),
+            "metrics": outcome.metrics,
+            "p95_ms": outcome.p95_ms,
+            "gates": outcome.gates,
+            "all_gates_pass": outcome.all_gates_pass,
+        }))?;
+    } else {
+        write_stdout_text(&devdocs_eval::report::render_gate_table(&outcome.gates))?;
+        let verdict = if outcome.all_gates_pass {
+            "all gates PASS"
+        } else {
+            "gate failure"
+        };
+        write_stdout_line(&format!("run: {} — {verdict}", outcome.run_dir.display()))?;
+    }
+    if outcome.all_gates_pass {
+        Ok(())
+    } else {
+        Err(Error::EvalGate {
+            detail: blocked_gates(&outcome.gates),
+        })
+    }
+}
+
+/// One line naming every gate that did not PASS, for the
+/// [`Error::EvalGate`] detail.
+fn blocked_gates(gates: &[devdocs_eval::gates::Gate]) -> String {
+    gates
+        .iter()
+        .filter(|gate| gate.status != devdocs_eval::gates::GateStatus::Pass)
+        .map(|gate| format!("{} ({})", gate.gate, gate.status.label()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Runs `devdocs mcp --transport stdio` and serves until the client

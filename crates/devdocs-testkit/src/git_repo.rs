@@ -28,6 +28,37 @@ pub struct DocsRepo {
     pub default_sha: String,
 }
 
+/// Whether a variable name carries the `GIT_` prefix. Windows
+/// environment names are case-insensitive but case-preserving
+/// (`GetEnvironmentVariableW`), so a mixed-case `Git_INDEX_FILE`
+/// variable still resolves for the child and must match the strip.
+#[cfg(windows)]
+fn is_git_env_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes()
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"GIT_"))
+}
+
+/// Non-Windows: environment names are case-sensitive, so the byte prefix
+/// test is exact.
+#[cfg(not(windows))]
+fn is_git_env_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"GIT_")
+}
+
+/// Removes every inherited `GIT_*` variable from the child environment.
+fn strip_git_env(
+    command: &mut Command,
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    // OsString, not String: `env::vars()` panics on any non-UTF-8
+    // variable, so the scan itself must run on raw bytes (the same
+    // pattern the devdocs-eval subprocess strip uses).
+    for (name, _) in vars.filter(|(name, _)| is_git_env_name(name)) {
+        command.env_remove(name);
+    }
+}
+
 /// Run `git` with `args` in `dir` and return trimmed stdout. The
 /// isolation env and argv-only invocation keep the child off the host's
 /// interactive and system configuration and off any enclosing repo.
@@ -48,11 +79,7 @@ where
     // more, all aimed at the enclosing repo. Strip every inherited
     // `GIT_*` var — the list grows across git versions — then pin the
     // isolation vars this fixture needs.
-    for (name, _) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"GIT_") {
-            git.env_remove(name);
-        }
-    }
+    strip_git_env(&mut git, std::env::vars_os());
     git.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
     let output = git.output()?;
@@ -172,13 +199,43 @@ pub fn bare_mirror(source: &Path, dir: &Path) -> io::Result<PathBuf> {
     Ok(mirror)
 }
 
+/// Copies `source`'s working tree into `fixture`, skipping the `.git`
+/// entry and symlinks: the materialized tree a git fixture replay walks
+/// (docs/implementation/07 §Git adapter, fixture replay). In-tree
+/// `.gitignore` and `.ignore` files copy too, because the replay walk
+/// honors them; the caller writes the fixture's `commit-sha` file.
+pub fn materialize(source: &Path, fixture: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name() == std::ffi::OsStr::new(".git") {
+            continue;
+        }
+        // The ingest walker never follows symlinks, so a materialized
+        // fixture keeps them out too — copying one would either inline the
+        // target's content (a parity break against clone-based ingest) or
+        // fail outright when the target is a directory.
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
+        let target = fixture.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            materialize(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use tempfile::tempdir;
 
-    use super::{bare_mirror, docs_repo, git};
+    use super::{bare_mirror, docs_repo, git, materialize};
 
     /// `docs_repo` builds, `v1.0.0` resolves on the default tip, and the
     /// second branch exists with a differing commit.
@@ -242,5 +299,82 @@ mod tests {
             ],
         );
         assert!(fetch.is_err(), "reachable-SHA fetch unexpectedly succeeded");
+    }
+
+    /// `materialize` skips symlinks: the ingest walker never follows
+    /// them (`follow_links(false)`), so a materialized fixture must not
+    /// inline the link's target either
+    /// (docs/implementation/07 §Git adapter, fixture replay).
+    #[cfg(unix)]
+    #[test]
+    fn materialize_skips_symlinks() {
+        let source = tempdir().unwrap();
+        std::fs::write(source.path().join("real.md"), "# docs\n\nThe body.\n").unwrap();
+        std::os::unix::fs::symlink("real.md", source.path().join("link.md")).unwrap();
+
+        let fixture = tempdir().unwrap();
+        materialize(source.path(), fixture.path()).unwrap();
+
+        assert!(fixture.path().join("real.md").is_file());
+        assert!(
+            !fixture.path().join("link.md").exists(),
+            "the symlink must not reach the fixture"
+        );
+    }
+
+    /// The strip removes every inherited `GIT_*` variable: the unit check
+    /// drives [`super::strip_git_env`] with a made-up environment — the
+    /// same shape the devdocs-eval subprocess strip test uses.
+    #[test]
+    fn the_git_fn_strips_the_git_env_vars() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_git_env(
+            &mut command,
+            [
+                (OsString::from("GIT_DIR"), OsString::from("/enclosing/.git")),
+                (
+                    OsString::from("GIT_INDEX_FILE"),
+                    OsString::from("/enclosing/index"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["GIT_DIR", "GIT_INDEX_FILE"]);
+    }
+
+    /// Windows environment names are case-insensitive but
+    /// case-preserving, so a mixed-case `GIT_*` variable resolves for
+    /// the child and the strip must still match it (the unix suite skips
+    /// this — its names are case-sensitive).
+    #[cfg(windows)]
+    #[test]
+    fn the_git_fn_strips_a_mixed_case_git_var() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_git_env(
+            &mut command,
+            [
+                (OsString::from("Git_INDEX_FILE"), OsString::from("x")),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["Git_INDEX_FILE"]);
     }
 }

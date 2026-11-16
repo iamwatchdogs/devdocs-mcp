@@ -1,6 +1,7 @@
 //! The shipped pilot suite passes harness validation and meets the Phase 0
 //! sizing rules (docs/implementation/14 §Pilot).
 
+// Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeSet;
@@ -15,9 +16,14 @@ fn pilot_path() -> std::path::PathBuf {
 fn the_pilot_suite_is_valid_and_meets_the_sizing_rules() {
     let suite = Suite::load(&pilot_path(), "pilot").unwrap();
 
-    assert_eq!(suite.questions.len(), 20);
+    assert_eq!(suite.questions.len(), 48);
     let libraries: BTreeSet<_> = suite.questions.iter().map(|q| q.library.as_str()).collect();
-    assert_eq!(libraries, BTreeSet::from(["next.js", "serde", "zod"]));
+    for library in ["next.js", "serde", "zod"] {
+        assert!(
+            libraries.contains(library),
+            "{library} is covered: {libraries:?}"
+        );
+    }
 
     let unanswerable = suite
         .questions
@@ -31,7 +37,20 @@ fn the_pilot_suite_is_valid_and_meets_the_sizing_rules() {
         .iter()
         .map(|q| q.task_type.as_str())
         .collect();
-    assert_eq!(task_types.len(), 8, "all eight categories are covered");
+    // The suite covers the seven categories the official-docs corpus can
+    // serve; `poisoned` waits for the Phase 2 poisoned-corpus work.
+    let served: BTreeSet<_> = [
+        "exact_api",
+        "how_to",
+        "discovery",
+        "migration",
+        "multi_library",
+        "agent_task",
+        "unanswerable",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(task_types, served, "the served categories are covered");
 
     let meta = suite.meta.as_ref().expect("the sidecar records the effort");
     assert!(meta.curation_minutes > 0);

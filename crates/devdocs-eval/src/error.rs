@@ -20,6 +20,13 @@ pub enum EvalError {
         /// What is wrong, in one line.
         reason: String,
     },
+    /// The `--config` file passed to the run is missing, unreadable, or
+    /// has invalid contents.
+    #[error("invalid config: {reason}")]
+    InvalidConfig {
+        /// What is wrong, in one line.
+        reason: String,
+    },
     /// A suite line is not a valid question.
     #[error("suite {suite} line {line}: {reason}")]
     SuiteParse {
@@ -79,7 +86,7 @@ impl EvalError {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::InvalidSuite { .. } | Self::SuiteParse { .. } => 1,
+            Self::InvalidSuite { .. } | Self::SuiteParse { .. } | Self::InvalidConfig { .. } => 1,
             Self::Store(_)
             | Self::Subprocess(_)
             | Self::Retrieve(_)

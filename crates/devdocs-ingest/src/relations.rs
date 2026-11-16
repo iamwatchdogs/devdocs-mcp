@@ -238,6 +238,7 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::PageRelations;

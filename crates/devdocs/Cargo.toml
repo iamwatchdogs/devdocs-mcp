@@ -23,6 +23,7 @@ exact-tokens = []
 embeddings = []
 
 [dependencies]
+devdocs-eval.workspace = true
 devdocs-ingest.workspace = true
 devdocs-mcp.workspace = true
 devdocs-model.workspace = true

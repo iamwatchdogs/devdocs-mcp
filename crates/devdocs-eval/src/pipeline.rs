@@ -35,23 +35,25 @@ fn to_refs<'a>(
             rank: first_rank + i,
             library: h.library.clone(),
             version: h.version.clone(),
+            page: h.page_path(),
             segments: h.section_path.clone(),
             symbol: h.symbol.clone(),
         })
         .collect()
 }
 
-/// Runs the retrieval pipeline for one question. The harness pins the
-/// question's library and version like explicit flags would — except a
-/// `multi_library` question, whose refs may target other libraries, so its
-/// search stays global.
+/// Runs the retrieval pipeline for one question under `plan`. The harness
+/// pins the question's library and version like explicit flags would —
+/// except a `multi_library` question, whose refs may target other
+/// libraries, so its search stays global. `plan` carries the search knobs
+/// the timed subprocess resolves from `--config` (or the defaults), so
+/// quality and latency measure one configuration.
 ///
 /// # Errors
 /// [`EvalError::Store`] for store failures and
 /// [`EvalError::Retrieve`] for a pipeline failure the harness's own inputs
 /// cannot cause.
-pub fn retrieve(store: &Store, question: &Question) -> Result<Retrieval, EvalError> {
-    let plan = Plan::defaults();
+pub fn retrieve(store: &Store, plan: &Plan, question: &Question) -> Result<Retrieval, EvalError> {
     let query = match question.task_type {
         TaskType::MultiLibrary => Query::new(&question.question, None, None),
         _ => Query::new(
@@ -60,24 +62,21 @@ pub fn retrieve(store: &Store, question: &Question) -> Result<Retrieval, EvalErr
             Some(&question.version),
         ),
     };
-    let packed = match devdocs_retrieve::serve::search_packed(
-        store,
-        &query,
-        &ProjectContext::empty(),
-        &plan,
-    ) {
-        Ok(packed) => packed,
-        // A miss is the documented "valid query, nothing served" outcome:
-        // an empty result list, which the graders score as-is.
-        Err(RetrieveError::Miss(_)) => {
-            return Ok(Retrieval {
-                refs: Vec::new(),
-                symbol_refs: Vec::new(),
-            });
-        }
-        Err(RetrieveError::Store(error)) => return Err(EvalError::from(error)),
-        Err(other) => return Err(EvalError::Retrieve(other.to_string())),
-    };
+    let packed =
+        match devdocs_retrieve::serve::search_packed(store, &query, &ProjectContext::empty(), plan)
+        {
+            Ok(packed) => packed,
+            // A miss is the documented "valid query, nothing served" outcome:
+            // an empty result list, which the graders score as-is.
+            Err(RetrieveError::Miss(_)) => {
+                return Ok(Retrieval {
+                    refs: Vec::new(),
+                    symbol_refs: Vec::new(),
+                });
+            }
+            Err(RetrieveError::Store(error)) => return Err(EvalError::from(error)),
+            Err(other) => return Err(EvalError::Retrieve(other.to_string())),
+        };
     Ok(Retrieval {
         refs: to_refs(packed.items.iter().map(|(h, _)| h), 1),
         // The rung hits precede the packed page, so their ranks do not
@@ -89,8 +88,10 @@ pub fn retrieve(store: &Store, question: &Question) -> Result<Retrieval, EvalErr
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use devdocs_retrieve::Plan;
     use devdocs_store::Store;
     use rusqlite::Connection;
     use tempfile::TempDir;
@@ -178,23 +179,114 @@ mod tests {
     fn ordinary_questions_search_their_library_only() {
         let dir = TempDir::new().unwrap();
         let store = seeded(&dir);
-        let retrieval = retrieve(&store, &question(TaskType::ExactApi, "next.js")).unwrap();
+        let retrieval = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::ExactApi, "next.js"),
+        )
+        .unwrap();
         assert_eq!(retrieval.refs.len(), 1);
         assert_eq!(retrieval.refs[0].library, "next.js");
         assert_eq!(retrieval.refs[0].version, "1.0.0");
         assert_eq!(retrieval.refs[0].rank, 1);
 
         // The other library keeps its own hits.
-        let retrieval = retrieve(&store, &question(TaskType::ExactApi, "serde")).unwrap();
+        let retrieval = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::ExactApi, "serde"),
+        )
+        .unwrap();
         assert_eq!(retrieval.refs.len(), 1);
         assert_eq!(retrieval.refs[0].library, "serde");
+    }
+
+    /// A chunk page URL grades as the ref's page — the page URL path
+    /// relative to the source root (issue #88); a chunk without one
+    /// grades page-less.
+    #[test]
+    fn hits_carry_their_page_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("seed.db");
+        devdocs_testkit::open_migrated(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let src = devdocs_testkit::seed_source(&conn, "next.js", true).unwrap();
+        devdocs_testkit::seed_chunk(
+            &conn,
+            src,
+            0,
+            r#"["app","proxy"]"#,
+            None,
+            "the middleware rewrites the request",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE chunks SET page_url = 'https://nextjs.org/docs/app/proxy.md'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+
+        let retrieval = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::ExactApi, "next.js"),
+        )
+        .unwrap();
+        assert_eq!(retrieval.refs.len(), 1);
+        assert_eq!(retrieval.refs[0].page.as_deref(), Some("docs/app/proxy.md"));
+    }
+
+    /// The served page honors the plan's `limit`, not a fixed page size:
+    /// the scoring pass must search with the same knobs the timed
+    /// subprocess resolves from `--config` (docs/implementation/14
+    /// §Regression gate).
+    #[test]
+    fn the_plan_limit_caps_the_served_page() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("seed.db");
+        devdocs_testkit::open_migrated(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let src = devdocs_testkit::seed_source(&conn, "next.js", true).unwrap();
+        for ordinal in 0..2 {
+            devdocs_testkit::seed_chunk(
+                &conn,
+                src,
+                ordinal,
+                r#"["app","proxy"]"#,
+                Some("middleware"),
+                "the middleware rewrites the request",
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+
+        let defaults = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::ExactApi, "next.js"),
+        )
+        .unwrap();
+        assert_eq!(defaults.refs.len(), 2);
+        let mut capped = Plan::defaults();
+        capped.limit = 1;
+        let retrieval =
+            retrieve(&store, &capped, &question(TaskType::ExactApi, "next.js")).unwrap();
+        assert_eq!(retrieval.refs.len(), 1);
     }
 
     #[test]
     fn multi_library_questions_search_across_libraries() {
         let dir = TempDir::new().unwrap();
         let store = seeded(&dir);
-        let retrieval = retrieve(&store, &question(TaskType::MultiLibrary, "next.js")).unwrap();
+        let retrieval = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::MultiLibrary, "next.js"),
+        )
+        .unwrap();
         let mut libraries: Vec<&str> = retrieval.refs.iter().map(|r| r.library.as_str()).collect();
         libraries.sort_unstable();
         assert_eq!(libraries, vec!["next.js", "serde"]);
@@ -208,7 +300,7 @@ mod tests {
         let store = seeded(&dir);
         let mut q = question(TaskType::Unanswerable, "next.js");
         q.question = "nonexistent widget flux".to_owned();
-        let retrieval = retrieve(&store, &q).unwrap();
+        let retrieval = retrieve(&store, &Plan::defaults(), &q).unwrap();
         assert_eq!(retrieval.refs, Vec::new());
         assert_eq!(retrieval.symbol_refs, Vec::new());
     }
@@ -236,7 +328,7 @@ mod tests {
         let mut q = question(TaskType::ExactApi, "next.js");
         q.question = "rewriteMiddleware()".to_owned();
         q.expect_symbols = Some(vec!["rewriteMiddleware".to_owned()]);
-        let retrieval = retrieve(&store, &q).unwrap();
+        let retrieval = retrieve(&store, &Plan::defaults(), &q).unwrap();
         assert_eq!(retrieval.refs.len(), 1);
         assert_eq!(
             retrieval.refs[0].symbol.as_deref(),
@@ -282,7 +374,7 @@ mod tests {
         q.question = "ghostSymbol()".to_owned();
         q.expect_symbols = Some(vec!["ghostSymbol".to_owned()]);
         q.grader = Grader::SymbolMatch;
-        let retrieval = retrieve(&store, &q).unwrap();
+        let retrieval = retrieve(&store, &Plan::defaults(), &q).unwrap();
         // The FTS hit serves and carries the chunk symbol…
         assert_eq!(retrieval.refs.len(), 1);
         assert_eq!(retrieval.refs[0].symbol.as_deref(), Some("ghostSymbol"));
@@ -329,7 +421,7 @@ mod tests {
             "rewriteSerial".to_owned(),
         ]);
         q.grader = Grader::SymbolMatch;
-        let retrieval = retrieve(&store, &q).unwrap();
+        let retrieval = retrieve(&store, &Plan::defaults(), &q).unwrap();
         // The budget dropped the huge chunk off the served page…
         let packed_symbols: Vec<_> = retrieval
             .refs
@@ -367,7 +459,12 @@ mod tests {
         conn.execute("DROP TABLE symbols", []).unwrap();
         drop(conn);
 
-        let error = retrieve(&store, &question(TaskType::ExactApi, "next.js")).unwrap_err();
+        let error = retrieve(
+            &store,
+            &Plan::defaults(),
+            &question(TaskType::ExactApi, "next.js"),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, crate::error::EvalError::Store(_)),
             "{error}"

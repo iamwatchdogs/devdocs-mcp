@@ -127,6 +127,42 @@ fn path_binary(path_var: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Whether a variable name carries the `DEVDOCS_` prefix. Windows
+/// environment names are case-insensitive but case-preserving
+/// (`GetEnvironmentVariableW`), so a lowercase-prefixed `devdocs_*`
+/// variable still resolves for the child and must match the strip.
+#[cfg(windows)]
+fn is_devdocs_env_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes()
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"DEVDOCS_"))
+}
+
+/// Non-Windows: environment names are case-sensitive, so the byte prefix
+/// test is exact.
+#[cfg(not(windows))]
+fn is_devdocs_env_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"DEVDOCS_")
+}
+
+/// Removes every `DEVDOCS_*` variable from the child environment.
+///
+/// The env config layer merges *after* the `--config` layer
+/// (devdocs-model `Config::load`), so a `DEVDOCS_*` variable that leaks
+/// from the operator's environment would silently override the corpus
+/// config pin. The child needs no `DEVDOCS_*` variable, so all of them go.
+fn strip_devdocs_env(
+    command: &mut Command,
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    // OsString, not String: `env::vars()` panics on any non-UTF-8
+    // variable, so the scan itself must run on raw bytes (the same
+    // pattern the testkit `GIT_*` strip uses).
+    for (name, _) in vars.filter(|(name, _)| is_devdocs_env_name(name)) {
+        command.env_remove(name);
+    }
+}
+
 /// The wall-time deadline one `devdocs search` call gets before the run
 /// treats it as stalled.
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -134,8 +170,8 @@ const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// The `try_wait` poll interval while a call runs.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-/// Times one `devdocs search` invocation end-to-end: process start, flag
-/// parse, and dispatch (docs/implementation/08 §Latency).
+/// Times one `devdocs search` invocation end-to-end: process start
+/// through retrieval (docs/implementation/05 §Latency budget).
 ///
 /// The program and every argument travel as an argument vector — no shell,
 /// no interpolation (see the module security note). The call gets a fixed
@@ -146,8 +182,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// # Errors
 /// [`EvalError::Subprocess`] when the process cannot be spawned, cannot be
 /// waited on, or overshoots the deadline.
-pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<SubprocessSample, EvalError> {
-    run_once_deadline(bin, db, question, CALL_DEADLINE)
+pub fn run_once(
+    bin: &Path,
+    db: &Path,
+    config: &Path,
+    config_home: &Path,
+    question: &Question,
+) -> Result<SubprocessSample, EvalError> {
+    run_once_deadline(bin, db, config, config_home, question, CALL_DEADLINE)
 }
 
 /// [`run_once`] with an injectable deadline; the tests shrink it so the
@@ -155,15 +197,29 @@ pub fn run_once(bin: &Path, db: &Path, question: &Question) -> Result<Subprocess
 fn run_once_deadline(
     bin: &Path,
     db: &Path,
+    config: &Path,
+    config_home: &Path,
     question: &Question,
     deadline: Duration,
 ) -> Result<SubprocessSample, EvalError> {
     let start = Instant::now();
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .arg("--db")
         .arg(db)
+        // A config file always rides along — the operator `--config`, or
+        // the harness's empty defaults file — and the child's user-config
+        // layer points at the harness's empty scratch dir, so the spawned
+        // search never grades against the operator's user config and
+        // never discovers a project `devdocs.toml` from the inherited cwd
+        // (hermetic, docs/implementation/14 §Regression gate).
+        .arg("--config")
+        .arg(config)
         .arg("--json")
-        .arg("search")
+        .arg("search");
+    strip_devdocs_env(&mut command, std::env::vars_os());
+    command.env("XDG_CONFIG_HOME", config_home);
+    let mut child = command
         .arg(&question.question)
         .arg("--library")
         .arg(&question.library)
@@ -203,6 +259,7 @@ fn run_once_deadline(
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::path::PathBuf;
@@ -210,6 +267,8 @@ mod tests {
 
     use super::{Question, locate_devdocs, run_once_deadline};
     use crate::suite::{Grader, TaskType};
+    #[cfg(unix)]
+    use devdocs_testkit::sh_quote;
 
     /// A one-question stand-in for the suite loader.
     fn question() -> Question {
@@ -369,6 +428,8 @@ mod tests {
         let err = run_once_deadline(
             &bin,
             &dir.path().join("fixture.db"),
+            &dir.path().join("corpus.toml"),
+            &dir.path().join("config-home"),
             &question(),
             Duration::from_secs(1),
         )
@@ -382,10 +443,286 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = stub(dir.path(), "devdocs", "#!/bin/sh\nexec sleep 30\n");
         let db = dir.path().join("fixture.db");
-        let err =
-            run_once_deadline(&bin, &db, &question(), Duration::from_millis(100)).unwrap_err();
+        let err = run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &dir.path().join("config-home"),
+            &question(),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("deadline"), "{message}");
         assert!(message.contains("killed"), "{message}");
+    }
+
+    /// A stub that records its argument vector, one argument per line,
+    /// every `DEVDOCS_*` variable its environment still carries (one
+    /// `NAME=value` per line; the file exists but stays empty when the
+    /// environment carries none), and the `XDG_CONFIG_HOME` value it sees
+    /// (the file exists but stays empty when the variable is unset).
+    #[cfg(unix)]
+    fn argv_recorder(dir: &std::path::Path, name: &str) -> PathBuf {
+        let args_file = dir.join(format!("{name}.args"));
+        let env_file = dir.join(format!("{name}.env"));
+        let xdg_file = dir.join(format!("{name}.xdg"));
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nenv | grep '^DEVDOCS_' > \
+             {}\nprintf '%s\\n' \"${{XDG_CONFIG_HOME-}}\" > {}\nexit 0\n",
+            sh_quote(&args_file),
+            sh_quote(&env_file),
+            sh_quote(&xdg_file)
+        );
+        stub(dir, name, &body);
+        args_file
+    }
+
+    /// The `DEVDOCS_*` environment file the [`argv_recorder`] stub writes.
+    #[cfg(unix)]
+    fn recorded_env(dir: &std::path::Path, name: &str) -> PathBuf {
+        dir.join(format!("{name}.env"))
+    }
+
+    /// The `XDG_CONFIG_HOME` file the [`argv_recorder`] stub writes.
+    #[cfg(unix)]
+    fn recorded_xdg(dir: &std::path::Path, name: &str) -> PathBuf {
+        dir.join(format!("{name}.xdg"))
+    }
+
+    /// The `DEVDOCS_*` variables the child receives are gone: the unit
+    /// check drives [`super::strip_devdocs_env`] with a made-up
+    /// environment, the end-to-end check asserts the recorder stub — which
+    /// inherits the test process environment through the real spawn —
+    /// saw none (tests run one per process under nextest, so the test
+    /// process never carries a stray `DEVDOCS_*` variable that could
+    /// fake a pass).
+    #[test]
+    fn the_spawn_strips_the_devdocs_env_vars() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                (
+                    OsString::from("DEVDOCS_SEARCH_RRF_K"),
+                    OsString::from("123"),
+                ),
+                (
+                    OsString::from("DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT"),
+                    OsString::from("9000"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            removed,
+            vec!["DEVDOCS_SEARCH_MAX_TOKENS_DEFAULT", "DEVDOCS_SEARCH_RRF_K"]
+        );
+    }
+
+    /// Windows environment names are case-insensitive but
+    /// case-preserving, so a lowercase-prefixed variable resolves for the
+    /// child and the strip must still match it (the unix suite skips
+    /// this — its names are case-sensitive).
+    #[cfg(windows)]
+    #[test]
+    fn the_spawn_strips_a_mixed_case_devdocs_var() {
+        use std::ffi::OsString;
+        use std::process::Command as StdCommand;
+
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                (
+                    OsString::from("devdocs_SEARCH_RRF_K"),
+                    OsString::from("123"),
+                ),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, vec!["devdocs_SEARCH_RRF_K"]);
+    }
+
+    /// A non-UTF-8 variable — prefixed or not — must not panic the strip:
+    /// the prefix check runs on raw bytes and the removal keeps the name
+    /// verbatim (`env::vars()` would abort the whole run instead).
+    #[cfg(unix)]
+    #[test]
+    fn the_strip_survives_non_utf8_env_names() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        use std::process::Command as StdCommand;
+
+        let prefixed = OsString::from_vec(b"DEVDOCS_\xff\xfe".to_vec());
+        let unrelated = OsString::from_vec(b"OTHER_\xff".to_vec());
+        let mut command = StdCommand::new("unused");
+        super::strip_devdocs_env(
+            &mut command,
+            [
+                (prefixed.clone(), OsString::from("1")),
+                (unrelated.clone(), OsString::from("x")),
+                (OsString::from("PATH"), OsString::from("/bin")),
+            ]
+            .into_iter(),
+        );
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        assert_eq!(removed, vec![prefixed], "the unrelated var must survive");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_child_sees_no_devdocs_env_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &dir.path().join("config-home"),
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
+        assert!(env.is_empty(), "the child saw DEVDOCS_* variables: {env}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_child_gets_the_isolated_config_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config_home = dir.path().join("config-home");
+        run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &config_home,
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
+        assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
+    }
+
+    /// The recorder stub's redirections survive a path with a space: the
+    /// generated script single-quotes every interpolated path, so the
+    /// recorded files still land (and the script does not silently write
+    /// a stray file into the working directory).
+    #[cfg(unix)]
+    #[test]
+    fn the_recorder_stub_survives_paths_with_spaces() {
+        let base = tempfile::tempdir().unwrap();
+        let spaced_root = base.path().join("eval test dir");
+        std::fs::create_dir_all(&spaced_root).unwrap();
+        let dir = tempfile::tempdir_in(&spaced_root).unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config_home = dir.path().join("config-home");
+        run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &config_home,
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        // All three redirections landed inside the spaced dir with the
+        // expected content — nothing split at the space.
+        let args = std::fs::read_to_string(dir.path().join("devdocs.args")).unwrap();
+        assert!(args.contains("search"), "{args}");
+        let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
+        assert!(env.is_empty(), "{env}");
+        let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
+        assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
+        drop(dir);
+    }
+
+    /// The recorder stub's redirections survive a single quote in the
+    /// path: the generated script POSIX-escapes every interpolated path
+    /// (each embedded `'` becomes `'\''`), so the quote cannot terminate
+    /// a shell word and the recorded files still land.
+    #[cfg(unix)]
+    #[test]
+    fn the_recorder_stub_survives_paths_with_quotes() {
+        let base = tempfile::tempdir().unwrap();
+        let quoted_root = base.path().join("eval'test dir");
+        std::fs::create_dir_all(&quoted_root).unwrap();
+        let dir = tempfile::tempdir_in(&quoted_root).unwrap();
+        let _args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config_home = dir.path().join("config-home");
+        run_once_deadline(
+            &bin,
+            &db,
+            &dir.path().join("corpus.toml"),
+            &config_home,
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        // All three redirections landed inside the quoted dir with the
+        // expected content — nothing split at the quote.
+        let args = std::fs::read_to_string(dir.path().join("devdocs.args")).unwrap();
+        assert!(args.contains("search"), "{args}");
+        let env = std::fs::read_to_string(recorded_env(dir.path(), "devdocs")).unwrap();
+        assert!(env.is_empty(), "{env}");
+        let xdg = std::fs::read_to_string(recorded_xdg(dir.path(), "devdocs")).unwrap();
+        assert_eq!(xdg.trim(), config_home.to_str().unwrap(), "{xdg}");
+        drop(dir);
+    }
+
+    /// Every spawn carries `--config <path>`: the operator `--config`, or
+    /// the harness's empty defaults file when none is given. The path need
+    /// not exist for the argument vector itself — the harness always
+    /// writes or validates its file before the spawn.
+    #[cfg(unix)]
+    #[test]
+    fn the_spawn_arg_vector_always_carries_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let args_file = argv_recorder(dir.path(), "devdocs");
+        let bin = dir.path().join("devdocs");
+        let db = dir.path().join("fixture.db");
+        let config = dir.path().join("corpus.toml");
+        run_once_deadline(
+            &bin,
+            &db,
+            &config,
+            &dir.path().join("config-home"),
+            &question(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        assert!(args.contains("--config\n"), "{args}");
+        assert!(args.contains(config.to_str().unwrap()), "{args}");
     }
 }

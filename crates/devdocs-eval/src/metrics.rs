@@ -19,6 +19,9 @@ pub struct RetrievedRef {
     pub library: String,
     /// The exact version the hit was served from.
     pub version: String,
+    /// The hit's page URL path relative to the source root, when the
+    /// chunk carries a usable page URL (issue #88).
+    pub page: Option<String>,
     /// The section-path segments of the hit.
     pub segments: Vec<String>,
     /// The hit's symbol, when the chunk documents one.
@@ -30,22 +33,30 @@ impl RetrievedRef {
     #[must_use]
     pub fn reference(&self) -> String {
         let path = self.segments.join("/");
-        match &self.symbol {
-            Some(symbol) => format!(
-                "docs://{}/v{}/{}#{symbol}",
-                self.library, self.version, path
-            ),
-            None => format!("docs://{}/v{}/{}", self.library, self.version, path),
+        let mut reference = format!("docs://{}/v{}/", self.library, self.version);
+        if let Some(page) = &self.page {
+            reference.push_str(page);
+            reference.push('@');
         }
+        reference.push_str(&path);
+        if let Some(symbol) = &self.symbol {
+            reference.push('#');
+            reference.push_str(symbol);
+        }
+        reference
     }
 }
 
 /// Whether an expected ref matches a hit.
 ///
-/// The libraries compare case-insensitively; the version must be exact. The
-/// expected path matches when it equals the hit path or is a trailing run
-/// of its segments, so a pinned `proxy` matches a hit served from
-/// `app/proxy`. A pinned fragment requires the hit's symbol to equal it.
+/// The libraries compare case-insensitively; the version must be exact. A
+/// pinned page must equal the hit's page exactly — the page URL path
+/// relative to the source root — so a section title another page shares
+/// can no longer grade as a hit (issue #88); a ref without a page part
+/// pins no page and matches on the breadcrumb alone. The expected path
+/// matches when it equals the hit path or is a trailing run of its
+/// segments, so a pinned `proxy` matches a hit served from `app/proxy`.
+/// A pinned fragment requires the hit's symbol to equal it.
 #[must_use]
 pub fn ref_matches(expected: &str, hit: &RetrievedRef) -> bool {
     let Some(expected) = ParsedRef::parse(expected) else {
@@ -53,6 +64,12 @@ pub fn ref_matches(expected: &str, hit: &RetrievedRef) -> bool {
     };
     if !expected.library.eq_ignore_ascii_case(&hit.library) || expected.version != hit.version {
         return false;
+    }
+    if let Some(page) = &expected.page {
+        let pinned = page.join("/");
+        if hit.page.as_deref() != Some(pinned.as_str()) {
+            return false;
+        }
     }
     let hit_tail = hit.segments.len().checked_sub(expected.segments.len());
     let Some(offset) = hit_tail else {
@@ -130,8 +147,11 @@ pub struct QuestionScore {
     pub symbols_found: usize,
     /// The symbols the question pins.
     pub symbols_pinned: usize,
-    /// The top result serves the exact pinned version.
-    pub version_correct: bool,
+    /// The top result serves the version the answer is pinned to. `None`
+    /// when nothing was served — an abstention has no served version to be
+    /// wrong — and for `unanswerable` questions, which never contribute
+    /// (docs/implementation/14 §Metrics).
+    pub version_correct: Option<bool>,
 }
 
 impl QuestionScore {
@@ -153,6 +173,13 @@ impl QuestionScore {
 /// the question's own library and version pin — a `multi_library` question
 /// grades its symbols against that primary pin, even though its refs may
 /// target other libraries.
+///
+/// Version correctness grades the top hit against the version the answer
+/// is pinned to: the question's own pin, except a `multi_library` top hit
+/// that matches an expected ref, where that ref's version decides — a
+/// correct answer may come from another library (docs/implementation/14
+/// §Metrics). Nothing served leaves the metric: an abstention has no
+/// served version to be wrong.
 #[must_use]
 pub fn grade_question(
     question: &Question,
@@ -183,16 +210,29 @@ pub fn grade_question(
             Grader::Manual => false, // runs refuse manual-grader suites
         }
     };
+    // The top hit grades against the version the answer is pinned to — the
+    // question's own pin, except a `multi_library` top hit that matches an
+    // expected ref: that ref's version decides, so a correct answer from
+    // another library stays version-correct (docs/implementation/14
+    // §Metrics). Nothing served leaves the metric: an abstention has no
+    // served version to be wrong.
+    let version_correct = if question.task_type == TaskType::Unanswerable {
+        None
+    } else {
+        hits.first().map(|top| {
+            let matched = question.task_type == TaskType::MultiLibrary
+                && refs.iter().any(|e| ref_matches(e, top));
+            matched
+                || (top.version == question.version
+                    && top.library.eq_ignore_ascii_case(&question.library))
+        })
+    };
     QuestionScore {
         passed,
         hit_at_5: hit_at_5(refs, hits),
         symbols_found,
         symbols_pinned: symbols.len(),
-        // The top result serves the exact pinned version of the question's
-        // own library — the same library/version rule the graders apply.
-        version_correct: hits.first().is_some_and(|h| {
-            h.version == question.version && h.library.eq_ignore_ascii_case(&question.library)
-        }),
+        version_correct,
     }
 }
 
@@ -231,14 +271,18 @@ pub struct SuiteMetrics {
     pub symbol_recall: Fraction,
     /// Questions with a wrong or partial result under the binary grader.
     pub failure_rate: Fraction,
-    /// Questions whose top result serves the exact pinned version.
+    /// Questions where a result was served and the top result serves the
+    /// version the answer is pinned to. Unanswerable abstentions leave the
+    /// denominator.
     pub version_correctness: Fraction,
 }
 
 impl SuiteMetrics {
     /// Aggregates the per-question scores. hit@5 denominators count only
     /// questions with non-empty `expect_refs`; symbol recall counts pinned
-    /// symbols; the other two count every question.
+    /// symbols; failure rate counts every question. Version correctness
+    /// counts the questions where a result was served — unanswerable
+    /// abstentions leave the denominator (docs/implementation/14 §Metrics).
     #[must_use]
     pub fn new(scored: &[(Question, QuestionScore)]) -> SuiteMetrics {
         let mut refs_total = 0;
@@ -246,6 +290,7 @@ impl SuiteMetrics {
         let mut symbols_pinned = 0;
         let mut symbols_found = 0;
         let mut failed = 0;
+        let mut version_total = 0;
         let mut version_hits = 0;
         for (question, score) in scored {
             if score.symbols_pinned > 0 {
@@ -265,8 +310,11 @@ impl SuiteMetrics {
             if !score.passed {
                 failed += 1;
             }
-            if score.version_correct {
-                version_hits += 1;
+            // `None` (nothing served, or an unanswerable question) leaves
+            // the denominator: no served version to be wrong.
+            if let Some(correct) = score.version_correct {
+                version_total += 1;
+                version_hits += usize::from(correct);
             }
         }
         SuiteMetrics {
@@ -284,7 +332,7 @@ impl SuiteMetrics {
             },
             version_correctness: Fraction {
                 hits: version_hits,
-                total: scored.len(),
+                total: version_total,
             },
         }
     }
@@ -292,6 +340,7 @@ impl SuiteMetrics {
 
 #[cfg(test)]
 mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{
@@ -312,9 +361,17 @@ mod tests {
             rank,
             library: library.to_owned(),
             version: version.to_owned(),
+            page: None,
             segments: path.split('/').map(str::to_owned).collect(),
             symbol: symbol.map(str::to_owned),
         }
+    }
+
+    /// The same hit served from a page: the page URL path relative to the
+    /// source root.
+    fn on_page(mut r: RetrievedRef, page: &str) -> RetrievedRef {
+        r.page = Some(page.to_owned());
+        r
     }
 
     fn refs(list: &[&str]) -> Vec<String> {
@@ -342,6 +399,42 @@ mod tests {
         assert_eq!(with.reference(), "docs://next.js/v16.2.9/app/proxy#rewrite");
         let without = hit(1, "next.js", "16.2.9", "app/proxy", None);
         assert_eq!(without.reference(), "docs://next.js/v16.2.9/app/proxy");
+        let paged = on_page(
+            hit(1, "next.js", "16.2.9", "app/proxy", Some("rewrite")),
+            "docs/app/api-reference/proxy.md",
+        );
+        assert_eq!(
+            paged.reference(),
+            "docs://next.js/v16.2.9/docs/app/api-reference/proxy.md@app/proxy#rewrite"
+        );
+    }
+
+    /// A pinned page must equal the hit's page exactly: the wrong-page
+    /// hole (issue #88) stays closed — a Matcher section served from the
+    /// llms-full export copy does not grade a proxy-page pin.
+    #[test]
+    fn a_pinned_page_must_match_exactly() {
+        let export = on_page(
+            hit(1, "next.js", "16.2.9", "Matcher", Some("config")),
+            "docs/llms-full.txt",
+        );
+        let proxy = on_page(
+            hit(1, "next.js", "16.2.9", "Matcher", Some("config")),
+            "docs/app/api-reference/file-conventions/proxy.md",
+        );
+        let pin = "docs://next.js/v16.2.9/docs/app/api-reference/file-conventions/proxy.md@Matcher";
+
+        assert!(ref_matches(pin, &proxy));
+        assert!(
+            !ref_matches(pin, &export),
+            "a same-title section on another page is not a hit"
+        );
+        // The page-less pin keeps the old semantics for both hits.
+        assert!(ref_matches(
+            "docs://next.js/v16.2.9/Matcher#config",
+            &export
+        ));
+        assert!(ref_matches("docs://next.js/v16.2.9/Matcher#config", &proxy));
     }
 
     #[test]
@@ -399,7 +492,7 @@ mod tests {
             hit_at_5: true,
             symbols_found: 2,
             symbols_pinned: 3,
-            version_correct: true,
+            version_correct: Some(true),
         };
         assert_eq!(score.symbol_recall(), Some(2.0 / 3.0));
 
@@ -408,7 +501,7 @@ mod tests {
             hit_at_5: true,
             symbols_found: 0,
             symbols_pinned: 0,
-            version_correct: true,
+            version_correct: Some(true),
         };
         assert_eq!(none.symbol_recall(), None);
     }
@@ -520,15 +613,96 @@ mod tests {
             refs(&["docs://next.js/v16.2.9/proxy"]),
         );
         let exact = vec![hit(1, "next.js", "16.2.9", "proxy", None)];
-        assert!(grade_question(&q, &exact, &exact).version_correct);
+        assert_eq!(
+            grade_question(&q, &exact, &exact).version_correct,
+            Some(true)
+        );
 
         let fallback = vec![hit(1, "next.js", "16.1.0", "proxy", None)];
-        assert!(!grade_question(&q, &fallback, &fallback).version_correct);
+        assert_eq!(
+            grade_question(&q, &fallback, &fallback).version_correct,
+            Some(false),
+            "a wrong-version top hit stays version-incorrect"
+        );
 
         let foreign = vec![hit(1, "zod", "16.2.9", "proxy", None)];
-        assert!(
-            !grade_question(&q, &foreign, &foreign).version_correct,
+        assert_eq!(
+            grade_question(&q, &foreign, &foreign).version_correct,
+            Some(false),
             "another library with the same version string does not count"
+        );
+
+        // Nothing served: no served version to be wrong, so no verdict.
+        assert_eq!(grade_question(&q, &[], &[]).version_correct, None);
+    }
+
+    #[test]
+    fn an_abstention_leaves_the_version_correctness_denominator() {
+        let q = question(
+            Grader::RefMatch,
+            TaskType::ExactApi,
+            refs(&["docs://next.js/v16.2.9/proxy"]),
+        );
+        let unans = question(Grader::RefMatch, TaskType::Unanswerable, Vec::new());
+
+        // A correct abstention: nothing served, the question passes, and it
+        // carries no version verdict.
+        let unans_score = grade_question(&unans, &[], &[]);
+        assert!(unans_score.passed);
+        assert_eq!(unans_score.version_correct, None);
+
+        let hits = vec![hit(1, "next.js", "16.2.9", "proxy", None)];
+        let scored = vec![
+            (q.clone(), grade_question(&q, &hits, &hits)),
+            (unans.clone(), unans_score),
+        ];
+        let m = SuiteMetrics::new(&scored);
+        // The abstention is out: the denominator counts the graded question
+        // only, and its correct top hit fills the numerator.
+        assert_eq!(
+            (m.version_correctness.hits, m.version_correctness.total),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn a_multi_library_top_hit_grades_against_the_matched_ref() {
+        // The question pins next.js 16.2.9; the correct answer is the serde ref.
+        let q = question(
+            Grader::RefMatch,
+            TaskType::MultiLibrary,
+            refs(&["docs://serde/v1.0.229/derive"]),
+        );
+        let serde_hit = vec![hit(1, "serde", "1.0.229", "derive", None)];
+        assert_eq!(
+            grade_question(&q, &serde_hit, &serde_hit).version_correct,
+            Some(true),
+            "the matched expected ref's version decides, not the question pin"
+        );
+
+        // A top hit no expected ref matches falls back to the question pin.
+        let own_pin = vec![hit(1, "next.js", "16.2.9", "routing", None)];
+        assert_eq!(
+            grade_question(&q, &own_pin, &own_pin).version_correct,
+            Some(true)
+        );
+
+        // A top hit neither expected nor on the question pin is incorrect.
+        let foreign = vec![hit(1, "zod", "4.6.7", "parse", None)];
+        assert_eq!(
+            grade_question(&q, &foreign, &foreign).version_correct,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_all_unanswerable_suite_has_an_empty_version_denominator() {
+        let unans = question(Grader::RefMatch, TaskType::Unanswerable, Vec::new());
+        let scored = vec![(unans.clone(), grade_question(&unans, &[], &[]))];
+        let m = SuiteMetrics::new(&scored);
+        assert_eq!(
+            (m.version_correctness.hits, m.version_correctness.total),
+            (0, 0)
         );
     }
 
@@ -564,10 +738,11 @@ mod tests {
         assert_eq!((m.symbol_recall.hits, m.symbol_recall.total), (1, 2));
         // failures: q_sym and the unanswerable hit fail.
         assert_eq!((m.failure_rate.hits, m.failure_rate.total), (2, 3));
-        // every top hit serves the pinned version, so 3 of 3.
+        // the served top hits are all on-pin (2 questions) and the
+        // unanswerable abstention-failure leaves the denominator.
         assert_eq!(
             (m.version_correctness.hits, m.version_correctness.total),
-            (3, 3)
+            (2, 2)
         );
         assert_eq!(m.failure_rate.value(), 2.0 / 3.0);
         let f = Fraction { hits: 1, total: 4 };

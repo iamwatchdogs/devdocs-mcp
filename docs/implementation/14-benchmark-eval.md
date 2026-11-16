@@ -3,7 +3,7 @@ type: guide
 title: Benchmark and Eval Harness
 description: The golden-set format, the eval harness implementation, the gate metrics with thresholds, run artifacts, and the regression policy that wires the research benchmark protocol into devdocs.
 tags: [devdocs, eval, benchmark, golden-set, gates]
-timestamp: 2026-11-15T10:00:00Z
+timestamp: 2026-11-17T10:40:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -122,7 +122,7 @@ The harness prints this table and writes it into `report.md`:
 | hit@5 | ≥ 0.8 | 1 |
 | p95 latency | < 400 ms | 1 |
 | Cost per 1,000 queries | ≤ $0.20 frontier-class | 3 |
-| Retrieval failures | −49% vs the M4 baseline | 2 |
+| Retrieval failures | −49% versus the Phase 1 gate report baseline | 2 |
 | Version correctness | ≥ 0.99 | 1 |
 
 A FAIL blocks the phase transition ([12](12-roadmap-milestones.md)). An INCONCLUSIVE (suite too small for the margin) is also a block. The protocol forbids widening the margin to fit the data (research: benchmark-protocol.md Step 2).
@@ -147,7 +147,7 @@ The implemented mechanics:
 2. A weekly scheduled workflow (cron) re-runs the suite as a canary: any failure fails `main`, and a gate-regression failure also files an issue. Scheduled runs are canaries, not PR checks.
 3. The fixture database is rebuilt from the committed recorded fixtures (`just eval-corpus`), fully offline, on every gate run.
 4. Real-network re-recording stays manual and labeled: `eval/fixtures/README.md` documents the recording and trim steps.
-5. An exit 2 with a documented triage in the tracked report is an accepted state, never a license to widen a threshold. The Phase 1 report carries the accepted INCONCLUSIVE on the Retrieval-failures row (its M4 baseline measurement is M11 work).
+5. An exit 2 with a documented triage in the tracked report is an accepted state, never a license to widen a threshold. The Phase 1 report carries the accepted INCONCLUSIVE on the Retrieval-failures row (its baseline measurement is M11 work. The baseline is the failure rate the Phase 1 gate report records).
 
 This reproduces Context7's benchmark loop locally: questions score the index, and bad content fails the gate before it serves (research: architecture.md §L3, context7-internals.md).
 
@@ -157,4 +157,4 @@ The pilot and Phase 1 suites are small. Before any external adoption claim, grow
 
 ## Standing re-measurement
 
-Re-run the Phase 0 probe quarterly and on the reversal conditions in [01](01-tech-stack-decision.md). The quarterly run records: baseline cost per query of the current workflow, schema-rent bands, and any movement in the competitive boundary (research: verdict.md, reversal conditions).
+Re-run the Phase 0 probe quarterly and on the reversal conditions in [01](01-tech-stack-decision.md). The quarterly probe runs in the scheduled eval job family (#15): the cron workflow behind the weekly canary (§Regression gate) also carries the probe suite. The cadence has an executable home. The quarterly run records: baseline cost per query of the current workflow, schema-rent bands, and any movement in the competitive boundary (research: verdict.md, reversal conditions).

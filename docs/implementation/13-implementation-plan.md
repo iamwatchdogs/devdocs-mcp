@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-17T11:20:00Z
+timestamp: 2026-11-17T11:35:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -204,7 +204,7 @@ The ticket set splits the milestone: M12a (#17) owns step 1, M12b (#20) owns ste
 ## Do-not-build list
 
 1. No plugin system. The adapter trait is the extension point.
-2. No daemon, no background service. One process per command. The deferral record in [12](12-roadmap-milestones.md) §Deferred work register holds the sync trigger.
+2. No daemon, no background service. One process per command. The explicit `devdocs sync` command (#21) keeps sync on-demand.
 3. No remote registry or sync service. Config is local files.
 4. No LLM calls anywhere in the core. Retrieval is deterministic. Cost stays $0 per query.
 5. No HTML crawl in Phase 1, and only with robots plus license gates later.

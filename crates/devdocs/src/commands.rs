@@ -18,7 +18,7 @@ use devdocs_model::envelope::{
 use devdocs_model::error::{Error, UpstreamCode};
 use devdocs_model::source::LicenseStatus;
 use devdocs_retrieve::wiring;
-use devdocs_store::{Store, StoreError};
+use devdocs_store::{QuarantineRow, QuarantineState, Store, StoreError};
 use url::Url;
 
 /// The SKILL.md content `devdocs skill install` writes, verbatim from
@@ -735,6 +735,110 @@ pub fn run_db_migrate(config: &Config, force: bool) -> Result<serde_json::Value,
         "schema_version": version,
         "forced": force,
     }))
+}
+
+/// Runs `devdocs db quarantine list`: every chunk that carries a
+/// quarantine or review flag, with the identity the operator needs
+/// (docs/implementation/07 §Injection filter). The `--json` report and
+/// the human summary both render from [`quarantine_list_report`]'s row
+/// shape; the logs carry counts and chunk ids, never chunk content
+/// (.agents/instructions/observability: log provenance, not content).
+///
+/// # Errors
+/// [`Error::Upstream`] when the store cannot open or the read fails.
+pub fn run_db_quarantine_list(config: &Config) -> Result<Vec<QuarantineRow>, Error> {
+    let store = wiring::open_store(config, false)?;
+    let rows = store
+        .quarantine_list()
+        .map_err(|e| wiring::map_store_error(&e))?;
+    tracing::info!(flagged = rows.len(), "listed the quarantine rows");
+    Ok(rows)
+}
+
+/// The `db quarantine list --json` report: one row per flagged chunk.
+#[must_use]
+pub fn quarantine_list_report(rows: &[QuarantineRow]) -> serde_json::Value {
+    serde_json::json!({
+        "results": rows.iter().map(|row| serde_json::json!({
+            "chunk_id": row.chunk_id,
+            "library": row.library,
+            "version": row.version,
+            "section_path": row.section_path,
+            "rule_names": row.rule_names,
+            "state": row.state.as_str(),
+            "ordinal": row.ordinal,
+            "page_url": row.page_url,
+        })).collect::<Vec<_>>(),
+        "count": rows.len(),
+    })
+}
+
+/// Runs `devdocs db quarantine release <chunk_id>`: clears the chunk's
+/// quarantine and review flags and restores the serve, with the audit
+/// line in `meta` (docs/implementation/07 §Injection filter). The typed
+/// refusals — an unknown chunk, a chunk that holds no flag any more —
+/// surface as `Usage` exit 1 like the license-transition refusals; every
+/// other store failure keeps the upstream mapping. The report's `from`
+/// state is the flag state the chunk carried before the release, read
+/// off the quarantine list first; a successful release implies the row
+/// was listed, so the lookup cannot miss. The logs carry the chunk id
+/// and the operator, never chunk content
+/// (.agents/instructions/observability: log provenance, not content).
+///
+/// # Errors
+/// [`Error::Usage`] for an unknown chunk or an unflagged chunk;
+/// [`Error::Upstream`] when the store fails.
+pub fn run_db_quarantine_release(
+    config: &Config,
+    chunk_id: i64,
+    operator: Option<&str>,
+    note: Option<&str>,
+) -> Result<QuarantineState, Error> {
+    let store = wiring::open_store(config, false)?;
+    let operator = operator.unwrap_or("operator:cli");
+    let from = store
+        .quarantine_list()
+        .map_err(|e| wiring::map_store_error(&e))?
+        .into_iter()
+        .find(|row| row.chunk_id == chunk_id)
+        .map(|row| row.state);
+    store
+        .quarantine_release(chunk_id, operator, note)
+        .map_err(map_quarantine_refusal)?;
+    tracing::info!(chunk_id, operator, "released the chunk from quarantine");
+    // defensive: a successful release implies the chunk was flagged, so
+    // the list lookup found its state; the arm keeps the mapping total.
+    from.ok_or_else(|| Error::Usage(format!("chunk {chunk_id} was not flagged")))
+}
+
+/// Maps the typed quarantine refusals onto `Usage` exit 1; every other
+/// store failure keeps its upstream mapping — the same split
+/// [`map_license_refusal`] applies to the license transitions.
+fn map_quarantine_refusal(error: StoreError) -> Error {
+    match error {
+        StoreError::UnknownChunk { .. } | StoreError::ChunkNotFlagged { .. } => {
+            Error::Usage(error.to_string())
+        }
+        other => wiring::map_store_error(&other),
+    }
+}
+
+/// The `db quarantine release --json` report: the shape the license
+/// transition report carries, with the chunk id instead of the library.
+#[must_use]
+pub fn quarantine_release_report(
+    chunk_id: i64,
+    from: &QuarantineState,
+    operator: Option<&str>,
+    note: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "chunk_id": chunk_id,
+        "from": from.as_str(),
+        "to": "released",
+        "operator": operator.unwrap_or("operator:cli"),
+        "note": note,
+    })
 }
 
 /// Runs `devdocs eval run <suite>` (docs/implementation/14 §Harness flow):

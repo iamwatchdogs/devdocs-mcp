@@ -265,6 +265,18 @@ pub enum DbOp {
 pub enum QuarantineOp {
     /// List quarantined chunks.
     List,
+    /// Release a flagged chunk back into serving after operator review
+    /// (docs/implementation/07 §Injection filter).
+    Release {
+        /// The chunk id from the quarantine list.
+        chunk_id: i64,
+        /// The operator stamping the audit line.
+        #[arg(long)]
+        operator: Option<String>,
+        /// The audit note for the release.
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 /// `devdocs config <op>`.
@@ -332,6 +344,9 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
         Command::Db {
             op: DbOp::Migrate { force },
         } => run_db_migrate_command(cli, *force),
+        Command::Db {
+            op: DbOp::Quarantine { op },
+        } => run_db_quarantine_command(cli, op),
         Command::Search {
             query,
             library,
@@ -463,6 +478,52 @@ fn run_db_migrate_command(cli: &Cli, force: bool) -> Result<(), Error> {
     print_line(&result)
 }
 
+/// Runs `devdocs db quarantine <op>` (docs/implementation/08 §CLI
+/// contract): `--json` prints the `serde_json` report on stdout, the human
+/// mode prints one summary line per row or the release outcome.
+fn run_db_quarantine_command(cli: &Cli, op: &QuarantineOp) -> Result<(), Error> {
+    let config = Config::load(&overrides(cli))?;
+    match op {
+        QuarantineOp::List => {
+            let rows = crate::commands::run_db_quarantine_list(&config)?;
+            if cli.json {
+                print_line(&crate::commands::quarantine_list_report(&rows))
+            } else {
+                write_stdout_text(&summarize_quarantine_list(&rows))
+            }
+        }
+        QuarantineOp::Release {
+            chunk_id,
+            operator,
+            note,
+        } => {
+            let from = crate::commands::run_db_quarantine_release(
+                &config,
+                *chunk_id,
+                operator.as_deref(),
+                note.as_deref(),
+            )?;
+            if cli.json {
+                print_line(&crate::commands::quarantine_release_report(
+                    *chunk_id,
+                    &from,
+                    operator.as_deref(),
+                    note.as_deref(),
+                ))?;
+            } else {
+                write_stdout_line(&format!(
+                    "released chunk {chunk_id} from {}{}",
+                    from.as_str(),
+                    note.as_deref()
+                        .map(|note| format!(" — {note}"))
+                        .unwrap_or_default()
+                ))?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Runs `devdocs eval run <suite>` (docs/implementation/14 §Harness flow):
 /// proxies to the eval harness with the same flags — `--db` arrives on the
 /// global flag layer, the rest are the subcommand's. The gate table (or
@@ -583,7 +644,11 @@ fn run_verify_command(cli: &Cli, doc_ref: &str) -> Result<(), Error> {
     } else {
         let item = envelope.results.first();
         write_stdout_line(&match item {
-            Some(item) => format!("{} verified ({})", item.doc_ref, item.content_hash),
+            Some(item) => format!(
+                "{} verified ({})",
+                escape_control(&item.doc_ref),
+                item.content_hash
+            ),
             // defensive: `verify` answers with exactly one result or an
             // error, so the envelope never arrives empty; the arm keeps
             // the match total.
@@ -635,8 +700,46 @@ fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String
     out
 }
 
+/// Re-escapes terminal control sequences in stored content as literal
+/// text: every ESC byte (`0x1b`) becomes the literal `\u{1b}`, which
+/// neutralizes the CSI sequences an indexed document can plant — a
+/// quarantined chunk's rule names and section titles, a served snippet —
+/// so the human output cannot repaint the terminal (docs/implementation/
+/// 09 §Secrets and redaction). The `--json` path needs no pass: `serde_json`
+/// escapes the control byte itself. Newlines and tabs stay untouched —
+/// they shape the output.
+#[must_use]
+pub fn escape_control(text: &str) -> String {
+    text.replace('\u{1b}', "\\u{1b}")
+}
+
+/// The human-readable quarantine list without `--json`: one line per
+/// flagged chunk, with the rule names and the section path — the section
+/// titles are chunk content, so they render escaped
+/// ([`escape_control`]).
+fn summarize_quarantine_list(rows: &[devdocs_store::QuarantineRow]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{} {} {} [{} · {} · {}] {}",
+            row.chunk_id,
+            row.state.as_str(),
+            escape_control(&row.section_path.join(" > ")),
+            row.library,
+            row.version,
+            row.ordinal,
+            escape_control(row.rule_names.as_deref().unwrap_or("no rules"))
+        );
+    }
+    out
+}
+
 /// The human-readable search summary without `--json`: one line per
-/// result, in fusion order, plus the truncation notice.
+/// result, in fusion order, plus the truncation notice. The title is
+/// chunk content, so it renders escaped ([`escape_control`]).
 fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
     use std::fmt::Write as _;
 
@@ -645,7 +748,11 @@ fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
         let _ = writeln!(
             out,
             "{}  {}  [{} · {} · {} tokens]",
-            item.doc_ref, item.title, item.served_version, item.version_status, item.token_count
+            item.doc_ref,
+            escape_control(&item.title),
+            item.served_version,
+            item.version_status,
+            item.token_count
         );
     }
     if envelope.truncated
@@ -658,14 +765,15 @@ fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
 
 /// The human-readable `open` output: the served text, the attribution
 /// line when one joins from the config, then the continuation notice when
-/// the budget cut the chunk.
+/// the budget cut the chunk. The served text is chunk content, so it
+/// renders escaped ([`escape_control`]).
 fn summarize_open(envelope: &devdocs_model::ResultEnvelope) -> String {
     use std::fmt::Write as _;
 
     let mut out = envelope
         .results
         .first()
-        .map(|item| item.snippet.clone())
+        .map(|item| escape_control(&item.snippet))
         .unwrap_or_default();
     if let Some(item) = envelope.results.first()
         && let Some(attribution) = &item.attribution

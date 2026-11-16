@@ -140,7 +140,9 @@ Commands:
 | `devdocs source list` | Registry entries with their store-authoritative states; runs the expiry sweep first |
 | `devdocs skill install [--path P] [--force]` | Write the SKILL.md companion file |
 | `devdocs mcp [--transport stdio]` | Start the MCP server on stdio |
-| `devdocs db migrate|vacuum|stats|quarantine list` | Database operations |
+| `devdocs db migrate|vacuum|stats` | Database operations |
+| `devdocs db quarantine list` | List the chunks the injection filter quarantined or flagged for review (docs/implementation/07 §Injection filter); `--json` carries chunk id, library, version, section path, rule names, state, ordinal, and page URL |
+| `devdocs db quarantine release <chunk_id> [--operator O] [--note N]` | Release a reviewed chunk back into serving, with the audit line in `meta`; an unknown or unflagged chunk refuses with USAGE exit 1 |
 | `devdocs config init|show|validate|path` | Configuration operations |
 | `devdocs eval run <suite> [--db PATH] [--config PATH] [--golden-dir DIR] [--runs-dir DIR] [--devdocs-bin PATH] [--json]` | Run a golden-set suite through the eval harness; prints the gate table, or the `--json` outcome object; exit 2 on any gate FAIL or INCONCLUSIVE ([14](14-benchmark-eval.md) §Harness flow) |
 

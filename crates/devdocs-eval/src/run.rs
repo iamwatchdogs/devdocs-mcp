@@ -104,30 +104,16 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, EvalError> {
         &suite,
         &mut passes.rows,
     )?;
-    // Read the corpus last, so the artifacts name the sources the hashed
-    // database file holds (the read-path sweep can mutate license state).
-    let corpus = store.list_corpus()?;
-    drop(store);
-
-    let (metrics, gate_rows) = score_and_write(
-        &run_dir,
+    score_and_finish(
+        store,
+        run_dir,
         &suite,
         &date,
         &baseline_path,
-        &corpus,
         &db_path,
         p95_ms,
         &passes,
-    )?;
-
-    let all_gates_pass = gates::all_pass(&gate_rows);
-    Ok(RunOutcome {
-        run_dir,
-        metrics,
-        gates: gate_rows,
-        p95_ms,
-        all_gates_pass,
-    })
+    )
 }
 
 /// The operator config is snapshotted into the run dir before anything
@@ -382,6 +368,45 @@ fn subprocess_pass(
         row.subprocess = sample;
     }
     Ok(metrics::p95(&samples))
+}
+
+/// Finishes the run: reads the corpus, scores and writes the artifacts,
+/// and assembles the outcome the caller exits on
+/// (docs/implementation/14 §Harness flow).
+#[allow(clippy::too_many_arguments)] // the phase reads what run() resolved
+fn score_and_finish(
+    store: Store,
+    run_dir: PathBuf,
+    suite: &Suite,
+    date: &str,
+    baseline_path: &Path,
+    db_path: &Path,
+    p95_ms: f64,
+    passes: &InProcess,
+) -> Result<RunOutcome, EvalError> {
+    // Read the corpus last, so the artifacts name the sources the hashed
+    // database file holds (the read-path sweep can mutate license state).
+    let corpus = store.list_corpus()?;
+    drop(store);
+
+    let (metrics, gate_rows) = score_and_write(
+        &run_dir,
+        suite,
+        date,
+        baseline_path,
+        &corpus,
+        db_path,
+        p95_ms,
+        passes,
+    )?;
+    let all_gates_pass = gates::all_pass(&gate_rows);
+    Ok(RunOutcome {
+        run_dir,
+        metrics,
+        gates: gate_rows,
+        p95_ms,
+        all_gates_pass,
+    })
 }
 
 /// Scores the run, hashes the database, and writes the artifacts into

@@ -1448,14 +1448,16 @@ const SECRET_PAGE: &str = concat!(
     "## Long\n\n"
 );
 
-/// The filler paragraph: enough words to split at the default 400-token
-/// target, with the AWS credential embedded mid-paragraph so a chunk
-/// boundary lands near it.
+/// The filler paragraph: sized between the 400-token target and the
+/// 2×400 whole-block bound (about 250 words, ~600 heuristic tokens), so
+/// the block splits at the boundary instead of emitting as one chunk,
+/// with the AWS credential embedded mid-paragraph so a chunk boundary
+/// lands near it.
 fn secret_paragraph() -> String {
     const AWS_SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    let mut words = Vec::with_capacity(600);
-    for index in 0..600 {
-        if index == 300 {
+    let mut words = Vec::with_capacity(250);
+    for index in 0..250 {
+        if index == 125 {
             words.push(format!("aws_secret_access_key = {AWS_SECRET}"));
         } else {
             words.push(format!("filler{index}"));
@@ -1505,6 +1507,17 @@ async fn ingest_redacts_page_wide_before_segmentation() {
 
     let chunks = devdocs_testkit::read_chunks(&db_path).unwrap();
     assert!(chunks.len() > 1, "the fixture page splits into chunks");
+    // The Long section itself splits: the secret paragraph sits between
+    // the token target and the whole-block bound, so its chunks carry the
+    // boundary straddle the redaction assertions below pin.
+    let long_chunks = chunks
+        .iter()
+        .filter(|chunk| chunk.text.contains("filler"))
+        .count();
+    assert!(
+        long_chunks > 1,
+        "the secret paragraph must split into several chunks, got {long_chunks}: {chunks:?}"
+    );
     for chunk in &chunks {
         // The stored text — body and contextual header alike — carries no
         // raw token shape, heading-derived section paths included.

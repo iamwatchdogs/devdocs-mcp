@@ -684,7 +684,7 @@ impl<'a> IngestJob<'a> {
                 let review_flagged = !report.review_rules.is_empty();
                 run.events.quarantined_chunks += usize::from(quarantined);
                 run.events.review_flagged_chunks += usize::from(review_flagged);
-                run.events.code_caution_blocks += usize::from(report.code_caution);
+                run.events.code_caution_chunks += usize::from(report.code_caution);
                 log_filter_report(&report, &chunk.content_hash);
                 let rule_names = report
                     .quarantine_rules

@@ -59,7 +59,7 @@ pub struct IngestEvents {
     /// Chunks carrying a code fence that writes outside the workspace —
     /// the `code_caution` annotation
     /// (docs/implementation/07 §Injection filter).
-    pub code_caution_blocks: usize,
+    pub code_caution_chunks: usize,
     /// Secret-shaped matches the ingest redaction pass replaced
     /// (docs/implementation/07 §Normalization pipeline, the redaction
     /// pass).
@@ -116,7 +116,7 @@ impl IngestEvents {
             ),
             (
                 "chunks carrying a caution-worthy code fence",
-                self.code_caution_blocks,
+                self.code_caution_chunks,
             ),
             ("secrets redacted before the hash", self.redactions),
         ];

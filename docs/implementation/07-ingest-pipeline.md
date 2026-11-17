@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-17T12:00:00Z
+timestamp: 2026-11-17T13:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -237,7 +237,7 @@ Scope: flag, quarantine, and report. Do not attempt language-model detection in 
 | A fenced code block whose info string or first line is a shell command that writes outside the workspace (`curl | sh`, `rm -rf`, `git push --force`, `sudo `, `chmod 777`) | (annotation, not a rule name) | keep, annotate result with `code_caution: true` |
 | Link-to-text ratio above 0.5 in a chunk | `link_ratio` | flag for review, serve with `confidence` penalty |
 
-Implemented shape (M11a, filter v0): `devdocs_ingest::filter::run` scores one chunk's text. A small CommonMark fence scanner (up to three spaces of indent, open and close on runs of three or more backticks or tildes, a fence closes on a marker-only line with at least the opening run of the same character, an unterminated fence runs to the end of the text) computes the text outside fenced code blocks. The quarantine rules and the review rule match that out-of-code text only — fenced content is data a tutorial quotes. The caution shapes match each fence's info string and first body line. Per-hit warnings log the rule name and the first 16 hex characters of the chunk's content hash, never the matched text (.agents/instructions/observability). The counters land in the ingest events as `quarantined_chunks`, `review_flagged_chunks`, `code_caution_blocks`, and `redactions`, and flow into the `--json` add envelope.
+Implemented shape (M11a, filter v0): `devdocs_ingest::filter::run` scores one chunk's text. A small CommonMark fence scanner (up to three spaces of indent, open and close on runs of three or more backticks or tildes, a fence closes on a marker-only line with at least the opening run of the same character, an unterminated fence runs to the end of the text) computes the text outside fenced code blocks. The quarantine rules and the review rule match that out-of-code text only — fenced content is data a tutorial quotes. The caution shapes match each fence's info string and first body line. Per-hit warnings log the rule name and the first 16 hex characters of the chunk's content hash, never the matched text (.agents/instructions/observability). The counters land in the ingest events as `quarantined_chunks`, `review_flagged_chunks`, `code_caution_chunks`, and `redactions`, and flow into the `--json` add envelope.
 
 The oversized-comment shape runs at the page level: segmentation splits any standalone block over the 400-token target, so a >2k HTML comment almost never fits one chunk and the per-chunk comment rule rarely fires. The pipeline scans the page text once, pre-segmentation (`devdocs_ingest::filter::oversized_comment_spans`), and every chunk whose byte range intersects an oversized comment span carries the `hidden_text` quarantine rule, on top of the per-chunk rule the chunk-level pass keeps.
 

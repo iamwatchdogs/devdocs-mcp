@@ -1298,7 +1298,7 @@ async fn ingest_quarantines_redacts_and_annotates_per_the_filter() {
         "the directive chunk and the action-request chunk quarantine"
     );
     assert_eq!(
-        outcome.events.code_caution_blocks, 1,
+        outcome.events.code_caution_chunks, 1,
         "the curl-pipe fence annotates one chunk"
     );
     assert_eq!(outcome.events.redactions, 1, "the ghp_ token redacts once");

@@ -169,6 +169,50 @@ fn hidden_text_spares_a_small_comment() {
 }
 
 #[test]
+fn oversized_comment_spans_never_pair_two_short_comments() {
+    // The old shape rule matched from one comment's opener to a
+    // different comment's closer: two short comments separated by long
+    // prose must not pool into one detection.
+    let text = format!("<!-- note one -->{}<!-- note two -->", "x".repeat(2_500));
+    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert!(
+        !run(&text).quarantine_rules.contains(&"hidden_text"),
+        "two short comments are two legitimate comments"
+    );
+}
+
+#[test]
+fn oversized_comment_spans_detect_2001_interior_characters() {
+    // One character over the 2k interior threshold.
+    let text = format!("<!--{}-->", "a".repeat(2_001));
+    assert_eq!(oversized_comment_spans(&text).len(), 1);
+    assert_quarantined(&run(&text), "hidden_text");
+}
+
+#[test]
+fn oversized_comment_spans_spare_a_1999_char_interior_with_closer() {
+    // The closer is framing, not interior: 1999 interior characters plus
+    // the 3-byte `-->` stay under the 2k interior threshold.
+    let text = format!("<!--{}-->", "a".repeat(1_999));
+    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert!(
+        !run(&text).quarantine_rules.contains(&"hidden_text"),
+        "1999 interior characters plus the closer stay under the threshold"
+    );
+}
+
+#[test]
+fn oversized_comment_spans_count_characters_not_bytes() {
+    // 1000 CJK characters are 3000 bytes but 1000 characters.
+    let text = format!("<!--{}-->", "あ".repeat(1_000));
+    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert!(
+        !run(&text).quarantine_rules.contains(&"hidden_text"),
+        "the threshold counts characters, not bytes"
+    );
+}
+
+#[test]
 fn hidden_text_fires_on_zero_width_heavy_text() {
     // 10% zero-width joiners over a short span.
     let body = "secre\u{200b}t\u{200b} pays\u{200b}load\u{200b} here now ok\u{200b}";

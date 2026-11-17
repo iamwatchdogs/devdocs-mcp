@@ -80,23 +80,26 @@ static ACTION_REQUEST: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
-/// Quarantine rule, shape 1: an HTML comment over 2k characters
-/// (docs/implementation/07 §Injection filter).
-static HIDDEN_COMMENT: LazyLock<Regex> = LazyLock::new(|| compile(r"(?s)<!--[\s\S]{2001,}?-->"));
-
 /// The minimum interior length of an oversized HTML comment: more than
-/// 2000 characters between the markers, the same threshold the
-/// [`HIDDEN_COMMENT`] regex carries.
+/// 2000 characters between one comment's opener and its own closer
+/// (docs/implementation/07 §Injection filter).
 const HIDDEN_COMMENT_MIN_INTERIOR: usize = 2000;
 
 /// The byte spans of the oversized HTML comments in `text`, each covering
-/// the whole comment from `<!--` through `-->` (docs/implementation/07
-/// §Injection filter). Segmentation splits a standalone block over the
-/// token target, so a >2k comment almost never fits one chunk and the
+/// the whole comment from `<!--` through its own closer — the first `-->`
+/// after the opener (docs/implementation/07 §Injection filter).
+/// Segmentation splits a standalone block over the token target, so a
+/// comment over the 2k threshold almost never fits one chunk and the
 /// per-chunk oversized-comment rule rarely fires; the pipeline scans the
 /// page once with this function, pre-segmentation, and flags every chunk
-/// whose byte range intersects a span. Nested or overlapping comments take
-/// the outermost `-->`, one span each.
+/// whose byte range intersects a span. The oversized verdict counts each
+/// comment's interior separately — opener to its own closer, the closer
+/// excluded — so two short comments never pool into one detection, and it
+/// counts characters, not bytes.
+/// range intersects a span. The oversized verdict counts each comment's
+/// interior separately — opener to its own closer, the closer excluded —
+/// so two short comments never pool into one detection, and it counts
+/// characters, not bytes.
 #[must_use]
 pub fn oversized_comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
@@ -107,13 +110,13 @@ pub fn oversized_comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
         let Some(close_at) = text[body_start..].find("-->") else {
             // An unterminated comment hides everything to the end of the
             // page; its tail still counts as oversized when long enough.
-            if text.len() - body_start > HIDDEN_COMMENT_MIN_INTERIOR {
+            if text[body_start..].chars().count() > HIDDEN_COMMENT_MIN_INTERIOR {
                 spans.push(open..text.len());
             }
             break;
         };
         let end = body_start + close_at + 3;
-        if end - body_start > HIDDEN_COMMENT_MIN_INTERIOR {
+        if text[body_start..body_start + close_at].chars().count() > HIDDEN_COMMENT_MIN_INTERIOR {
             spans.push(open..end);
         }
         cursor = end;
@@ -326,7 +329,7 @@ pub fn run(text: &str) -> FilterReport {
     if ACTION_REQUEST.iter().any(|re| re.is_match(&out_of_code)) {
         quarantine_rules.push("action_request");
     }
-    if HIDDEN_COMMENT.is_match(&out_of_code)
+    if !oversized_comment_spans(&out_of_code).is_empty()
         || is_zero_width_heavy(&out_of_code)
         || is_color_on_color(&out_of_code)
     {

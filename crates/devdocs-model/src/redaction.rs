@@ -2,9 +2,11 @@
 //!
 //! [`redact`] scans text for credential-shaped matches — token formats
 //! taken from gitleaks baselines — and replaces every match with a
-//! `[REDACTED:<kind>]` marker. The markers are stable: re-redacting
-//! already-redacted output is a no-op, so the pass can run at more than
-//! one pipeline stage.
+//! `[REDACTED:<kind>]` marker. The pass iterates resolve-and-rewrite to a
+//! fixed point (bounded): a replacement can shift surviving text into a
+//! detection's context window, so one pass cannot always catch
+//! everything, and re-redacting already-redacted output is a no-op, so
+//! the pass can run at more than one pipeline stage.
 //!
 //! All patterns are RE2-compatible (no lookarounds, no backreferences) so
 //! they compile with the `regex` crate. Overlapping detections resolve
@@ -56,9 +58,15 @@ struct Detection {
 }
 
 /// The `[REDACTED:` head every marker carries. The rewrite does not treat
-/// it specially; no detection pattern matches inside a marker, which is
-/// what makes [`redact`] idempotent.
+/// it specially; no detection pattern matches inside a marker, and the
+/// fixed-point loop absorbs the one shift a marker's context can cause —
+/// a replacement moving surviving text into a context window.
 const MARKER_PREFIX: &str = "[REDACTED:";
+
+/// The fixed-point iteration bound. Markers match no detection pattern,
+/// so each pass that changes the text only adds markers; the context
+/// shifts they cause settle in one extra pass, well under the bound.
+const REDACT_MAX_PASSES: usize = 8;
 
 /// Compiles a fixed pattern of this module. Every pattern here is a
 /// verified literal — the test suite exercises each one — so the compile
@@ -273,11 +281,25 @@ fn resolve(text: &str) -> Vec<Detection> {
 }
 
 /// Replaces every secret-shaped match in `text` with a
-/// `[REDACTED:<kind>]` marker. Idempotent: the markers match no pattern,
-/// so re-redacting redacted output returns it unchanged. Overlapping
-/// detections collapse into one marker for the larger span.
+/// `[REDACTED:<kind>]` marker. Idempotent: the pass iterates
+/// resolve-and-rewrite to a fixed point, so re-redacting redacted output
+/// returns it unchanged. Overlapping detections collapse into one marker
+/// for the larger span.
 #[must_use]
 pub fn redact(text: &str) -> String {
+    let mut current = text.to_owned();
+    for _ in 0..REDACT_MAX_PASSES {
+        let next = redact_pass(&current);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+/// One resolve-and-rewrite pass over `text`.
+fn redact_pass(text: &str) -> String {
     let kept = resolve(text);
     if kept.is_empty() {
         return text.to_owned();
@@ -526,6 +548,22 @@ mod tests {
         let out = redact(&text);
         assert_eq!(out, "[REDACTED:openai_key] aws");
         assert!(!out.contains('B'), "no raw B tail survives: {out}");
+    }
+
+    #[test]
+    fn redaction_reaches_a_fixed_point_when_a_marker_moves_context() {
+        // Pass 1 redacts only the GitHub token: the `aws` label sits
+        // outside the 40-character A-run's context window. The marker
+        // replacement shifts `aws` into the window, so a single pass
+        // would leave the A's raw and break the idempotency contract.
+        let text = format!("{} {} {} aws", "A".repeat(40), ".".repeat(50), GHP);
+        let once = redact(&text);
+        assert_eq!(redact(&once), once, "redact must reach a fixed point");
+        assert!(!once.contains(GHP));
+        assert!(
+            once.contains("[REDACTED:aws_key]"),
+            "the marker shift must surface the A run: {once}"
+        );
     }
 
     #[test]

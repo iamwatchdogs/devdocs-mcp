@@ -206,7 +206,10 @@ const fn rank(kind: RedactionKind) -> u8 {
 /// overlaps: sort by start, longer span first, kind rank last; walk once
 /// and keep a detection only when it starts at or after the kept span's
 /// end. Same start keeps the longer span (containment), equal spans keep
-/// the higher-ranked kind, and a later span inside a kept one drops.
+/// the higher-ranked kind, a later span inside a kept one drops, and a
+/// later span that starts inside a kept one but extends past it widens
+/// the kept span's end — dropping it would leave its tail bytes visible.
+/// The widened span keeps the earlier detection's kind.
 fn resolve(text: &str) -> Vec<Detection> {
     let mut detections = Vec::new();
     for m in GITHUB_TOKEN.find_iter(text) {
@@ -259,6 +262,11 @@ fn resolve(text: &str) -> Vec<Detection> {
         if detection.start >= cursor {
             cursor = detection.end;
             kept.push(detection);
+        } else if detection.end > cursor
+            && let Some(last) = kept.last_mut()
+        {
+            last.end = detection.end;
+            cursor = detection.end;
         }
     }
     kept
@@ -506,6 +514,18 @@ mod tests {
         let out = redact(&text);
         assert_eq!(out, "[REDACTED:bearer_header]");
         assert!(!out.contains("github_token"));
+    }
+
+    #[test]
+    fn an_overlapping_detection_extends_the_kept_span() {
+        // The OpenAI plain fallback keeps `sk-` + 20 A's; the AWS secret
+        // run (20 A's + `/` + 19 B's = 40 bytes, ` aws` context) starts
+        // inside it and extends past it. Dropping the AWS detection would
+        // leave the B tail raw; the kept span widens instead.
+        let text = format!("sk-{}{}{} aws", "A".repeat(20), "/", "B".repeat(19));
+        let out = redact(&text);
+        assert_eq!(out, "[REDACTED:openai_key] aws");
+        assert!(!out.contains('B'), "no raw B tail survives: {out}");
     }
 
     #[test]

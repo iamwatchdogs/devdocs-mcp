@@ -56,10 +56,11 @@ test-slow:
 docs:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 
-# License, advisory, ban, and source checks.
+# License, advisory, ban, and source checks. All features, so the local
+# gate sees the same crate graph as the CI deny job.
 deny:
     @if command -v cargo-deny >/dev/null 2>&1; then \
-        cargo deny check; \
+        cargo deny --all-features check; \
     else \
         echo "cargo-deny not installed: cargo binstall --no-confirm cargo-deny"; \
         exit 1; \

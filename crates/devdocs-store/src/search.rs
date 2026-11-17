@@ -738,17 +738,18 @@ impl Store {
     }
 
     /// Counts the quarantined chunks a symbol-ladder attempt matches in
-    /// `scope` (docs/implementation/07 §Injection filter): the miss
+    /// `scope` (docs/implementation/07 §Injection filter). The miss
     /// classification reads this beside
     /// [`Store::count_quarantined_matches`] when the serving rungs fused
-    /// empty, so a quarantined-symbol-only match also answers
+    /// empty. A quarantined-symbol-only match then answers
     /// `quarantined_only` instead of `low_confidence` or
     /// `symbol_absent`. The composition mirrors [`Store::search_symbols`]
     /// — the same match predicate, scope narrowing, and unserved-license
-    /// clause — counting only the rows that query drops
-    /// (`quarantined = 1`), one per distinct chunk. Unbounded: the miss
-    /// path only needs the non-zero answer, and the symbol rows it scans
-    /// are already index-bounded by the match predicate.
+    /// clause. It counts only the rows that query drops
+    /// (`quarantined = 1`), one per distinct chunk. The count is
+    /// unbounded: the miss path only needs the non-zero answer, and the
+    /// symbol rows it scans are already index-bounded by the match
+    /// predicate.
     ///
     /// # Errors
     /// [`StoreError::Sql`] on query failures.

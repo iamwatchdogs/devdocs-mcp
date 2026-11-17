@@ -187,11 +187,11 @@ fn store_scope(scope: Scope<'_>) -> SymbolScope {
 }
 
 /// The quarantined-only count of the symbol rung
-/// (docs/implementation/07 §Injection filter): the quarantined chunks the
-/// ladder attempts would have matched, summed over every attempt — in the
-/// fused-empty path every attempt served nothing, so any attempt's
-/// quarantined match names the `quarantined_only` miss instead of
-/// `low_confidence` or `symbol_absent`. The same ladder
+/// (docs/implementation/07 §Injection filter): the quarantined chunks
+/// the ladder attempts would have matched. The count sums over every
+/// attempt. In the fused-empty path every attempt served nothing, so any
+/// attempt's quarantined match names the `quarantined_only` miss. That
+/// miss replaces `low_confidence` and `symbol_absent`. The same ladder
 /// [`symbol_rung`] walks, driven by the store's quarantined count.
 ///
 /// # Errors

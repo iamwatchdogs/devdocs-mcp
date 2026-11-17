@@ -775,7 +775,7 @@ pub fn quarantine_list_report(rows: &[QuarantineRow]) -> serde_json::Value {
 
 /// The operator the quarantine release audits when the CLI edge passes
 /// none — the documented CLI default
-/// (docs/implementation/07 §Injection filter).
+/// (docs/implementation/08 §CLI contract, the release row).
 const DEFAULT_OPERATOR: &str = "operator:cli";
 
 /// Runs `devdocs db quarantine release <chunk_id>`: clears the chunk's

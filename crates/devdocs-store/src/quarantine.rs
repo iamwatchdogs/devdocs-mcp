@@ -116,9 +116,10 @@ impl Store {
     /// (the CLI edge defaults to `operator:cli`). The audit note names
     /// the released chunk id, with the caller's note appended when one is
     /// given. Returns the flag state the chunk carried before the
-    /// release — the `from` of the audit line, read inside the same
-    /// transaction that clears the flags, so no caller-side pre-scan and
-    /// no window between the read and the write.
+    /// release. That state is the `from` of the audit line. The store
+    /// reads it inside the same transaction that clears the flags, so no
+    /// caller-side pre-scan exists and no window opens between the read
+    /// and the write.
     ///
     /// # Errors
     /// [`StoreError::UnknownChunk`] when no chunk row carries `chunk_id`;

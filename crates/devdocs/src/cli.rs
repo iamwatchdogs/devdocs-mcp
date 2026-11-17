@@ -705,24 +705,27 @@ fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String
 }
 
 /// Re-escapes terminal control sequences in stored content as literal
-/// text: every ESC byte (`0x1b`) becomes the literal `\u{1b}`, and every
-/// C1 control character (`U+0080`–`U+009F`) its literal `\u{…}` spelling,
-/// which neutralizes the sequences an indexed document can plant — a
+/// text: every control character (`U+0000`–`U+001F`, `U+007F`–`U+009F`)
+/// except newline and tab becomes its literal `\u{…}` spelling, which
+/// neutralizes the sequences an indexed document can plant — a
 /// quarantined chunk's rule names and section titles, a served snippet —
 /// so the human output cannot repaint the terminal
-/// (docs/implementation/09 §Secrets and redaction). `U+009B` is the 8-bit
-/// CSI introducer terminals honor, and `serde_json` does not escape C1
-/// (only bytes below `0x20`), so the C1 range needs its own pass on the
-/// JSON path too — the JSON output gate rewrites the serialized line. Newlines
-/// and tabs stay untouched — they shape the output.
+/// (docs/implementation/09 §Secrets and redaction). Ingest normalization
+/// keeps CR (`0x0d`) in text, so a raw CR in a served snippet would
+/// overwrite the terminal line, and other C0 controls (BS, VT, …) mangle
+/// output the same way. `U+009B` is the 8-bit CSI introducer terminals
+/// honor, and `serde_json` does not escape C1 (only bytes below `0x20`),
+/// so the C1 range needs its own pass on the JSON path too — the JSON
+/// output gate rewrites the serialized line. Newlines and tabs stay
+/// untouched — they shape the output.
 #[must_use]
 pub fn escape_control(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if c == '\u{1b}' || ('\u{80}'..='\u{9f}').contains(&c) {
-            let _ = write!(out, "\\u{{{:x}}}", c as u32);
-        } else {
+        if c == '\n' || c == '\t' || !c.is_control() {
             out.push(c);
+        } else {
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
         }
     }
     out
@@ -762,8 +765,8 @@ fn summarize_quarantine_list(rows: &[devdocs_store::QuarantineRow]) -> String {
             row.chunk_id,
             row.state.as_str(),
             escape_control(&row.section_path.join(" > ")),
-            row.library,
-            row.version,
+            escape_control(&row.library),
+            escape_control(&row.version),
             row.ordinal,
             escape_control(row.rule_names.as_deref().unwrap_or("no rules"))
         );
@@ -782,9 +785,9 @@ fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
         let _ = writeln!(
             out,
             "{}  {}  [{} · {} · {} tokens]",
-            item.doc_ref,
+            escape_control(&item.doc_ref),
             escape_control(&item.title),
-            item.served_version,
+            escape_control(&item.served_version),
             item.version_status,
             item.token_count
         );
@@ -812,7 +815,7 @@ fn summarize_open(envelope: &devdocs_model::ResultEnvelope) -> String {
     if let Some(item) = envelope.results.first()
         && let Some(attribution) = &item.attribution
     {
-        let _ = writeln!(out, "\n{attribution}");
+        let _ = writeln!(out, "\n{}", escape_control(attribution));
     }
     if envelope.truncated
         && let Some(cursor) = &envelope.next_cursor
@@ -1076,4 +1079,41 @@ fn user_config_template() -> String {
         "# expires = \"2027-11-06\"\n",
         "# refresh_days = 2\n",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::{escape_control, summarize_quarantine_list};
+    use devdocs_store::{QuarantineRow, QuarantineState};
+
+    #[test]
+    fn a_c0_control_other_than_newline_and_tab_escapes_as_a_unicode_literal() {
+        assert_eq!(
+            escape_control("first\rreplacement"),
+            "first\\u{d}replacement"
+        );
+        assert_eq!(escape_control("a\u{8}b"), "a\\u{8}b");
+        assert_eq!(escape_control("\u{1b}[31m"), "\\u{1b}[31m");
+        assert_eq!(escape_control("\u{9b}"), "\\u{9b}");
+        assert_eq!(escape_control("a\nb\tc"), "a\nb\tc");
+    }
+
+    #[test]
+    fn the_quarantine_list_escapes_control_characters_in_metadata_fields() {
+        let row = QuarantineRow {
+            chunk_id: 1,
+            library: String::from("ac\rme"),
+            version: String::from("1.0\u{8}"),
+            section_path: vec![String::from("Guide")],
+            rule_names: None,
+            state: QuarantineState::Quarantined,
+            ordinal: 0,
+            page_url: None,
+        };
+        let out = summarize_quarantine_list(&[row]);
+        assert!(out.contains("ac\\u{d}me · 1.0\\u{8}"));
+    }
 }

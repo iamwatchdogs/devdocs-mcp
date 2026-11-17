@@ -292,6 +292,17 @@ fn hidden_text_spares_contrasting_colors() {
 }
 
 #[test]
+fn oversized_comment_spans_skip_a_comment_inside_a_fence() {
+    // Fenced content is data a tutorial quotes: a >2k comment inside a
+    // fence never pairs its markers, while an out-of-fence comment still
+    // spans.
+    let text = format!("```text\n<!-- {} -->\n```\nafter\n", big_comment());
+    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    let text = format!("before\n\n<!-- {} -->\n", big_comment());
+    assert_eq!(oversized_comment_spans(&text).len(), 1);
+}
+
+#[test]
 fn link_ratio_flags_a_link_heavy_chunk() {
     let text = "[a](https://a) [b](https://b) [c](https://c) [d](https://d) here words";
     let report = run(text);

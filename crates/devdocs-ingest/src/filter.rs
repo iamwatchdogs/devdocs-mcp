@@ -95,33 +95,73 @@ const HIDDEN_COMMENT_MIN_INTERIOR: usize = 2000;
 /// whose byte range intersects a span. The oversized verdict counts each
 /// comment's interior separately — opener to its own closer, the closer
 /// excluded — so two short comments never pool into one detection, and it
-/// counts characters, not bytes.
-/// range intersects a span. The oversized verdict counts each comment's
-/// interior separately — opener to its own closer, the closer excluded —
-/// so two short comments never pool into one detection, and it counts
-/// characters, not bytes.
+/// counts characters, not bytes. Fenced content is exempt: `<!--` and
+/// `-->` inside a fenced block never pair, while the spans stay
+/// page-absolute byte offsets so the pipeline can intersect them with
+/// chunk ranges.
 #[must_use]
 pub fn oversized_comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let (_, _, fenced) = scan(text);
     let mut spans = Vec::new();
     let mut cursor = 0usize;
-    while let Some(start) = text[cursor..].find("<!--") {
-        let open = cursor + start;
-        let body_start = open + 4;
-        let Some(close_at) = text[body_start..].find("-->") else {
-            // An unterminated comment hides everything to the end of the
-            // page; its tail still counts as oversized when long enough.
-            if text[body_start..].chars().count() > HIDDEN_COMMENT_MIN_INTERIOR {
-                spans.push(open..text.len());
+    let mut open_at: Option<usize> = None;
+    while let Some((at, opens)) = next_comment_marker(text, cursor, &fenced) {
+        cursor = at + if opens { 4 } else { 3 };
+        match (open_at, opens) {
+            (None, true) => open_at = Some(at),
+            (Some(open), false) => {
+                let body_start = open + 4;
+                if text[body_start..at].chars().count() > HIDDEN_COMMENT_MIN_INTERIOR {
+                    spans.push(open..at + 3);
+                }
+                open_at = None;
             }
-            break;
-        };
-        let end = body_start + close_at + 3;
-        if text[body_start..body_start + close_at].chars().count() > HIDDEN_COMMENT_MIN_INTERIOR {
-            spans.push(open..end);
+            // A nested opener keeps the first one; a closer without an
+            // opener is noise.
+            _ => {}
         }
-        cursor = end;
+    }
+    if let Some(open) = open_at {
+        // An unterminated comment hides everything to the end of the
+        // page; its tail still counts as oversized when long enough.
+        let body_start = open + 4;
+        if text[body_start..].chars().count() > HIDDEN_COMMENT_MIN_INTERIOR {
+            spans.push(open..text.len());
+        }
     }
     spans
+}
+
+/// The next `<!--` or `-->` marker at or after `from`, as
+/// `(offset, opens)`. Markers inside `fenced` byte ranges are skipped —
+/// fenced content is data a tutorial quotes, so a fence never opens or
+/// closes a comment.
+fn next_comment_marker(
+    text: &str,
+    from: usize,
+    fenced: &[std::ops::Range<usize>],
+) -> Option<(usize, bool)> {
+    let mut cursor = from;
+    loop {
+        let open = text[cursor..].find("<!--").map(|at| (cursor + at, true));
+        let close = text[cursor..].find("-->").map(|at| (cursor + at, false));
+        let (at, opens) = match (open, close) {
+            (Some(o), Some(c)) => {
+                if o.0 <= c.0 {
+                    o
+                } else {
+                    c
+                }
+            }
+            (Some(o), None) | (None, Some(o)) => o,
+            (None, None) => return None,
+        };
+        match fenced.iter().find(|range| range.contains(&at)) {
+            None => return Some((at, opens)),
+            // Jump past the fence: its markers never pair.
+            Some(range) => cursor = range.end,
+        }
+    }
 }
 
 /// Quarantine rule, shape 2: zero-width and invisible characters above a
@@ -250,15 +290,22 @@ fn fence_closes(open: (char, usize), line: &str) -> bool {
 }
 
 /// Scans `text` once over its lines: returns the out-of-code text (the
-/// complement of the fenced regions, lines joined with `\n`) and every
-/// fence's info string plus first body line. An unterminated fence runs
-/// to the end of the text.
-fn scan(text: &str) -> (String, Vec<Fence>) {
+/// complement of the fenced regions, lines joined with `\n`), every
+/// fence's info string plus first body line, and the fenced regions' byte
+/// ranges — each from the fence-opener line's start through its closer
+/// line's end (or the text end for an unterminated fence). An
+/// unterminated fence runs to the end of the text.
+fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
     let mut out_of_code = String::with_capacity(text.len());
     let mut fences: Vec<Fence> = Vec::new();
+    let mut fenced_ranges: Vec<std::ops::Range<usize>> = Vec::new();
     let mut open: Option<(char, usize)> = None;
     let mut current_fence: Option<Fence> = None;
+    let mut fence_start = 0usize;
+    let mut pos = 0usize;
     for line in text.split('\n') {
+        let line_start = pos;
+        pos += line.len() + 1;
         match open {
             Some(fence) => {
                 if let Some(fenced) = &mut current_fence
@@ -271,11 +318,13 @@ fn scan(text: &str) -> (String, Vec<Fence>) {
                 }
                 if fence_closes(fence, line) {
                     open = None;
+                    fenced_ranges.push(fence_start..line_start + line.len());
                 }
             }
             None => {
                 if let Some(fence) = fence_on(line) {
                     open = Some(fence);
+                    fence_start = line_start;
                     current_fence = Some(Fence {
                         info: line
                             .trim_start()
@@ -304,8 +353,9 @@ fn scan(text: &str) -> (String, Vec<Fence>) {
     // collected info and first line still count for the caution check.
     if let Some(fenced) = current_fence.take() {
         fences.push(fenced);
+        fenced_ranges.push(fence_start..text.len());
     }
-    (out_of_code, fences)
+    (out_of_code, fences, fenced_ranges)
 }
 
 /// The whitespace tokens of `text` (docs/implementation/07 §Injection
@@ -320,7 +370,7 @@ fn token_count(text: &str) -> usize {
 /// string and first body line.
 #[must_use]
 pub fn run(text: &str) -> FilterReport {
-    let (out_of_code, fences) = scan(text);
+    let (out_of_code, fences, _) = scan(text);
 
     let mut quarantine_rules = Vec::new();
     if MODEL_DIRECTIVE.iter().any(|re| re.is_match(&out_of_code)) {

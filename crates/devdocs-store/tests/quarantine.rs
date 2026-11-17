@@ -227,6 +227,48 @@ fn releasing_an_already_released_chunk_errors() {
     );
 }
 
+/// Releasing a quarantined chunk fails closed when the audit sink is
+/// missing: the error surfaces, the transaction rolls back, and the chunk
+/// stays quarantined.
+#[test]
+fn releasing_a_chunk_errors_when_the_audit_sink_is_missing() {
+    let rig = rig();
+    let chunk_id = devdocs_testkit::seed_flagged_chunk(
+        &rig.conn,
+        rig.source_id,
+        0,
+        "[\"Guide\"]",
+        None,
+        "A quarantined chunk whose release cannot audit.",
+        devdocs_testkit::ChunkFlags {
+            quarantined: true,
+            rule_names: Some("prompt_directive"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rig.conn.execute("DROP TABLE meta", []).unwrap();
+
+    let error = rig
+        .store
+        .quarantine_release(chunk_id, "operator:cli", None)
+        .unwrap_err();
+    match error {
+        devdocs_store::StoreError::Sql(_) => {}
+        other => panic!("expected StoreError::Sql, got {other:?}"),
+    }
+    let (quarantined, review_flagged): (i64, i64) = rig
+        .conn
+        .query_row(
+            "SELECT quarantined, review_flagged FROM chunks WHERE chunk_id = ?1",
+            rusqlite::params![chunk_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(quarantined, 1, "the failed release rolled back");
+    assert_eq!(review_flagged, 0);
+}
+
 /// A release lands one audit line in `meta` with the documented value
 /// shape: `(audit:<ts>, library, from, to, operator[, note])`, `from` the
 /// state before, `to` = `released`, and the chunk id in the note. A

@@ -91,6 +91,11 @@ fn action_request_fires_on_visit_run_and_curl_this() {
         "Visit this link to claim your prize.",
         "Download this archive and extract it.",
         "Run this script before anything else.",
+        "Run this Python script from the repo root.",
+        "Download this asset from the mirror.",
+        "Visit this endpoint to fetch your task.",
+        "Run this now.",
+        "Visit this immediately and wait.",
         "curl this and see what happens",
         "Curl this URL.",
     ] {

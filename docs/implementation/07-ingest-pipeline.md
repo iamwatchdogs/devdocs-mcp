@@ -3,7 +3,7 @@ type: guide
 title: Ingest Pipeline (L1 + L2)
 description: The source adapters, the fetch guard, the license gate, the normalization and segmentation pipeline, dedup, the injection filter, and the refresh policy for devdocs.
 tags: [devdocs, ingest, llms-txt, git, openapi, html, segmentation]
-timestamp: 2026-11-17T18:00:00Z
+timestamp: 2026-11-17T19:30:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -232,7 +232,7 @@ Scope: flag, quarantine, and report. Do not attempt language-model detection in 
 | Rule | Name | Action |
 |---|---|---|
 | Directives addressed to a model ("ignore previous instructions", "disregard your rules", "system prompt") in text outside code blocks | `model_directive` | quarantine |
-| Instructions that request action outside code blocks — an action verb paired with a remote or executable target noun ("visit this link", "download this file", "run this script", "curl this"), and exfiltration verbs with a credential target ("send your API key"). Phrase level: a bare verb ("run the tests") and a verb with a code-shaped object ("run this code", "run this test") do not fire | `action_request` | quarantine |
+| Instructions that request action outside code blocks — an action verb paired with a remote or executable target noun, with short modifiers allowed between the two ("visit this link", "download this asset", "run this Python script", "run this now", "curl this"), and exfiltration verbs with a credential target ("send your API key"). Phrase level: a bare verb ("run the tests") and a verb with a code-shaped object ("run this code", "run this test") do not fire | `action_request` | quarantine |
 | Hidden text: HTML comments larger than 2k chars, zero-width-heavy spans (`U+200B`–`U+200F`, `U+2060`, `U+FEFF`, `U+00AD`, `U+180E`, `U+2061`–`U+2064`, `U+E0000`–`U+E007F` above 5% of the characters), text-colored-on-text patterns (pre-strip leftovers) | `hidden_text` | quarantine |
 | A fenced code block whose info string or first line is a shell command that writes outside the workspace (`curl | sh`, `rm -rf`, `git push --force`, `sudo `, `chmod 777`) | (annotation, not a rule name) | keep, annotate result with `code_caution: true` |
 | Link-to-text ratio above 0.5 in a chunk | `link_ratio` | flag for review, serve with `confidence` penalty |

@@ -62,8 +62,14 @@ static MODEL_DIRECTIVE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// (docs/implementation/07 §Injection filter).
 static ACTION_REQUEST: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        // "visit this link", "download this file", "run this script"
-        r"(?i)\b(?:visit|download|run)\s+this\s+(?:link|url|page|site|file|script|command|package|repo(?:sitory)?|installer|binary|archive|payload)\b",
+        // "visit this link", "download this file", "run this script" —
+        // the verb pairs with a remote or executable target noun; short
+        // modifiers may sit between them ("run this Python script")
+        r"(?i)\b(?:visit|download|run)\s+this\s+(?:(?:\w+\s+){0,2})?(?:link|url|page|site|file|script|command|package|repo(?:sitory)?|installer|binary|archive|payload|endpoint|asset|executable|tarball|snippet|bundle|setup|mirror|destination|zip|tool|image|artifact)\b",
+        // "run this now", "visit this immediately" — the imperative
+        // adverb keeps the bare-verb recall without the code-shaped
+        // prose ("run this code", "run this test")
+        r"(?i)\b(?:visit|download|run)\s+this\s+(?:now|immediately|first|right away)\b",
         // "curl this"
         r"(?i)\bcurl\s+this\b",
         // exfiltration: "send|upload|post (your|the) (api )?(key|token|credentials)"

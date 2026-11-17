@@ -1041,7 +1041,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use super::{map_ingest_error, withdraw_on_terminal_refusal};
+    use super::{map_ingest_error, map_quarantine_refusal, withdraw_on_terminal_refusal};
     use devdocs_ingest::IngestError;
     use devdocs_model::config::{Config, SourceConfig};
     use devdocs_model::error::{Error, UpstreamCode};
@@ -1260,5 +1260,19 @@ mod tests {
             panic!("expected a usage error for an option-shaped pin");
         };
         assert!(detail.starts_with("GIT_INVALID_PIN:"), "detail: {detail}");
+    }
+
+    /// The quarantine refusal mapping keeps the upstream arm for other
+    /// errors: a store SQL failure maps onto `UPSTREAM_ERROR`, not
+    /// `USAGE` (docs/implementation/05 §Error model).
+    #[test]
+    fn quarantine_refusal_mapping_keeps_the_upstream_arm_for_other_errors() {
+        let error = map_quarantine_refusal(devdocs_store::StoreError::Sql(
+            rusqlite::Error::InvalidColumnName("chunks".to_owned()),
+        ));
+        let Error::Upstream { code, .. } = error else {
+            panic!("expected an upstream error for a store failure");
+        };
+        assert_eq!(code, UpstreamCode::UpstreamError);
     }
 }

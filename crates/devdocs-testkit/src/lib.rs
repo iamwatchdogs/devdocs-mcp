@@ -400,6 +400,25 @@ mod tests {
 
     use super::{StoredChunk, open_migrated, read_chunks};
 
+    /// A fixture surfaces the underlying insert error instead of
+    /// swallowing it: a connection with no schema has no `chunks` table
+    /// to insert into, so [`super::seed_flagged_chunk`] propagates the
+    /// error.
+    #[test]
+    fn seed_flagged_chunk_propagates_an_insert_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let result = super::seed_flagged_chunk(
+            &conn,
+            0,
+            0,
+            "[\"Guide\"]",
+            None,
+            "text",
+            super::ChunkFlags::default(),
+        );
+        assert!(result.is_err(), "the insert without a schema errors");
+    }
+
     /// Seeded rows read back in order, and a deactivated source drops out.
     #[test]
     fn read_chunks_returns_active_rows_in_order() {

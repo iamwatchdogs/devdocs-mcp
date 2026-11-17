@@ -512,6 +512,9 @@ fn run_db_quarantine_command(cli: &Cli, op: &QuarantineOp) -> Result<(), Error> 
                     note.as_deref(),
                 ))?;
             } else {
+                // defensive: the write-failure arm is not forgeable offline —
+                // a closed pipe maps to success, and every other stdout
+                // failure needs a broken terminal, which no test drives.
                 write_stdout_line(&format!(
                     "released chunk {chunk_id} from {}{}",
                     from.as_str(),

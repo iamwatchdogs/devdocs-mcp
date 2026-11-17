@@ -1270,9 +1270,12 @@ mod tests {
         let error = map_quarantine_refusal(devdocs_store::StoreError::Sql(
             rusqlite::Error::InvalidColumnName("chunks".to_owned()),
         ));
-        let Error::Upstream { code, .. } = error else {
-            panic!("expected an upstream error for a store failure");
-        };
-        assert_eq!(code, UpstreamCode::UpstreamError);
+        assert!(matches!(
+            error,
+            Error::Upstream {
+                code: UpstreamCode::UpstreamError,
+                ..
+            }
+        ));
     }
 }

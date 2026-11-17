@@ -14,8 +14,11 @@
 ///   consuming the parameter bytes (`0x30..=0x3F`) and intermediate bytes
 ///   (`0x20..=0x2F`) in between. An unterminated CSI sequence runs to the
 ///   end of the input.
-/// - OSC sequences: `ESC ]` through a BEL (`0x07`) or an ST (`ESC \`).
-///   An unterminated OSC sequence runs to the end of the input.
+/// - String-mode sequences: `ESC ]` (OSC) through a BEL (`0x07`) or an
+///   ST (`ESC \`); `ESC P` (DCS), `ESC X` (SOS), `ESC ^` (PM), and
+///   `ESC _` (APC) through an ST (xterm terminates those with ST only;
+///   a BEL is tolerated as a harmless over-strip). An unterminated
+///   string-mode sequence runs to the end of the input.
 /// - Every other ECMA-48 escape: `ESC` plus its intermediate bytes
 ///   (`0x20..=0x2F`) and final byte (`0x30..=0x7E`) — cursor saves,
 ///   charset designates, and their kin. An unterminated one runs to the
@@ -109,8 +112,12 @@ fn skip_escape(bytes: &[u8], start: usize) -> usize {
                 bytes.len()
             }
         }
-        // OSC: `ESC ]` payload terminated by BEL or ST (`ESC \`).
-        b']' => {
+        // OSC (`ESC ]`) and the other string-mode sequences — DCS
+        // (`ESC P`), SOS (`ESC X`), PM (`ESC ^`), APC (`ESC _`): a
+        // payload terminated by BEL or ST (`ESC \`). xterm terminates
+        // the non-OSC modes with ST only, and a BEL terminator is a
+        // harmless over-strip.
+        b']' | b'P' | b'X' | b'^' | b'_' => {
             let mut i = start + 2;
             while i < bytes.len() {
                 match bytes[i] {
@@ -181,6 +188,24 @@ mod tests {
     #[test]
     fn an_unterminated_osc_sequence_runs_to_the_end() {
         assert_eq!(strip_ansi("keep\x1b]0;trailing"), "keep");
+    }
+
+    #[test]
+    fn string_mode_payloads_are_removed() {
+        // DCS (`ESC P … ST`): the payload drops whole, not just the
+        // two-byte escape head.
+        assert_eq!(strip_ansi("before\x1bPpayload\x1b\\after"), "beforeafter");
+        // SOS, PM, APC.
+        assert_eq!(strip_ansi("a\x1bXsos\x1b\\b"), "ab");
+        assert_eq!(strip_ansi("a\x1b^pm\x1b\\b"), "ab");
+        assert_eq!(strip_ansi("a\x1b_apc\x1b\\b"), "ab");
+        // A BEL terminator over-strips harmlessly.
+        assert_eq!(strip_ansi("before\x1bPpayload\x07after"), "beforeafter");
+    }
+
+    #[test]
+    fn an_unterminated_string_mode_payload_runs_to_the_end() {
+        assert_eq!(strip_ansi("keep\x1bPpayload"), "keep");
     }
 
     #[test]

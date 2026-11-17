@@ -291,10 +291,15 @@ pub fn redact(text: &str) -> String {
     for _ in 0..REDACT_MAX_PASSES {
         let next = redact_pass(&current);
         if next == current {
-            break;
+            return current;
         }
         current = next;
     }
+    // Counts only: logs carry provenance, never content.
+    tracing::warn!(
+        passes = REDACT_MAX_PASSES,
+        "redaction hit the pass cap without reaching a fixed point"
+    );
     current
 }
 

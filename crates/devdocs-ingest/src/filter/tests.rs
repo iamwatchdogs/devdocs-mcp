@@ -5,7 +5,13 @@
 // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use super::{FilterReport, oversized_comment_spans, run};
+use super::{FilterReport, oversized_comment_spans, run, scan};
+
+/// Runs the helper the way a caller does: scan first, fences passed in.
+fn oversized_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let (_, _, fenced) = scan(text);
+    oversized_comment_spans(text, &fenced)
+}
 
 /// A long HTML comment over the 2k-char threshold: 2 100 `a` characters.
 fn big_comment() -> String {
@@ -174,7 +180,7 @@ fn oversized_comment_spans_never_pair_two_short_comments() {
     // different comment's closer: two short comments separated by long
     // prose must not pool into one detection.
     let text = format!("<!-- note one -->{}<!-- note two -->", "x".repeat(2_500));
-    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert_eq!(oversized_spans(&text).len(), 0);
     assert!(
         !run(&text).quarantine_rules.contains(&"hidden_text"),
         "two short comments are two legitimate comments"
@@ -185,7 +191,7 @@ fn oversized_comment_spans_never_pair_two_short_comments() {
 fn oversized_comment_spans_detect_2001_interior_characters() {
     // One character over the 2k interior threshold.
     let text = format!("<!--{}-->", "a".repeat(2_001));
-    assert_eq!(oversized_comment_spans(&text).len(), 1);
+    assert_eq!(oversized_spans(&text).len(), 1);
     assert_quarantined(&run(&text), "hidden_text");
 }
 
@@ -194,7 +200,7 @@ fn oversized_comment_spans_spare_a_1999_char_interior_with_closer() {
     // The closer is framing, not interior: 1999 interior characters plus
     // the 3-byte `-->` stay under the 2k interior threshold.
     let text = format!("<!--{}-->", "a".repeat(1_999));
-    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert_eq!(oversized_spans(&text).len(), 0);
     assert!(
         !run(&text).quarantine_rules.contains(&"hidden_text"),
         "1999 interior characters plus the closer stay under the threshold"
@@ -205,7 +211,7 @@ fn oversized_comment_spans_spare_a_1999_char_interior_with_closer() {
 fn oversized_comment_spans_count_characters_not_bytes() {
     // 1000 CJK characters are 3000 bytes but 1000 characters.
     let text = format!("<!--{}-->", "あ".repeat(1_000));
-    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert_eq!(oversized_spans(&text).len(), 0);
     assert!(
         !run(&text).quarantine_rules.contains(&"hidden_text"),
         "the threshold counts characters, not bytes"
@@ -226,14 +232,14 @@ fn hidden_text_fires_on_zero_width_heavy_text() {
 #[test]
 fn oversized_comment_spans_cover_an_unterminated_comment_to_the_page_end() {
     let text = format!("## Notes\n\n<!-- {}", big_comment());
-    let spans = oversized_comment_spans(&text);
+    let spans = oversized_spans(&text);
     assert_eq!(spans.len(), 1);
     assert_eq!(spans[0].start, text.find("<!--").unwrap());
     assert_eq!(spans[0].end, text.len());
     // A short unterminated comment hides too little to flag.
     let text = "## Notes\n\n<!-- a short note\n";
     assert!(
-        oversized_comment_spans(text).is_empty(),
+        oversized_spans(text).is_empty(),
         "a short unterminated comment yields no span"
     );
 }
@@ -297,9 +303,9 @@ fn oversized_comment_spans_skip_a_comment_inside_a_fence() {
     // fence never pairs its markers, while an out-of-fence comment still
     // spans.
     let text = format!("```text\n<!-- {} -->\n```\nafter\n", big_comment());
-    assert_eq!(oversized_comment_spans(&text).len(), 0);
+    assert_eq!(oversized_spans(&text).len(), 0);
     let text = format!("before\n\n<!-- {} -->\n", big_comment());
-    assert_eq!(oversized_comment_spans(&text).len(), 1);
+    assert_eq!(oversized_spans(&text).len(), 1);
 }
 
 #[test]

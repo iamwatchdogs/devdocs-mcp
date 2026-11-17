@@ -663,12 +663,14 @@ impl<'a> IngestJob<'a> {
             run.events.unsupported_fence_languages += stats.unsupported_fence_languages;
             // The page-level oversized-comment scan
             // (docs/implementation/07 §Injection filter): segmentation
-            // splits a standalone block over the token target, so a >2k
-            // HTML comment almost never fits one chunk and the per-chunk
-            // comment rule rarely fires. The page text is scanned once and
-            // every chunk whose byte range intersects an oversized comment
-            // span carries the `hidden_text` quarantine rule.
-            let hidden_spans = crate::filter::oversized_comment_spans(&doc.body);
+            // splits a standalone block over the token target, so a comment
+            // whose interior exceeds 2000 characters almost never fits one
+            // chunk and the per-chunk comment rule rarely fires. The page
+            // text is scanned once and every chunk whose byte range
+            // intersects an oversized comment span carries the
+            // `hidden_text` quarantine rule; fenced comments are exempt.
+            let (_, _, fenced_ranges) = crate::filter::scan(&doc.body);
+            let hidden_spans = crate::filter::oversized_comment_spans(&doc.body, &fenced_ranges);
             for chunk in chunks {
                 let (symbols, symbol) = chunk_symbols(&chunk.header, &chunk.symbols);
                 // The injection filter scores the chunk's text and fills

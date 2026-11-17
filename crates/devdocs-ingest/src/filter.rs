@@ -96,16 +96,20 @@ const HIDDEN_COMMENT_MIN_INTERIOR: usize = 2000;
 /// comment's interior separately — opener to its own closer, the closer
 /// excluded — so two short comments never pool into one detection, and it
 /// counts characters, not bytes. Fenced content is exempt: `<!--` and
-/// `-->` inside a fenced block never pair, while the spans stay
-/// page-absolute byte offsets so the pipeline can intersect them with
-/// chunk ranges.
+/// `-->` markers inside a `fenced` byte range (from the caller's `scan`
+/// of the same `text`) never pair. The spans are byte offsets into `text`
+/// as given — callers passing fence-stripped out-of-code text get
+/// out-of-code-relative offsets, and since fence stripping removes the
+/// fence syntax they pass no fenced ranges.
 #[must_use]
-pub fn oversized_comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
-    let (_, _, fenced) = scan(text);
+pub fn oversized_comment_spans(
+    text: &str,
+    fenced: &[std::ops::Range<usize>],
+) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     let mut cursor = 0usize;
     let mut open_at: Option<usize> = None;
-    while let Some((at, opens)) = next_comment_marker(text, cursor, &fenced) {
+    while let Some((at, opens)) = next_comment_marker(text, cursor, fenced) {
         cursor = at + if opens { 4 } else { 3 };
         match (open_at, opens) {
             (None, true) => open_at = Some(at),
@@ -257,7 +261,7 @@ fn compile(pattern: &'static str) -> Regex {
 /// after the opening delimiter) and its first body line, the two inputs
 /// the code-caution shapes match against. `first_body_line` stays `None`
 /// for a fence that closes on the line right after its opener.
-struct Fence {
+pub(crate) struct Fence {
     info: String,
     first_body_line: Option<String>,
 }
@@ -304,7 +308,7 @@ fn fence_closes(open: (char, usize), line: &str) -> bool {
 /// ranges — each from the fence-opener line's start through its closer
 /// line's end (or the text end for an unterminated fence). An
 /// unterminated fence runs to the end of the text.
-fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
+pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
     let mut out_of_code = String::with_capacity(text.len());
     let mut fences: Vec<Fence> = Vec::new();
     let mut fenced_ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -388,7 +392,10 @@ pub fn run(text: &str) -> FilterReport {
     if ACTION_REQUEST.iter().any(|re| re.is_match(&out_of_code)) {
         quarantine_rules.push("action_request");
     }
-    if !oversized_comment_spans(&out_of_code).is_empty()
+    // The stripped text carries no fence syntax, so there are no fenced
+    // ranges to exempt — scan's ranges are in the original text's
+    // coordinates, not `out_of_code`'s.
+    if !oversized_comment_spans(&out_of_code, &[]).is_empty()
         || is_zero_width_heavy(&out_of_code)
         || is_color_on_color(&out_of_code)
     {

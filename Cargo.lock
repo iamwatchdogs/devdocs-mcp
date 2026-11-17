@@ -1125,6 +1125,7 @@ dependencies = [
  "thiserror",
  "time",
  "toml",
+ "tracing",
  "url",
 ]
 

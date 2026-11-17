@@ -1371,6 +1371,70 @@ async fn ingest_quarantines_redacts_and_annotates_per_the_filter() {
     }
 }
 
+/// The link-heavy page: one section of sixteen markdown links and few
+/// words — well over the one-link-per-two-tokens ratio even with the
+/// contextual header's tokens counted (docs/implementation/07 §Injection
+/// filter).
+const LINK_HEAVY: &str = concat!(
+    "# Links\n\n",
+    "## Links\n\n",
+    "Docs live here: ",
+    "[one](https://one.acme.test), [two](https://two.acme.test), ",
+    "[three](https://three.acme.test), [four](https://four.acme.test), ",
+    "[five](https://five.acme.test), [six](https://six.acme.test), ",
+    "[seven](https://seven.acme.test), [eight](https://eight.acme.test), ",
+    "[nine](https://nine.acme.test), [ten](https://ten.acme.test), ",
+    "[eleven](https://eleven.acme.test), [twelve](https://twelve.acme.test), ",
+    "[thirteen](https://thirteen.acme.test), [fourteen](https://fourteen.acme.test), ",
+    "[fifteen](https://fifteen.acme.test), [sixteen](https://sixteen.acme.test).\n"
+);
+
+/// The ingest review-flags a link-heavy page end to end: the
+/// `link_ratio`
+/// rule fires without quarantining, so the chunk stays served and the
+/// counters land one review flag and zero quarantines
+/// (docs/implementation/07 §Injection filter).
+#[tokio::test]
+async fn ingest_review_flags_a_link_heavy_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = concat!(
+        "# Acme\n\n> Acme widgets documentation.\n\n",
+        "## Guides\n\n",
+        "- [Links](https://docs.acme.test/links.md): link-heavy content\n"
+    );
+    let responses = serde_json::json!([
+        { "url": "https://docs.acme.test/llms.txt", "status": 200, "headers": {}, "body": index },
+        { "url": "https://docs.acme.test/links.md", "status": 200, "headers": {}, "body": LINK_HEAVY },
+    ]);
+    let fixture = write_fixture_set(dir.path(), &responses);
+    let config = config();
+    let guard = FetchGuard::from_fetch_config(&config.fetch);
+
+    let db = tempfile::tempdir().unwrap();
+    let db_path = db.path().join("docs.db");
+    let store = Arc::new(devdocs_testkit::open_migrated(&db_path).unwrap());
+
+    let index_url = Url::parse("https://docs.acme.test/llms.txt").unwrap();
+    let job = IngestJob::new(&config, &guard, Some(&fixture));
+    let outcome = job
+        .run(Arc::clone(&store), &index_url, "acme", "1.0")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.events.review_flagged_chunks, 1,
+        "the link-heavy chunk review-flags"
+    );
+    assert_eq!(
+        outcome.events.quarantined_chunks, 0,
+        "a review flag never quarantines"
+    );
+    let chunks = devdocs_testkit::read_chunks(&db_path).unwrap();
+    assert_eq!(chunks.len(), 1);
+    assert!(chunks[0].review_flagged);
+    assert!(!chunks[0].quarantined);
+}
+
 /// The secret-carrying page: a heading that carries a `ghp_` token, a
 /// rust fence whose function name is a `ghp_` token (a secret-shaped
 /// identifier the symbol pass would extract), and a long paragraph with a

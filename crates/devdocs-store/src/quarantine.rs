@@ -115,7 +115,10 @@ impl Store {
     /// `review`) as `from`, `released` as `to`, and the passed operator
     /// (the CLI edge defaults to `operator:cli`). The audit note names
     /// the released chunk id, with the caller's note appended when one is
-    /// given.
+    /// given. Returns the flag state the chunk carried before the
+    /// release — the `from` of the audit line, read inside the same
+    /// transaction that clears the flags, so no caller-side pre-scan and
+    /// no window between the read and the write.
     ///
     /// # Errors
     /// [`StoreError::UnknownChunk`] when no chunk row carries `chunk_id`;
@@ -127,7 +130,7 @@ impl Store {
         chunk_id: i64,
         operator: &str,
         note: Option<&str>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<QuarantineState, StoreError> {
         let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
@@ -174,6 +177,6 @@ impl Store {
             Some(&audit_note),
         )?;
         tx.commit().map_err(StoreError::Sql)?;
-        Ok(())
+        Ok(from)
     }
 }

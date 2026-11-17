@@ -773,15 +773,20 @@ pub fn quarantine_list_report(rows: &[QuarantineRow]) -> serde_json::Value {
     })
 }
 
+/// The operator the quarantine release audits when the CLI edge passes
+/// none — the documented CLI default
+/// (docs/implementation/07 §Injection filter).
+const DEFAULT_OPERATOR: &str = "operator:cli";
+
 /// Runs `devdocs db quarantine release <chunk_id>`: clears the chunk's
 /// quarantine and review flags and restores the serve, with the audit
 /// line in `meta` (docs/implementation/07 §Injection filter). The typed
 /// refusals — an unknown chunk, a chunk that holds no flag any more —
 /// surface as `Usage` exit 1 like the license-transition refusals; every
-/// other store failure keeps the upstream mapping. The report's `from`
-/// state is the flag state the chunk carried before the release, read
-/// off the quarantine list first; a successful release implies the row
-/// was listed, so the lookup cannot miss. The logs carry the chunk id
+/// other store failure keeps the upstream mapping. The returned `from`
+/// state is the flag state the chunk carried before the release, read by
+/// the store inside the release transaction, so the report names the
+/// state the release actually moved from. The logs carry the chunk id
 /// and the operator, never chunk content
 /// (.agents/instructions/observability: log provenance, not content).
 ///
@@ -795,20 +800,12 @@ pub fn run_db_quarantine_release(
     note: Option<&str>,
 ) -> Result<QuarantineState, Error> {
     let store = wiring::open_store(config, false)?;
-    let operator = operator.unwrap_or("operator:cli");
+    let operator = operator.unwrap_or(DEFAULT_OPERATOR);
     let from = store
-        .quarantine_list()
-        .map_err(|e| wiring::map_store_error(&e))?
-        .into_iter()
-        .find(|row| row.chunk_id == chunk_id)
-        .map(|row| row.state);
-    store
         .quarantine_release(chunk_id, operator, note)
         .map_err(map_quarantine_refusal)?;
     tracing::info!(chunk_id, operator, "released the chunk from quarantine");
-    // defensive: a successful release implies the chunk was flagged, so
-    // the list lookup found its state; the arm keeps the mapping total.
-    from.ok_or_else(|| Error::Usage(format!("chunk {chunk_id} was not flagged")))
+    Ok(from)
 }
 
 /// Maps the typed quarantine refusals onto `Usage` exit 1; every other
@@ -836,7 +833,7 @@ pub fn quarantine_release_report(
         "chunk_id": chunk_id,
         "from": from.as_str(),
         "to": "released",
-        "operator": operator.unwrap_or("operator:cli"),
+        "operator": operator.unwrap_or(DEFAULT_OPERATOR),
         "note": note,
     })
 }

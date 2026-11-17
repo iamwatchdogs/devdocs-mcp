@@ -134,9 +134,15 @@ fn release_restores_serving_and_keeps_code_caution() {
         "the quarantined chunk does not serve before the release"
     );
 
-    rig.store
+    let released = rig
+        .store
         .quarantine_release(chunk_id, "operator:cli", Some("reviewed, harmless"))
         .unwrap();
+    assert_eq!(
+        released,
+        QuarantineState::Quarantined,
+        "the release returns the state it cleared"
+    );
 
     let hits = rig
         .store
@@ -257,12 +263,24 @@ fn a_release_writes_the_documented_audit_line() {
     )
     .unwrap();
 
-    rig.store
+    let released = rig
+        .store
         .quarantine_release(quarantined, "operator:cli", Some("harmless"))
         .unwrap();
-    rig.store
+    assert_eq!(
+        released,
+        QuarantineState::Quarantined,
+        "a quarantined release reports quarantined as the prior state"
+    );
+    let review_released = rig
+        .store
         .quarantine_release(review, "operator:cli", None)
         .unwrap();
+    assert_eq!(
+        review_released,
+        QuarantineState::Review,
+        "a review-only release reports review as the prior state"
+    );
 
     let lines = audit_lines(&rig.conn);
     assert_eq!(lines.len(), 2, "one audit line per release");

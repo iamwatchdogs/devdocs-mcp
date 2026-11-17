@@ -465,4 +465,18 @@ mod tests {
     fn an_empty_input_stays_empty() {
         assert_eq!(redact(""), "");
     }
+
+    #[test]
+    fn redacts_a_token_with_multibyte_context_around_it() {
+        // The ±80-byte context window walks to char boundaries; multibyte
+        // padding forces both walks, so the AWS-context scan on the window
+        // must not panic or split a character.
+        let pad = "あ".repeat(30);
+        let text = format!("{pad}{GHP}{pad}");
+        let out = redact(&text);
+        assert!(out.contains("[REDACTED:github_token]"));
+        assert!(!out.contains("ghp_"));
+        assert!(out.starts_with(&pad), "the leading context survives");
+        assert!(out.ends_with(&pad), "the trailing context survives");
+    }
 }

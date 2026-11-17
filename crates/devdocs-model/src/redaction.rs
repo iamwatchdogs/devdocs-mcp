@@ -111,9 +111,10 @@ static PEM_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Bearer authorization header lines: the header name, optional spacing,
-/// the scheme, and an 8+-character credential run.
+/// the scheme, one or more separator spaces or tabs (RFC 6750 §2.1), and
+/// an 8+-character credential run.
 static BEARER_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"(?i)authorization:[ \t]{0,5}bearer[ \t][\w=~@.+/-]{8,}"));
+    LazyLock::new(|| compile(r"(?i)authorization:[ \t]{0,5}bearer[ \t]+[\w=~@.+/-]{8,}"));
 
 /// Whether `c` extends a base64-ish secret run (the
 /// [`AWS_SECRET_CANDIDATE`] character set).
@@ -417,6 +418,16 @@ mod tests {
     #[test]
     fn redacts_bearer_headers() {
         let text = "authorization: Bearer abc123def456ghi789";
+        let out = redact(text);
+        assert_eq!(out, "[REDACTED:bearer_header]");
+    }
+
+    #[test]
+    fn redacts_a_bearer_header_with_repeated_spaces() {
+        // RFC 6750 §2.1 allows one or more spaces between the scheme and
+        // the credentials; a single-space separator let the credential
+        // survive with two.
+        let text = "authorization: Bearer   abc123def456";
         let out = redact(text);
         assert_eq!(out, "[REDACTED:bearer_header]");
     }

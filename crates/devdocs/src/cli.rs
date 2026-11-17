@@ -710,7 +710,7 @@ fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String
 /// (docs/implementation/09 §Secrets and redaction). `U+009B` is the 8-bit
 /// CSI introducer terminals honor, and `serde_json` does not escape C1
 /// (only bytes below `0x20`), so the C1 range needs its own pass on the
-/// JSON path too — [`print_line`] rewrites the serialized line. Newlines
+/// JSON path too — the JSON output gate rewrites the serialized line. Newlines
 /// and tabs stay untouched — they shape the output.
 #[must_use]
 pub fn escape_control(text: &str) -> String {

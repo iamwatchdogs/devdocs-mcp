@@ -13,7 +13,7 @@ use devdocs_model::VersionStatus;
 use devdocs_retrieve::Plan;
 use devdocs_retrieve::Query;
 use devdocs_retrieve::RetrieveError;
-use devdocs_retrieve::serve::{open, search};
+use devdocs_retrieve::serve::{open, search, symbol};
 use devdocs_store::Store;
 use tempfile::TempDir;
 
@@ -83,6 +83,70 @@ fn a_quarantined_only_match_misses_quarantined_only() {
     assert_eq!(
         envelope.hint.as_deref(),
         Some("run: devdocs db quarantine list")
+    );
+}
+
+/// The quarantined-only miss through the symbol rung: a quarantined chunk
+/// whose `symbols` row matches the query — its body matches no FTS term —
+/// misses with `quarantined_only`, not the generic `low_confidence`
+/// (docs/implementation/07 §Injection filter: the rungs matched only
+/// quarantined chunks, and the symbol rung is one of them).
+#[test]
+fn a_quarantined_symbol_only_match_misses_quarantined_only() {
+    let (dir, store) = flagged_store(&[(
+        devdocs_testkit::ChunkFlags {
+            quarantined: true,
+            rule_names: Some("injection"),
+            ..devdocs_testkit::ChunkFlags::default()
+        },
+        "It hides secrets in plain sight.",
+    )]);
+    // The symbol rung drives off the `symbols` table, so the row lands
+    // here; the body carries no token the FTS rung could match.
+    let conn = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
+    conn.execute(
+        "INSERT INTO symbols(symbol, chunk_id, kind) \
+         SELECT 'makeWidgetPro', chunk_id, 'function' FROM chunks LIMIT 1",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let query = Query::new("makeWidget()", Some("acme"), None);
+    let error = search(&store, &query, dir.path(), &Plan::defaults()).unwrap_err();
+    assert!(
+        matches!(error, RetrieveError::Miss(MissReason::QuarantinedOnly)),
+        "expected the quarantined-only miss, got {error}"
+    );
+}
+
+/// The `symbol` tool path names the quarantined-only miss too: a pinned
+/// lookup whose only symbol matches sit on quarantined chunks misses with
+/// `quarantined_only`, not `symbol_absent` (docs/implementation/07
+/// §Injection filter).
+#[test]
+fn a_quarantined_symbol_match_misses_quarantined_only_on_the_symbol_path() {
+    let (dir, store) = flagged_store(&[(
+        devdocs_testkit::ChunkFlags {
+            quarantined: true,
+            rule_names: Some("injection"),
+            ..devdocs_testkit::ChunkFlags::default()
+        },
+        "It hides secrets in plain sight.",
+    )]);
+    let conn = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
+    conn.execute(
+        "INSERT INTO symbols(symbol, chunk_id, kind) \
+         SELECT 'makeWidgetPro', chunk_id, 'function' FROM chunks LIMIT 1",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = symbol(&store, "acme", None, "makeWidget()", &Plan::defaults()).unwrap_err();
+    assert!(
+        matches!(error, RetrieveError::Miss(MissReason::QuarantinedOnly)),
+        "expected the quarantined-only miss, got {error}"
     );
 }
 

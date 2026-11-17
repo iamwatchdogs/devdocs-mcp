@@ -368,12 +368,17 @@ fn like_escape(prefix: &str) -> String {
 
 /// The WHERE predicate, the match-quality expression, and the escaped
 /// match pattern of one symbol-match mode. `?1` binds the raw identifier
-/// (equality and match quality); the complete pattern sits at `?3` in the
-/// prefix modes (bound whole, not concatenated in SQL, so LIKE and GLOB
-/// can use a prefix index) and Exact carries none. The quality expression
-/// orders exact matches before prefixes, inside the per-chunk pick and
-/// across chunks.
-fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<String>) {
+/// (equality and match quality); the complete pattern sits at
+/// `pattern_idx` in the prefix modes (bound whole, not concatenated in
+/// SQL, so LIKE and GLOB can use a prefix index) and Exact carries none —
+/// the serving query passes 3 (the pattern sits behind the `LIMIT ?2`),
+/// the unbounded count passes 2. The quality expression orders exact
+/// matches before prefixes, inside the per-chunk pick and across chunks.
+fn match_shape(
+    mode: SymbolMatch,
+    symbol: &str,
+    pattern_idx: usize,
+) -> (String, String, Option<String>) {
     match mode {
         SymbolMatch::Exact => (
             String::from("sym.symbol = ?1"),
@@ -381,7 +386,7 @@ fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<Strin
             None,
         ),
         SymbolMatch::CaseSensitivePrefix => (
-            String::from("sym.symbol GLOB ?3"),
+            format!("sym.symbol GLOB ?{pattern_idx}"),
             String::from("(sym.symbol = ?1)"),
             Some(format!("{}*", glob_escape(symbol))),
         ),
@@ -389,7 +394,7 @@ fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<Strin
             // The prefix pattern already covers the exact match, so the
             // predicate is the LIKE alone — one indexable term. The
             // quality expression keeps exact matches ahead of prefixes.
-            String::from("sym.symbol LIKE ?3 ESCAPE '\\'"),
+            format!("sym.symbol LIKE ?{pattern_idx} ESCAPE '\\'"),
             String::from("(sym.symbol = ?1 COLLATE NOCASE)"),
             Some(format!("{}%", like_escape(symbol))),
         ),
@@ -436,8 +441,8 @@ impl Store {
         // `?2` the limit; the escaped match pattern sits at `?3` in the
         // prefix modes, the scope value takes the next index when the
         // scope narrows, and the offset follows the last used index.
-        let (predicate, quality, pattern) = match_shape(mode, symbol);
-        let scope_idx = if pattern.is_some() { 4 } else { 3 };
+        let (predicate, quality, pattern) = match_shape(mode, symbol, 3);
+        let scope_idx = 3 + usize::from(pattern.is_some());
         let (scope_clause, scope_value) = scope_filter(scope, scope_idx);
         let offset_idx = 3 + usize::from(pattern.is_some()) + usize::from(scope_value.is_some());
         let mut bind = vec![
@@ -730,6 +735,51 @@ impl Store {
             &format!("{FTS_MATCH_CLAUSE}{FTS_LIBRARY_PREDICATE}"),
             params![match_expr, limit, library.unwrap_or_default()],
         )
+    }
+
+    /// Counts the quarantined chunks a symbol-ladder attempt matches in
+    /// `scope` (docs/implementation/07 §Injection filter): the miss
+    /// classification reads this beside
+    /// [`Store::count_quarantined_matches`] when the serving rungs fused
+    /// empty, so a quarantined-symbol-only match also answers
+    /// `quarantined_only` instead of `low_confidence` or
+    /// `symbol_absent`. The composition mirrors [`Store::search_symbols`]
+    /// — the same match predicate, scope narrowing, and unserved-license
+    /// clause — counting only the rows that query drops
+    /// (`quarantined = 1`), one per distinct chunk. Unbounded: the miss
+    /// path only needs the non-zero answer, and the symbol rows it scans
+    /// are already index-bounded by the match predicate.
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    pub fn count_quarantined_symbol_matches(
+        &self,
+        symbol: &str,
+        mode: SymbolMatch,
+        scope: SymbolScope,
+    ) -> Result<usize, StoreError> {
+        let (predicate, _quality, pattern) = match_shape(mode, symbol, 2);
+        let scope_idx = 2 + usize::from(pattern.is_some());
+        let (scope_clause, scope_value) = scope_filter(scope, scope_idx);
+        let mut bind = vec![rusqlite::types::Value::from(symbol.to_owned())];
+        if let Some(pattern) = pattern {
+            bind.push(rusqlite::types::Value::from(pattern));
+        }
+        let sql = format!(
+            "SELECT COUNT(DISTINCT c.chunk_id) \
+             FROM {SYMBOL_FROM} \
+             WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}\
+                   {QUARANTINE_PLACEHOLDER}{scope_clause}"
+        )
+        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+        .replace(QUARANTINE_PLACEHOLDER, QUARANTINED_ONLY_CLAUSE);
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
+        if let Some(value) = scope_value {
+            bind.push(value);
+        }
+        let count: i64 = stmt.query_row(rusqlite::params_from_iter(bind), |row| row.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
     /// Runs one composed quarantined-match count query: the scope clause

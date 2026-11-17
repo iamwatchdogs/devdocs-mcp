@@ -608,6 +608,39 @@ fn a_quarantined_chunk_drops_out_of_the_symbol_search() {
             "mode {mode:?}: the quarantined text must never read back"
         );
     }
+
+    // The quarantined-symbol count the miss classification reads
+    // (docs/implementation/07 §Injection filter): the same match the
+    // serving ladder dropped counts the quarantined chunk in every mode,
+    // and a symbol nothing stores counts zero.
+    for mode in [
+        devdocs_store::SymbolMatch::Exact,
+        devdocs_store::SymbolMatch::CaseSensitivePrefix,
+        devdocs_store::SymbolMatch::CaseInsensitive,
+    ] {
+        let count = store
+            .count_quarantined_symbol_matches(
+                "served_function",
+                mode,
+                devdocs_store::SymbolScope::All,
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "mode {mode:?}: the quarantined twin is the only quarantined match"
+        );
+    }
+    assert_eq!(
+        store
+            .count_quarantined_symbol_matches(
+                "absent_function",
+                devdocs_store::SymbolMatch::Exact,
+                devdocs_store::SymbolScope::All,
+            )
+            .unwrap(),
+        0,
+        "a symbol nothing stores counts zero"
+    );
 }
 
 /// `code_caution` and `review_flagged` ride the serving reads on `Hit`,

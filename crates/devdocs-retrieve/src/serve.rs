@@ -20,7 +20,9 @@ use crate::fusion::fuse;
 use crate::item::{match_ref, to_result_item};
 use crate::matchexpr::rung_match_expr;
 use crate::resolver::{ProjectContext, Query, resolve};
-use crate::rung::{Scope, fts_rung, symbol_rung, symbol_rungs, symbol_rungs_attempt};
+use crate::rung::{
+    Scope, fts_rung, symbol_quarantined_count, symbol_rung, symbol_rungs, symbol_rungs_attempt,
+};
 use crate::version::{Version, is_migration_query, pick};
 
 /// The search/open knobs the CLI carries.
@@ -245,6 +247,18 @@ pub fn symbol(
     // walks headroom-sized windows past the retrieval head.
     let fused = symbol_stream(store, symbol, &source_ids, plan, headroom)?;
     let Some(fused) = fused else {
+        // The quarantined-only check (docs/implementation/07 §Injection
+        // filter): the rungs matched only quarantined chunks — the pinned
+        // sources carry a symbol the query named, the serving queries
+        // dropped them — names `quarantined_only` instead of
+        // `symbol_absent`.
+        let mut quarantined = 0usize;
+        for id in &source_ids {
+            quarantined += symbol_quarantined_count(store, symbol, Scope::Source(*id))?;
+        }
+        if quarantined > 0 {
+            return Err(MissReason::QuarantinedOnly.into());
+        }
         return Err(MissReason::SymbolAbsent.into());
     };
     let pick_status = if served_version.is_some() {
@@ -612,14 +626,27 @@ fn empty_fusion_miss(
     }
     // The quarantined count runs over the same match expression and scope
     // the serving rungs ran: the pinned source set when a version served,
-    // else the library scope, else every active source.
+    // else the library scope, else every active source. The FTS rungs
+    // count through the FTS expression; the symbol rung counts through
+    // the same ladder it walked — either rung matching only quarantined
+    // chunks names the quarantined-only miss.
     let expr = rung_match_expr(&query.text);
     let (library, source_ids) = match served {
         Some(served) => (None, served.source_ids.as_slice()),
         None => (resolved.library.as_deref(), [].as_slice()),
     };
     let quarantined = store.count_quarantined_matches(&expr, library, source_ids, headroom)?;
-    if quarantined > 0 {
+    let symbol_quarantined = match served {
+        Some(served) => {
+            let mut total = 0usize;
+            for id in &served.source_ids {
+                total += symbol_quarantined_count(store, &query.text, Scope::Source(*id))?;
+            }
+            total
+        }
+        None => symbol_quarantined_count(store, &query.text, scope_for(resolved))?,
+    };
+    if quarantined > 0 || symbol_quarantined > 0 {
         return Ok(MissReason::QuarantinedOnly.into());
     }
     let has_active = store.list_sources()?.iter().any(|s| s.active);

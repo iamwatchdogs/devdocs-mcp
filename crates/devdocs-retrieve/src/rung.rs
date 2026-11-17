@@ -186,6 +186,33 @@ fn store_scope(scope: Scope<'_>) -> SymbolScope {
     }
 }
 
+/// The quarantined-only count of the symbol rung
+/// (docs/implementation/07 §Injection filter): the quarantined chunks the
+/// ladder attempts would have matched, summed over every attempt — in the
+/// fused-empty path every attempt served nothing, so any attempt's
+/// quarantined match names the `quarantined_only` miss instead of
+/// `low_confidence` or `symbol_absent`. The same ladder
+/// [`symbol_rung`] walks, driven by the store's quarantined count.
+///
+/// # Errors
+/// [`RetrieveError::Store`] when the store query fails.
+pub fn symbol_quarantined_count(
+    store: &Store,
+    query: &str,
+    scope: Scope<'_>,
+) -> Result<usize, RetrieveError> {
+    let normalized = normalize_symbol(query);
+    if normalized.is_empty() {
+        return Ok(0);
+    }
+    let store_scope = store_scope(scope);
+    let mut total = 0usize;
+    for (mode, candidate) in ladder_attempts(&normalized) {
+        total += store.count_quarantined_symbol_matches(&candidate, mode, store_scope.clone())?;
+    }
+    Ok(total)
+}
+
 /// The lookup ladder, strongest shape first. A dotted form also tries its
 /// last dot-segment as a secondary exact attempt
 /// (docs/implementation/13 §M5 step 3) before the prefix modes fall

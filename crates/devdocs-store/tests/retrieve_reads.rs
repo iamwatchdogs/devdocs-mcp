@@ -10,6 +10,7 @@
 use devdocs_model::LicenseStatus;
 use devdocs_store::{Store, build_match_query};
 use rusqlite::Connection;
+use std::path::Path;
 use tempfile::tempdir;
 
 /// Opens a store on a migrated temp file and seeds three sources: next.js
@@ -418,6 +419,45 @@ fn source_set_search_serves_every_origin_of_the_pair() {
     );
 }
 
+/// Seeds a quarantined chunk carrying `quarantined_function` and its
+/// served twin with the same symbol, both with a `symbols` row: the seed
+/// helpers fill only `chunks.symbol`, the symbol reads drive off the
+/// `symbols` table. Returns (quarantined chunk id, served twin id).
+fn seed_symbol_pair(db: &Path, source_id: i64) -> (i64, i64) {
+    let conn = Connection::open(db).unwrap();
+    let quarantined_chunk = devdocs_testkit::seed_flagged_chunk(
+        &conn,
+        source_id,
+        3,
+        "[\"QuarantinedSymbol\"]",
+        Some("quarantined_function"),
+        "quarantined_function hides secrets in plain sight.",
+        devdocs_testkit::ChunkFlags {
+            quarantined: true,
+            rule_names: Some("prompt_directive"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let served_twin = devdocs_testkit::seed_chunk(
+        &conn,
+        source_id,
+        4,
+        "[\"Routing\"]",
+        Some("quarantined_function"),
+        "quarantined_function routes requests to handlers.",
+    )
+    .unwrap();
+    for chunk_id in [quarantined_chunk, served_twin] {
+        conn.execute(
+            "INSERT INTO symbols(symbol, chunk_id, kind) VALUES ('quarantined_function', ?1, 'function')",
+            [chunk_id],
+        )
+        .unwrap();
+    }
+    (quarantined_chunk, served_twin)
+}
+
 /// A quarantined chunk never serves, even on an exact-text match: the FTS
 /// searches, the symbol lookup, and the full-chunk read all drop it, while
 /// its non-quarantined siblings keep serving (docs/implementation/07
@@ -486,39 +526,32 @@ fn a_quarantined_chunk_drops_out_of_every_serving_read() {
     let mirror_scoped = store.search_fts_sources(&term, &[source_id], 10).unwrap();
     assert_eq!(mirror_scoped.len(), 2, "the source-set read too");
 
-    // Exact-text match through the symbol path: a quarantined symbol row
-    // drops out of the lookup.
-    let conn = Connection::open(dir.path().join("docs.db")).unwrap();
-    devdocs_testkit::seed_flagged_chunk(
-        &conn,
-        source_id,
-        3,
-        "[\"QuarantinedSymbol\"]",
-        Some("quarantined_function"),
-        "quarantined_function hides secrets in plain sight.",
-        devdocs_testkit::ChunkFlags {
-            quarantined: true,
-            rule_names: Some("prompt_directive"),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    drop(conn);
+    // Exact-text match through the symbol path: a quarantined chunk's
+    // `symbols` row drops out of the lookup, and its served twin — the
+    // same symbol on a non-quarantined chunk — still resolves.
+    let (_quarantined_chunk, served_twin) =
+        seed_symbol_pair(&dir.path().join("docs.db"), source_id);
     let symbol_id = devdocs_model::SourceId(source_id);
+    let hits = store
+        .lookup_symbol("quarantined_function", symbol_id)
+        .unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the quarantined symbol row must not resolve, only its served twin"
+    );
+    assert_eq!(hits[0].chunk_id, served_twin);
     assert!(
-        store
-            .lookup_symbol("quarantined_function", symbol_id)
-            .unwrap()
-            .is_empty(),
-        "the quarantined symbol must not resolve"
+        !hits[0].text.contains("hides secrets"),
+        "the quarantined text must never read back through serving"
     );
 
     // The full-chunk read drops the quarantined rows and keeps the rest.
     let chunks = store.source_chunks(source_id).unwrap();
     assert_eq!(
         chunks.len(),
-        2,
-        "the two quarantined chunks of four stay out"
+        3,
+        "the two quarantined chunks of five stay out"
     );
     assert!(
         chunks

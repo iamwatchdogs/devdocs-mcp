@@ -184,21 +184,10 @@ pub fn search_packed(
         )?);
     }
     // The review-flag confidence penalty (docs/implementation/07
-    // §Injection filter): a review-flagged chunk serves, but its fused
-    // confidence carries the fixed × 0.5 factor. The factor is a power of
-    // two, so the halving is exact and identical-DB output stays
-    // byte-identical. The fused order stays as fused — the penalty moves
-    // the reported confidence, not the packed rank.
-    let penalized: Vec<(Hit, f64)> = fused
-        .into_iter()
-        .map(|(hit, rrf_score)| {
-            if hit.review_flagged {
-                (hit, rrf_score * REVIEW_FLAG_PENALTY)
-            } else {
-                (hit, rrf_score)
-            }
-        })
-        .collect();
+    // §Injection filter) — see [`apply_review_penalty`]. The fused order
+    // stays as fused — the penalty moves the reported confidence, not the
+    // packed rank.
+    let penalized = apply_review_penalty(fused);
     let penalized = resume_after_cursor(penalized, plan.cursor)?;
 
     let packed = pack(
@@ -267,7 +256,7 @@ pub fn symbol(
         VersionStatus::Alias
     };
     let packed = pack(
-        fused,
+        apply_review_penalty(fused),
         usize::try_from(plan.limit).unwrap_or(usize::MAX),
         plan.max_tokens,
     );
@@ -594,6 +583,25 @@ fn migration_rung(
 /// The fixed confidence factor a review-flagged hit carries
 /// (docs/implementation/07 §Injection filter).
 const REVIEW_FLAG_PENALTY: f64 = 0.5;
+
+/// Applies the review-flag confidence penalty to a fused list: a
+/// review-flagged chunk serves, but its fused confidence carries the
+/// fixed × 0.5 factor. The factor is a power of two, so the halving is
+/// exact and identical-DB output stays byte-identical. Shared by the
+/// search and symbol paths — both run "the same fusion-and-pack path"
+/// (docs/implementation/08 §Retrieval ladder).
+fn apply_review_penalty(fused: Vec<(Hit, f64)>) -> Vec<(Hit, f64)> {
+    fused
+        .into_iter()
+        .map(|(hit, score)| {
+            if hit.review_flagged {
+                (hit, score * REVIEW_FLAG_PENALTY)
+            } else {
+                (hit, score)
+            }
+        })
+        .collect()
+}
 
 /// The miss reason for a valid query that serves nothing (exit 2): the
 /// reason distinguishes an empty index, a quarantined-only match set, and

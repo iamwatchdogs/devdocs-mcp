@@ -212,6 +212,50 @@ fn a_review_flagged_hit_serves_at_half_the_clean_confidence() {
     assert_eq!(flagged.results[0].doc_ref, clean.results[0].doc_ref);
 }
 
+/// The review-flag penalty on the symbol path: `symbol` runs the same
+/// fusion-and-pack path as search, so a review-flagged chunk a symbol
+/// lookup resolves serves at the × 0.5 confidence of its clean twin
+/// (docs/implementation/07 §Injection filter). Two stores with the same
+/// seed shape keep the fused score comparable.
+#[test]
+fn a_review_flagged_symbol_hit_serves_at_half_the_clean_confidence() {
+    let seeds = |flagged: bool| {
+        let (dir, store) = flagged_store(&[(
+            devdocs_testkit::ChunkFlags {
+                review_flagged: flagged,
+                rule_names: flagged.then_some("injection"),
+                ..devdocs_testkit::ChunkFlags::default()
+            },
+            BODY,
+        )]);
+        let conn = rusqlite::Connection::open(dir.path().join("docs.db")).unwrap();
+        conn.execute(
+            "INSERT INTO symbols(symbol, chunk_id, kind) \
+             SELECT 'makeWidget', chunk_id, 'function' FROM chunks LIMIT 1",
+            [],
+        )
+        .unwrap();
+        (dir, store)
+    };
+    let (_flagged_dir, flagged) = seeds(true);
+    let (_clean_dir, clean) = seeds(false);
+    let flagged = symbol(&flagged, "acme", None, "makeWidget", &Plan::defaults()).unwrap();
+    let clean = symbol(&clean, "acme", None, "makeWidget", &Plan::defaults()).unwrap();
+    assert_eq!(flagged.results.len(), 1, "flagged: {flagged:?}");
+    assert_eq!(clean.results.len(), 1, "clean: {clean:?}");
+    let flagged_score = flagged.results[0].confidence;
+    let clean_score = clean.results[0].confidence;
+    assert!(
+        flagged_score > 0.0 && clean_score > 0.0,
+        "both hits must carry a fused score, got {flagged_score} vs {clean_score}"
+    );
+    assert_eq!(
+        flagged_score,
+        clean_score * 0.5,
+        "the flagged confidence must be exactly half the clean one"
+    );
+}
+
 /// A caution chunk passes `code_caution` into the envelope item, and the
 /// JSON carries the key only when it is true — the byte-identity gate
 /// keeps the clean output unchanged (docs/implementation/08 §Result

@@ -185,9 +185,10 @@ const ZERO_WIDTH_DENSITY_DENOM: usize = 20;
 
 /// Quarantine rule, shape 3: text colored the same as its background —
 /// the classic invisible-text CSS shape. The `regex` crate carries no
-/// backreferences, so the shape resolves as a set intersection: every
-/// `color:` value and every `background(-color):` value are collected,
-/// and a shared value fires.
+/// backreferences, so the shape resolves as a set intersection inside one
+/// style context: every `color:` value and every `background(-color):`
+/// value of a single declaration context are collected, and a shared
+/// value fires.
 static COLOR_PROP: LazyLock<Regex> = LazyLock::new(|| {
     compile(concat!(
         r#"(?i)(?:^|[;{\s"'])color\s*:\s*"#,
@@ -201,6 +202,14 @@ static BACKGROUND_PROP: LazyLock<Regex> = LazyLock::new(|| {
         r"(#[0-9a-f]{3,8}|rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+[^)]*\))"
     ))
 });
+
+/// One declaration context: a quoted `style` attribute value
+/// (`style="color: #fff; …"`) or a brace-delimited selector block
+/// (`.cls { color: #fff; … }`). Values never pair across contexts.
+static STYLE_ATTR: LazyLock<Regex> =
+    LazyLock::new(|| compile(r#"(?is)style\s*=\s*(?:"([^"]*)"|'([^']*)')"#));
+
+static SELECTOR_BLOCK: LazyLock<Regex> = LazyLock::new(|| compile(r"(?s)\{[^{}]*\}"));
 
 /// Review rule: markdown links plus bare URLs against whitespace tokens,
 /// above 0.5 the chunk is link-heavy and flagged for review
@@ -418,20 +427,31 @@ fn is_zero_width_heavy(text: &str) -> bool {
 
 /// Whether `text` colors any text the same as its background: a color
 /// value that appears on both a `color:` property and a
-/// `background(-color):` property. Values compare lower-cased.
+/// `background(-color):` property within one declaration context — a
+/// quoted `style` attribute or a selector block. Values compare
+/// lower-cased. Values never pair across contexts: two separate visible
+/// elements (`color:#000; background:#fff` plus `color:#fff;
+/// background:#000`) share nothing within either element.
 fn is_color_on_color(text: &str) -> bool {
-    let foregrounds: Vec<String> = COLOR_PROP
-        .captures_iter(text)
-        .filter_map(|c| c.get(1))
-        .map(|m| m.as_str().to_ascii_lowercase())
-        .collect();
-    if foregrounds.is_empty() {
-        return false;
+    let mut contexts = Vec::new();
+    for caps in STYLE_ATTR.captures_iter(text) {
+        if let Some(m) = caps.get(1).or_else(|| caps.get(2)) {
+            contexts.push(m.as_str());
+        }
     }
-    BACKGROUND_PROP
-        .captures_iter(text)
-        .filter_map(|c| c.get(1))
-        .any(|m| foregrounds.contains(&m.as_str().to_ascii_lowercase()))
+    contexts.extend(SELECTOR_BLOCK.find_iter(text).map(|m| m.as_str()));
+    contexts.into_iter().any(|context| {
+        let foregrounds: Vec<String> = COLOR_PROP
+            .captures_iter(context)
+            .filter_map(|c| c.get(1))
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .collect();
+        !foregrounds.is_empty()
+            && BACKGROUND_PROP
+                .captures_iter(context)
+                .filter_map(|c| c.get(1))
+                .any(|m| foregrounds.contains(&m.as_str().to_ascii_lowercase()))
+    })
 }
 
 /// Whether the markdown links plus bare URLs of `text` exceed the

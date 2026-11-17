@@ -303,6 +303,25 @@ fn oversized_comment_spans_skip_a_comment_inside_a_fence() {
 }
 
 #[test]
+fn hidden_text_spares_a_color_pair_across_separate_elements() {
+    // Two separate visible elements: the foreground/background sets must
+    // not pool across the two style attributes.
+    let text = "<span style=\"color: #000000; background-color: #ffffff\">a</span>\n\
+                <span style=\"color: #ffffff; background-color: #000000\">b</span>\n";
+    assert!(
+        !run(text).quarantine_rules.contains(&"hidden_text"),
+        "each element contrasts within itself"
+    );
+}
+
+#[test]
+fn hidden_text_fires_on_a_color_pair_in_one_selector_block() {
+    // The pairing works on brace-delimited selector blocks too.
+    let text = ".sneaky { color: #ffffff; background: #ffffff; }\n";
+    assert_quarantined(&run(text), "hidden_text");
+}
+
+#[test]
 fn link_ratio_flags_a_link_heavy_chunk() {
     let text = "[a](https://a) [b](https://b) [c](https://c) [d](https://d) here words";
     let report = run(text);

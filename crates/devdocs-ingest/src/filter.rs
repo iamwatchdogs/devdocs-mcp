@@ -110,12 +110,19 @@ pub fn oversized_comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
-/// Quarantine rule, shape 2: zero-width characters above a density
-/// threshold. The set spans the zero-width and bidi-control blocks
-/// (`U+200B`–`U+200F`), the word joiner (`U+2060`), and the BOM
-/// (`U+FEFF`).
-static ZERO_WIDTH: LazyLock<Regex> =
-    LazyLock::new(|| compile("[\u{200b}-\u{200f}\u{2060}\u{feff}]"));
+/// Quarantine rule, shape 2: zero-width and invisible characters above a
+/// density threshold. The set spans the zero-width and bidi-control
+/// blocks (`U+200B`–`U+200F`), the word joiner (`U+2060`), the BOM
+/// (`U+FEFF`), the soft hyphen (`U+00AD`), the Mongolian vowel separator
+/// (`U+180E`), the invisible function-application characters
+/// (`U+2061`–`U+2064`), and the Unicode tag block
+/// (`U+E0000`–`U+E007F`, the invisible byte-payload channel).
+static ZERO_WIDTH: LazyLock<Regex> = LazyLock::new(|| {
+    compile(concat!(
+        "[\u{200b}-\u{200f}\u{2060}\u{feff}\u{ad}\u{180e}\u{2061}-\u{2064}",
+        "\u{e0000}-\u{e007f}]"
+    ))
+});
 
 /// The zero-width density threshold: above 5% of the out-of-code
 /// characters (a count above one in twenty), the text hides content

@@ -16,6 +16,10 @@ use serde_json::Value;
 /// The raw ESC byte the escape tests plant in stored content.
 const ESC: char = '\u{1b}';
 
+/// The C1 control character the escape tests plant in stored content:
+/// U+009B, the 8-bit CSI introducer terminals honor.
+const CSI8: char = '\u{9b}';
+
 /// A fresh environment with the database seeded at `db` and the `--db`
 /// flag wired: the config layers stay empty, the flag points the store.
 /// The chunk ids are the insert order — 1, 2, … on a fresh file.
@@ -315,4 +319,89 @@ fn human_renders_escape_the_planted_control_sequences() {
     assert_eq!(code, 0);
     assert!(!stdout.contains(ESC), "stdout: {stdout:?}");
     assert!(stdout.contains("\\u001b"), "stdout: {stdout:?}");
+}
+
+/// The C1 control range (`U+0080`-`U+009F`) escapes on both render paths
+/// too: `serde_json` does not escape C1, so the JSON path rewrites the
+/// serialized line, and the human path renders the literal `\u{9b}`
+/// spelling. A planted U+009B never reaches stdout raw, so it cannot act
+/// as an 8-bit CSI introducer in a terminal
+/// (docs/implementation/09 §Secrets and redaction).
+#[test]
+fn human_and_json_renders_escape_the_planted_c1_controls() {
+    let (env, db) = seeded_env(|conn| {
+        // The C1 char rides in the section title (the list render prints
+        // it) and in the body (the open page prints it).
+        let section = serde_json::to_string(&vec![format!("Guide {CSI8}31mred")]).expect("json");
+        acme_source(
+            conn,
+            &section,
+            &[(
+                devdocs_testkit::ChunkFlags {
+                    quarantined: true,
+                    rule_names: Some("injection"),
+                    ..devdocs_testkit::ChunkFlags::default()
+                },
+                &format!("Run {CSI8}31mdanger{CSI8}0m now."),
+            )],
+        );
+        Ok(())
+    });
+    devdocs_testkit::approve_source_to(
+        std::path::Path::new(&db),
+        "acme",
+        devdocs_model::LicenseStatus::ApprovedSnippet,
+        "test:bootstrap",
+    )
+    .expect("acme reaches the snippet stage");
+
+    // Human quarantine list: the raw C1 byte never reaches stdout.
+    let (code, stdout, stderr) = output(env.cmd(), &["db", "quarantine", "list", "--db", &db]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        !stdout.contains(CSI8),
+        "the raw C1 byte must not reach stdout: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("\\u{9b}"),
+        "the C1 char must render as literal text: {stdout:?}"
+    );
+
+    // The open path reads only served chunks, so the release runs first.
+    let (code, _stdout, stderr) = output(
+        env.cmd(),
+        &["db", "quarantine", "release", "1", "--db", &db],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    // Human open output: the served page renders escaped too.
+    let (code, stdout, stderr) = output(
+        env.cmd(),
+        &["open", "docs://acme/v1.0.0/guide-31mred", "--db", &db],
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        !stdout.contains(CSI8),
+        "the raw C1 byte must not reach stdout: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("\\u{9b}"),
+        "the C1 char must render as literal text: {stdout:?}"
+    );
+
+    // The JSON path carries the C1 char only in serde_json's unicode
+    // escape form.
+    let (code, stdout, _stderr) = output(
+        env.cmd(),
+        &[
+            "open",
+            "docs://acme/v1.0.0/guide-31mred",
+            "--json",
+            "--db",
+            &db,
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(!stdout.contains(CSI8), "stdout: {stdout:?}");
+    assert!(stdout.contains("\\u009b"), "stdout: {stdout:?}");
 }

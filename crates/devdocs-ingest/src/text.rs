@@ -5,7 +5,7 @@
 //! segments it (docs/implementation/07 §Normalization pipeline, the ANSI
 //! pre-stage). A hand-rolled byte scan — no dependency.
 
-/// Strips ANSI escape sequences and bare C0 control characters from
+/// Strips ANSI escape sequences and bare control characters from
 /// `text`, keeping `\n`, `\r`, and `\t`.
 ///
 /// Removed shapes:
@@ -22,10 +22,17 @@
 ///   end of the input.
 /// - Every other C0 control byte (including a lone `ESC`), except the
 ///   kept `\n`, `\r`, `\t`.
+/// - Every C1 control character (`U+0080`–`U+009F`): their UTF-8
+///   encodings pass a byte-level C0 filter, and `U+009B` is the 8-bit CSI
+///   introducer terminals honor, so a planted `\u{9b}31m` would repaint
+///   the terminal. Recall-first: nothing in the range is kept.
 ///
 /// The pass is byte-level: CSI and OSC framing bytes are ASCII, so a
 /// byte scan cannot split a multi-byte UTF-8 character (its bytes are all
-/// non-ASCII and never match a control or escape byte).
+/// non-ASCII and never match a control or escape byte). The one
+/// multi-byte shape the scan must handle itself is the C1 range, whose
+/// two-byte UTF-8 encodings (`0xC2 0x80..=0x9F`) the run detector stops
+/// at explicitly.
 #[must_use]
 pub fn strip_ansi(text: &str) -> String {
     let bytes = text.as_bytes();
@@ -46,15 +53,31 @@ pub fn strip_ansi(text: &str) -> String {
             b if b < 0x20 || b == 0x7f => {
                 i += 1;
             }
+            // The C1 control range `U+0080`–`U+009F` encodes as
+            // `0xC2 0x80..=0x9F`; the two bytes drop together. A `0xC2`
+            // lead byte followed by a print-level continuation
+            // (`U+00A0`–`U+00BF`: NBSP, copyright, and their kin) falls
+            // through to the plain-run arm and survives.
+            0xc2 if bytes
+                .get(i + 1)
+                .is_some_and(|&b| (0x80..=0x9f).contains(&b)) =>
+            {
+                i += 2;
+            }
             _ => {
                 // Collect the run of plain bytes up to the next
-                // control/escape byte, then push it as UTF-8. The run's
-                // end always sits on a char boundary: control bytes never
-                // appear inside a multi-byte sequence.
-                let end = bytes[i..]
+                // control/escape byte (or a C1 encoding), then push it as
+                // UTF-8. The run's end always sits on a char boundary:
+                // control bytes never appear inside a multi-byte
+                // sequence, and a C1 lead byte ends the run whole. The
+                // scan starts one byte in, so the run always advances —
+                // a 0xC2 lead byte whose continuation is not a C1 control
+                // (a print character such as NBSP or ©) must not stall on
+                // itself.
+                let end = bytes[i + 1..]
                     .iter()
-                    .position(|&b| b == 0x1b || b < 0x20 || b == 0x7f)
-                    .map_or(bytes.len(), |at| i + at);
+                    .position(|&b| b == 0x1b || b < 0x20 || b == 0x7f || b == 0xc2)
+                    .map_or(bytes.len(), |at| i + 1 + at);
                 // Safety of `from_utf8` avoided: push the slice through
                 // `str` — the slice is the original UTF-8 text between
                 // removed bytes, so it is valid.
@@ -192,6 +215,35 @@ mod tests {
     fn multibyte_characters_survive() {
         assert_eq!(strip_ansi("héllo ✅ wörld"), "héllo ✅ wörld");
         assert_eq!(strip_ansi("\x1b[32m✔ done\x1b[0m"), "✔ done");
+    }
+
+    #[test]
+    fn c1_control_characters_are_removed() {
+        // U+009B is the 8-bit CSI introducer terminals honor: a planted
+        // `\u{9b}31m` must not keep its introducer, or the terminal
+        // repaints on the trailing text. The introducer drops; the
+        // remaining bytes are inert plain text.
+        let stripped = strip_ansi("\u{9b}31mred\u{9b}0m");
+        assert_eq!(stripped, "31mred0m");
+        assert!(!stripped.contains('\u{9b}'));
+        // The whole C1 range drops, two-byte UTF-8 encodings included.
+        for code in [0x80u32, 0x84, 0x9b, 0x9f] {
+            let ch = char::from_u32(code).unwrap();
+            let text = format!("a{ch}b");
+            assert_eq!(strip_ansi(&text), "ab", "C1 U+{code:04X} must drop");
+        }
+        // A C1 introducer mid-run ends the run: the bytes around it stay.
+        assert_eq!(strip_ansi("keep\u{9b}[31mme"), "keep[31mme");
+    }
+
+    #[test]
+    fn print_level_c2_continuations_survive() {
+        // `0xC2` lead bytes above the C1 range are print characters:
+        // NBSP, inverted question mark, and their kin.
+        assert_eq!(strip_ansi("a\u{a0}b\u{bf}c"), "a\u{a0}b\u{bf}c");
+        // A lone 0xC2 byte cannot occur in valid UTF-8, but a `0xC2`
+        // lead followed by a non-C1 continuation is not a C1 control.
+        assert_eq!(strip_ansi("caf\u{a9}-au lait"), "caf\u{a9}-au lait");
     }
 
     #[test]

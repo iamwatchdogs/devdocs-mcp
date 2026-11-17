@@ -170,6 +170,29 @@ fn hidden_text_spares_normal_text_for_zero_width() {
 }
 
 #[test]
+fn hidden_text_fires_on_the_extended_invisible_set() {
+    // Each added character drives the density over the 5% threshold on a
+    // short span: soft hyphen, Mongolian vowel separator, the invisible
+    // function-application range, and a Unicode tag character.
+    for (name, ch) in [
+        ("soft hyphen", '\u{ad}'),
+        ("Mongolian vowel separator", '\u{180e}'),
+        ("function application", '\u{2061}'),
+        ("invisible times", '\u{2062}'),
+        ("invisible comma", '\u{2064}'),
+        ("tag character", '\u{e0041}'),
+    ] {
+        let text = format!("secre{ch}t{ch} pays{ch}load{ch} here now ok{ch}");
+        let report = run(&text);
+        assert_quarantined(&report, "hidden_text");
+        assert!(
+            report.quarantine_rules.contains(&"hidden_text"),
+            "{name} must drive the density rule"
+        );
+    }
+}
+
+#[test]
 fn hidden_text_fires_on_color_matching_background() {
     let text = "## Hint\n\n<span style=\"color: #ffffff; background-color: #ffffff\">\
                 sneaky</span>\n";

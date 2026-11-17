@@ -121,16 +121,22 @@ fn is_secret_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '/' || c == '+' || c == '='
 }
 
-/// The context window a secret candidate sits in: up to 80 characters
-/// before it, char-boundary aligned. 80 reaches the key=value line head
-/// (`aws_secret_access_key = …`) and a short label line above it, while
-/// staying far below the point where unrelated document text drifts in.
-fn context_window(text: &str, start: usize) -> &str {
+/// The context window a secret candidate sits in: up to 80 characters on
+/// either side of the run, char-boundary aligned. 80 reaches the
+/// key=value line head (`aws_secret_access_key = …`) and a short label
+/// line above it, while staying far below the point where unrelated
+/// document text drifts in; the trailing half covers the configs that
+/// spell the label after the value (`… = aws secret access key`).
+fn context_window(text: &str, start: usize, end: usize) -> &str {
     let mut from = start.saturating_sub(80);
     while from < start && !text.is_char_boundary(from) {
         from += 1;
     }
-    &text[from..start]
+    let mut to = (end + 80).min(text.len());
+    while to > end && !text.is_char_boundary(to) {
+        to -= 1;
+    }
+    &text[from..to]
 }
 
 /// The maximal runs of base64-ish secret characters in `text`, as
@@ -155,11 +161,11 @@ fn secret_runs(text: &str) -> Vec<(usize, usize)> {
 /// Collects the AWS secret detections: a base64-ish run of exactly 40
 /// characters — the exact-run rule keeps a longer blob from redacting its
 /// tail half — that sits in AWS context (an `aws` mention, a `secret
-/// access key` phrase, or a detected access key id within the preceding
-/// window).
+/// access key` phrase, or a detected access key id within the
+/// surrounding ±80 window).
 fn detect_aws_secret(text: &str, detections: &mut Vec<Detection>) {
     for (start, end) in secret_runs(text) {
-        if end - start == 40 && AWS_CONTEXT.is_match(context_window(text, start)) {
+        if end - start == 40 && AWS_CONTEXT.is_match(context_window(text, start, end)) {
             detections.push(Detection {
                 kind: RedactionKind::AwsKey,
                 start,
@@ -354,6 +360,27 @@ mod tests {
         assert!(!out.contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(!out.contains(AWS_SECRET));
         assert_eq!(out.matches("[REDACTED:aws_key]").count(), 2);
+    }
+
+    #[test]
+    fn redacts_an_aws_secret_with_trailing_context() {
+        // The label spelled after the value — the symmetric window's
+        // reason: the backward-only window missed this shape.
+        let text = format!("{AWS_SECRET} = the AWS secret access key");
+        let out = redact(&text);
+        assert!(
+            out.contains("[REDACTED:aws_key]"),
+            "the trailing-context secret must redact: {out}"
+        );
+        assert!(!out.contains(AWS_SECRET));
+    }
+
+    #[test]
+    fn redacts_an_aws_secret_with_leading_context() {
+        // The classic config line: the label before the value.
+        let text = format!("aws_secret_access_key = {AWS_SECRET}");
+        let out = redact(&text);
+        assert_eq!(out, "aws_secret_access_key = [REDACTED:aws_key]");
     }
 
     #[test]

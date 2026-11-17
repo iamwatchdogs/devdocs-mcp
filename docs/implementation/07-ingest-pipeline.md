@@ -233,7 +233,7 @@ Scope: flag, quarantine, and report. Do not attempt language-model detection in 
 |---|---|---|
 | Directives addressed to a model ("ignore previous instructions", "disregard your rules", "system prompt") in text outside code blocks | `model_directive` | quarantine |
 | Instructions that request action ("visit this", "download this", "run this", "curl this", exfiltration verbs like "send your API key") outside code blocks. Phrase level: a bare verb ("run the tests") does not fire | `action_request` | quarantine |
-| Hidden text: HTML comments larger than 2k chars, zero-width-heavy spans (`U+200B`–`U+200F`, `U+2060`, `U+FEFF` above 5% of the characters), text-colored-on-text patterns (pre-strip leftovers) | `hidden_text` | quarantine |
+| Hidden text: HTML comments larger than 2k chars, zero-width-heavy spans (`U+200B`–`U+200F`, `U+2060`, `U+FEFF`, `U+00AD`, `U+180E`, `U+2061`–`U+2064`, `U+E0000`–`U+E007F` above 5% of the characters), text-colored-on-text patterns (pre-strip leftovers) | `hidden_text` | quarantine |
 | A fenced code block whose info string or first line is a shell command that writes outside the workspace (`curl | sh`, `rm -rf`, `git push --force`, `sudo `, `chmod 777`) | (annotation, not a rule name) | keep, annotate result with `code_caution: true` |
 | Link-to-text ratio above 0.5 in a chunk | `link_ratio` | flag for review, serve with `confidence` penalty |
 

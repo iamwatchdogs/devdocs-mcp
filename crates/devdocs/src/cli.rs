@@ -5,6 +5,7 @@
 //! `config` is real. The CLI edge in the binary entry point maps errors to
 //! exit codes and JSON error envelopes on stderr.
 
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
 
@@ -701,16 +702,46 @@ fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String
 }
 
 /// Re-escapes terminal control sequences in stored content as literal
-/// text: every ESC byte (`0x1b`) becomes the literal `\u{1b}`, which
-/// neutralizes the CSI sequences an indexed document can plant — a
+/// text: every ESC byte (`0x1b`) becomes the literal `\u{1b}`, and every
+/// C1 control character (`U+0080`–`U+009F`) its literal `\u{…}` spelling,
+/// which neutralizes the sequences an indexed document can plant — a
 /// quarantined chunk's rule names and section titles, a served snippet —
-/// so the human output cannot repaint the terminal (docs/implementation/
-/// 09 §Secrets and redaction). The `--json` path needs no pass: `serde_json`
-/// escapes the control byte itself. Newlines and tabs stay untouched —
-/// they shape the output.
+/// so the human output cannot repaint the terminal
+/// (docs/implementation/09 §Secrets and redaction). `U+009B` is the 8-bit
+/// CSI introducer terminals honor, and `serde_json` does not escape C1
+/// (only bytes below `0x20`), so the C1 range needs its own pass on the
+/// JSON path too — [`print_line`] rewrites the serialized line. Newlines
+/// and tabs stay untouched — they shape the output.
 #[must_use]
 pub fn escape_control(text: &str) -> String {
-    text.replace('\u{1b}', "\\u{1b}")
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\u{1b}' || ('\u{80}'..='\u{9f}').contains(&c) {
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Replaces the raw C1 control characters (`U+0080`–`U+009F`) in a
+/// serialized JSON line with their `\u00XX` escapes. `serde_json` emits C1
+/// raw — they are valid JSON string content — but a terminal honors
+/// `U+009B` as an 8-bit CSI introducer, so the byte must not reach
+/// stdout. The byte pair only occurs inside JSON string literals (every
+/// structural byte of the envelope is ASCII), so the rewrite keeps the
+/// line valid JSON.
+fn escape_json_c1(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        if ('\u{80}'..='\u{9f}').contains(&c) {
+            let _ = write!(out, "\\u{:04x}", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The human-readable quarantine list without `--json`: one line per
@@ -910,7 +941,7 @@ fn print_line<T: Serialize>(value: &T) -> Result<(), Error> {
         code: devdocs_model::UpstreamCode::UpstreamError,
         detail: format!("cannot serialize the output: {e}"),
     })?;
-    write_stdout_line(&line)
+    write_stdout_line(&escape_json_c1(&line))
 }
 
 /// Write raw text to stdout without panicking. A closed pipe (the reader

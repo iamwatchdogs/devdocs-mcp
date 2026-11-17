@@ -142,19 +142,32 @@ fn context_window(text: &str, start: usize, end: usize) -> &str {
 
 /// The maximal runs of base64-ish secret characters in `text`, as
 /// `(start, end)` byte offsets. Secret characters are all ASCII, so the
-/// byte lengths are exact.
+/// byte lengths are exact. An `=` followed by an alphanumeric character
+/// ends its run: base64 `=` padding only ever sits at a run's end, so
+/// `=KEY` is an assignment separator (`KEY=value`), not padding — the
+/// split keeps a `LABEL=value` bridge from fusing the label into the
+/// value's run and defeating the exact-length checks.
 fn secret_runs(text: &str) -> Vec<(usize, usize)> {
     let mut runs = Vec::new();
     let mut start: Option<usize> = None;
-    for (idx, c) in text.char_indices().chain([(text.len(), '\0')]) {
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        let ends_run = !is_secret_char(c)
+            || (c == '='
+                && chars
+                    .peek()
+                    .is_some_and(|&(_, next)| next.is_ascii_alphanumeric()));
         match start {
-            Some(s) if !is_secret_char(c) => {
+            Some(s) if ends_run => {
                 runs.push((s, idx));
                 start = None;
             }
             None if is_secret_char(c) => start = Some(idx),
             _ => {}
         }
+    }
+    if let Some(s) = start {
+        runs.push((s, text.len()));
     }
     runs
 }
@@ -382,6 +395,29 @@ mod tests {
         let text = format!("aws_secret_access_key = {AWS_SECRET}");
         let out = redact(&text);
         assert_eq!(out, "aws_secret_access_key = [REDACTED:aws_key]");
+    }
+
+    #[test]
+    fn redacts_an_aws_secret_in_a_no_space_assignment() {
+        // `is_secret_char` admits `=`: without the assignment split,
+        // `KEY=` bridges into the value and the 40-byte exact-run check
+        // rejects the 44-byte run, leaving the secret raw.
+        let text = format!("AWS_SECRET_ACCESS_KEY={AWS_SECRET}");
+        let out = redact(&text);
+        assert!(
+            out.contains("[REDACTED:aws_key]"),
+            "the no-space assignment must redact: {out}"
+        );
+        assert!(!out.contains(AWS_SECRET));
+    }
+
+    #[test]
+    fn keeps_a_longer_blob_with_base64_padding() {
+        // Padding `=` only sits at a run's end: a 42-character blob with
+        // two trailing pad characters stays rejected by the exact-40
+        // rule even in AWS context.
+        let text = format!("aws_secret_access_key = {}==", "a".repeat(40));
+        assert_eq!(redact(&text), text);
     }
 
     #[test]

@@ -264,7 +264,7 @@ mod tests {
     use time::OffsetDateTime;
     use url::Url;
 
-    use super::{Scope, fts_rung, normalize_symbol, symbol_rung};
+    use super::{Scope, fts_rung, normalize_symbol, symbol_quarantined_count, symbol_rung};
     use crate::fusion::fuse;
 
     /// Normalization strips the trailing call group and keeps dots.
@@ -356,6 +356,17 @@ mod tests {
         let store = symbol_store(&dir, "next.js", "16.2.9", &[("useRouter", "hook")]);
         let hits = symbol_rung(&store, "()", Scope::All, 32).unwrap();
         assert_eq!(hits, [] as [devdocs_store::Hit; 0]);
+    }
+
+    /// The quarantined-only count answers zero for a query that
+    /// normalizes to nothing: the count returns before any store query,
+    /// the same shape the rung takes.
+    #[test]
+    fn the_quarantined_count_serves_zero_for_an_empty_normalized_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = symbol_store(&dir, "next.js", "16.2.9", &[("useRouter", "hook")]);
+        let count = symbol_quarantined_count(&store, "()", Scope::All).unwrap();
+        assert_eq!(count, 0);
     }
 
     /// The rung finds an exact symbol through the store.

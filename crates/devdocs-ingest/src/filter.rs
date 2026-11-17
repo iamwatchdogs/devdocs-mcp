@@ -211,16 +211,14 @@ struct Fence {
 }
 
 /// The `CommonMark` fence verdict for one line: the marker character
-/// and its run length when the line (after up to three leading
-/// whitespace characters) starts with three or more backticks or tildes.
+/// and its run length when the line (after up to three leading ASCII
+/// spaces or tabs) starts with three or more backticks or tildes.
 /// A backtick-fence info string carrying a backtick does not open — the
 /// `CommonMark` rule this v0 scanner keeps.
 fn fence_on(line: &str) -> Option<(char, usize)> {
     let mut stripped = line;
     for _ in 0..3 {
-        stripped = stripped
-            .strip_prefix(|c: char| c.is_whitespace())
-            .unwrap_or(stripped);
+        stripped = stripped.strip_prefix([' ', '\t']).unwrap_or(stripped);
     }
     let marker = stripped.chars().next()?;
     if marker != '`' && marker != '~' {
@@ -238,7 +236,7 @@ fn fence_on(line: &str) -> Option<(char, usize)> {
 }
 
 /// Whether `line` closes a fence opened with `(marker, run)`: after up to
-/// three leading whitespace characters, the line is only marker
+/// three leading ASCII spaces or tabs, the line is only marker
 /// characters of the same kind, at least the opening run
 /// (docs/implementation/07 §Injection filter, the fence scanner).
 fn fence_closes(open: (char, usize), line: &str) -> bool {

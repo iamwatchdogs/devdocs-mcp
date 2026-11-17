@@ -46,7 +46,7 @@ impl Detail {
 }
 
 /// The `summary` projection of one result item: the CLI item without its
-/// `examples` field.
+/// `examples` field — the `code_caution` flag stays.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct SummaryItem {
     /// The document ref, for example `docs://next.js/v16.2.9/proxy#rewrite`.
@@ -81,6 +81,11 @@ pub(crate) struct SummaryItem {
     pub confidence: f64,
     /// The token count of the snippet.
     pub token_count: u64,
+    /// Whether a filter rule annotated the chunk's code with a caution.
+    /// Absent from the JSON when false, so identical-DB output stays
+    /// byte-identical (docs/implementation/08 §Result envelope).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code_caution: bool,
 }
 
 impl SummaryItem {
@@ -102,12 +107,14 @@ impl SummaryItem {
             attribution: item.attribution.clone(),
             confidence: item.confidence,
             token_count: item.token_count,
+            code_caution: item.code_caution,
         }
     }
 }
 
 /// The `summary` projection of the result envelope: the envelope-level
-/// fields stay, each item drops its `examples` field.
+/// fields stay, each item drops its `examples` field (the `code_caution`
+/// flag stays).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct SummaryEnvelope {
     /// The projected results, in fusion order.
@@ -275,6 +282,29 @@ mod tests {
             "summary_render",
             serde_json::from_str::<serde_json::Value>(&json).unwrap()
         );
+    }
+
+    /// The summary projection carries `code_caution` through: a caution
+    /// item serializes the key, a clean item omits it — the byte-identity
+    /// gate keeps the clean output unchanged (docs/implementation/08
+    /// §Result envelope).
+    #[test]
+    fn the_summary_projection_carries_code_caution() {
+        let mut envelope = sample_envelope();
+        envelope.results[0].code_caution = true;
+        let json = Detail::Summary.render(&envelope).unwrap();
+        assert!(
+            json.contains(r#""code_caution":true"#),
+            "the caution item must carry the key, json: {json}"
+        );
+        assert_eq!(
+            json.matches("code_caution").count(),
+            1,
+            "only the caution item carries the key, json: {json}"
+        );
+        let summary = SummaryEnvelope::of(&envelope);
+        assert!(summary.results[0].code_caution);
+        assert!(!summary.results[1].code_caution);
     }
 
     /// The `name` level keeps only the identity fields per item; the

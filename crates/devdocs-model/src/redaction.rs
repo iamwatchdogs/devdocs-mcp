@@ -471,12 +471,18 @@ mod tests {
         // The ±80-byte context window walks to char boundaries; multibyte
         // padding forces both walks, so the AWS-context scan on the window
         // must not panic or split a character.
-        let pad = "あ".repeat(30);
-        let text = format!("{pad}{GHP}{pad}");
+        // `context_window` runs only for a 40-byte secret run, so the
+        // fixture uses the AWS secret; the `_` in a GitHub token would
+        // split the run. 30 `あ` before the label put the window's low
+        // edge mid-character, 29 after the secret put its high edge
+        // mid-character, so both boundary walks run.
+        let pre = "あ".repeat(30);
+        let post = "あ".repeat(29);
+        let text = format!("{pre}aws_secret_access_key = {AWS_SECRET}{post}");
         let out = redact(&text);
-        assert!(out.contains("[REDACTED:github_token]"));
-        assert!(!out.contains("ghp_"));
-        assert!(out.starts_with(&pad), "the leading context survives");
-        assert!(out.ends_with(&pad), "the trailing context survives");
+        assert!(out.contains("[REDACTED:aws_key]"));
+        assert!(!out.contains(AWS_SECRET));
+        assert!(out.starts_with(&pre), "the leading context survives");
+        assert!(out.ends_with(&post), "the trailing context survives");
     }
 }

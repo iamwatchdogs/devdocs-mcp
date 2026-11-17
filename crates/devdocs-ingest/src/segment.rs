@@ -174,10 +174,7 @@ fn fence_symbols(
         stats.unknown_fence_languages += 1;
         // The info string is untrusted content: log the first token only,
         // never the whole string (.agents/instructions/observability).
-        let reported = match fence_language(&blocked.info) {
-            Some(lang) => format!("fence language: {lang}"),
-            None => String::from("unnamed fence"),
-        };
+        let reported = format!("fence language: {lang}");
         tracing::debug!(
             language = %reported,
             "fenced code block carries an unknown language"

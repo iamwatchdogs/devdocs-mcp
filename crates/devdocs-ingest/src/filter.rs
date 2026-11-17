@@ -54,11 +54,16 @@ static MODEL_DIRECTIVE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 });
 
 /// Quarantine rule: verb + target action requests outside code. Phrase
-/// level per OWASP — a bare verb ("run the tests") does not fire.
+/// level per OWASP — a bare verb ("run the tests") does not fire, and
+/// neither does a verb paired with a code-shaped object ("run this
+/// code"): the verb must pair with a remote or executable target noun.
+/// The tune came from the golden corpus, where the bare verb shape
+/// quarantined nine legitimate documentation chunks
+/// (docs/implementation/07 §Injection filter).
 static ACTION_REQUEST: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        // "visit this", "download this", "run this"
-        r"(?i)\b(?:visit|download|run)\s+this\b",
+        // "visit this link", "download this file", "run this script"
+        r"(?i)\b(?:visit|download|run)\s+this\s+(?:link|url|page|site|file|script|command|package|repo(?:sitory)?|installer|binary|archive|payload)\b",
         // "curl this"
         r"(?i)\bcurl\s+this\b",
         // exfiltration: "send|upload|post (your|the) (api )?(key|token|credentials)"

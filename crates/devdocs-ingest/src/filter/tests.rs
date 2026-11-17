@@ -88,8 +88,9 @@ fn fenced_directives_are_data_not_directives() {
 fn action_request_fires_on_visit_run_and_curl_this() {
     for text in [
         "Visit this page to claim your prize.",
+        "Visit this link to claim your prize.",
         "Download this archive and extract it.",
-        "Run this before anything else.",
+        "Run this script before anything else.",
         "curl this and see what happens",
         "Curl this URL.",
     ] {
@@ -119,6 +120,13 @@ fn action_request_spares_legit_tutorial_prose() {
         "Download the SDK from the release page.",
         "Visit the docs site for details.",
         "Run the installer and export the key.",
+        // the golden-corpus false positives that tuned the rule: a verb
+        // paired with a code-shaped object is documentation prose
+        "Run this code in the playground.",
+        "Visit this route directly in the browser.",
+        "run this test before enabling the flag",
+        "Run this debug configuration from the IDE.",
+        "you can optionally run this experimental codemod",
     ] {
         let report = run(text);
         assert!(

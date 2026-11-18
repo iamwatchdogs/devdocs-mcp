@@ -3,7 +3,7 @@ type: guide
 title: Code Quality Toolchain
 description: The pinned toolchain, formatter policy, lint table, MSRV policy, docs policy, and the pull-request checklist for devdocs. Tool versions verified 2026-10-28, scan-gate tools 2026-11-12.
 tags: [devdocs, toolchain, rustfmt, clippy, msrv, opengrep, lizard, jscpd, trivy]
-timestamp: 2026-11-16T00:00:00Z
+timestamp: 2026-11-18T17:20:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -106,7 +106,7 @@ Clippy churn note. Clippy 1.91 through 1.99 renamed and moved several lints (for
 
 `just opengrep` runs the committed rule set in `.config/opengrep-rules` over the workspace. The gate never downloads rules, so it runs offline, and `--error` fails the push on any finding. It is not part of `just ci` and not a CI job — CodeQL owns SAST in CI and the Codacy PR check runs the same engine over the diff (gap named per the agent-ready-repo contract).
 
-`just trivy` runs `trivy fs` with `--scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --skip-dirs target`. The Rust crates are scanned through their `Cargo.lock`, and the rest of the tree is scanned for hard-coded secrets. LOW and MEDIUM findings stay visible but do not fail the gate; triage items go into `.trivyignore`. It is not part of `just ci` and not a CI job — the dependency review workflow gates advisory bumps on PRs (gap named per the agent-ready-repo contract).
+`just trivy` runs `trivy fs` with `--scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --skip-dirs target`. The Rust crates are scanned through their `Cargo.lock`, and the rest of the tree is scanned for hard-coded secrets. LOW and MEDIUM findings stay visible but do not fail the gate; triage items go into `.trivyignore`. Trivy never scans its own active secret config, so the recipe appends a canary scan: `trivy-secret.yaml` is copied to a temp dir under a different name and scanned there, so a token planted in the config itself still reports. The residual limitation: the allow-rule regexes are global, so a token shaped exactly like a synthetic redaction fixture stays exempt even in the canary. It is not part of `just ci` and not a CI job — the dependency review workflow gates advisory bumps on PRs (gap named per the agent-ready-repo contract).
 
 `just lizard` runs lizard over `crates/` with `-l rust -C 25 -L 150` and fails on any violation. The limits start above the current worst function (CCN 24, 103 lines), so the gate starts green; tighten them as the outliers refactor. Lizard's Rust lexer at or before ~1.19 (Codacy's pinned version included) loses the function end at an alphanumeric char literal (e.g. `'v'`) and merges that function's record into the following one; blank-line separation does not prevent it — quote the literal (`"v"`) or run Lizard >= 1.26 (see `crates/devdocs-model/src/docref.rs`). It is not part of `just ci` and not a CI job — Codacy lists Lizard as a non-gating complexity metric on PRs (gap named per the agent-ready-repo contract).
 

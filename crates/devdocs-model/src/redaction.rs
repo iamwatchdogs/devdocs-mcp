@@ -6,7 +6,10 @@
 //! fixed point (bounded): a replacement can shift surviving text into a
 //! detection's context window, so one pass cannot always catch
 //! everything, and re-redacting already-redacted output is a no-op, so
-//! the pass can run at more than one pipeline stage.
+//! the pass can run at more than one pipeline stage. When the bound runs
+//! out — the context-gated AWS rule can chain, each marker supplying the
+//! next candidate's context — one context-free sweep takes every
+//! remaining exact-40 run, fail closed (docs/implementation/09).
 //!
 //! All patterns are RE2-compatible (no lookarounds, no backreferences) so
 //! they compile with the `regex` crate. Overlapping detections resolve
@@ -65,7 +68,10 @@ const MARKER_PREFIX: &str = "[REDACTED:";
 
 /// The fixed-point iteration bound. Markers match no detection pattern,
 /// so each pass that changes the text only adds markers; the context
-/// shifts they cause settle in one extra pass, well under the bound.
+/// shifts they cause settle in one extra pass, well under the bound —
+/// unless the context itself chains, a marker carrying `aws_key` into
+/// the next candidate's window, one candidate per pass. On exhaustion
+/// [`redact`] sweeps context-free instead of leaving candidates behind.
 const REDACT_MAX_PASSES: usize = 8;
 
 /// Compiles a fixed pattern of this module. Every pattern here is a
@@ -185,10 +191,13 @@ fn secret_runs(text: &str) -> Vec<(usize, usize)> {
 /// characters — the exact-run rule keeps a longer blob from redacting its
 /// tail half — that sits in AWS context (an `aws` mention, a `secret
 /// access key` phrase, or a detected access key id within the
-/// surrounding ±80 window).
-fn detect_aws_secret(text: &str, detections: &mut Vec<Detection>) {
+/// surrounding ±80 window). With `require_context` false — the
+/// cap-exhaustion sweep — every exact-40 run detects regardless of
+/// context.
+fn detect_aws_secret(text: &str, detections: &mut Vec<Detection>, require_context: bool) {
     for (start, end) in secret_runs(text) {
-        if end - start == 40 && AWS_CONTEXT.is_match(context_window(text, start, end)) {
+        let in_context = !require_context || AWS_CONTEXT.is_match(context_window(text, start, end));
+        if end - start == 40 && in_context {
             detections.push(Detection {
                 kind: RedactionKind::AwsKey,
                 start,
@@ -218,8 +227,10 @@ const fn rank(kind: RedactionKind) -> u8 {
 /// the higher-ranked kind, a later span inside a kept one drops, and a
 /// later span that starts inside a kept one but extends past it widens
 /// the kept span's end — dropping it would leave its tail bytes visible.
-/// The widened span keeps the earlier detection's kind.
-fn resolve(text: &str) -> Vec<Detection> {
+/// The widened span keeps the earlier detection's kind. The AWS-secret
+/// rule drops its context requirement when `aws_context_required` is
+/// false (the cap-exhaustion sweep).
+fn resolve(text: &str, aws_context_required: bool) -> Vec<Detection> {
     let mut detections = Vec::new();
     for m in GITHUB_TOKEN.find_iter(text) {
         detections.push(Detection {
@@ -242,7 +253,7 @@ fn resolve(text: &str) -> Vec<Detection> {
             end: m.end(),
         });
     }
-    detect_aws_secret(text, &mut detections);
+    detect_aws_secret(text, &mut detections, aws_context_required);
     for m in PEM_BLOCK.find_iter(text) {
         detections.push(Detection {
             kind: RedactionKind::PemBlock,
@@ -285,12 +296,16 @@ fn resolve(text: &str) -> Vec<Detection> {
 /// `[REDACTED:<kind>]` marker. Idempotent: the pass iterates
 /// resolve-and-rewrite to a fixed point, so re-redacting redacted output
 /// returns it unchanged. Overlapping detections collapse into one marker
-/// for the larger span.
+/// for the larger span. When the pass bound runs out — the context-gated
+/// AWS rule can chain, one candidate per pass — the sweep drops the
+/// context requirement, fail closed, and keeps iterating to the fixed
+/// point: markers break secret runs at their brackets, so the sweep
+/// cannot create new candidates and the loop settles.
 #[must_use]
 pub fn redact(text: &str) -> String {
     let mut current = text.to_owned();
     for _ in 0..REDACT_MAX_PASSES {
-        let next = redact_pass(&current);
+        let next = redact_pass(&current, true);
         if next == current {
             return current;
         }
@@ -301,12 +316,18 @@ pub fn redact(text: &str) -> String {
         passes = REDACT_MAX_PASSES,
         "redaction hit the pass cap without reaching a fixed point"
     );
-    current
+    loop {
+        let next = redact_pass(&current, false);
+        if next == current {
+            return current;
+        }
+        current = next;
+    }
 }
 
 /// One resolve-and-rewrite pass over `text`.
-fn redact_pass(text: &str) -> String {
-    let kept = resolve(text);
+fn redact_pass(text: &str, aws_context_required: bool) -> String {
+    let kept = resolve(text, aws_context_required);
     if kept.is_empty() {
         return text.to_owned();
     }
@@ -588,6 +609,29 @@ mod tests {
             once.contains("[REDACTED:aws_key]"),
             "the marker shift must surface the A run: {once}"
         );
+    }
+
+    #[test]
+    fn redaction_sweeps_chained_aws_candidates_when_the_pass_cap_hits() {
+        // Ten candidates, each one pass apart: every marker carries
+        // `aws_key` into the next candidate's window, so the
+        // context-gated passes converge one candidate at a time and the
+        // 8-pass cap leaves some behind. The fail-closed sweep takes the
+        // rest without the context requirement, and the fixed point
+        // holds.
+        let mut text = String::new();
+        for _ in 0..10 {
+            text.push_str(&"A".repeat(40));
+            text.push_str(&".".repeat(60));
+        }
+        text.push_str(" aws");
+        let once = redact(&text);
+        assert_eq!(redact(&once), once, "redact must reach a fixed point");
+        assert!(
+            !once.contains(&"A".repeat(40)),
+            "no raw candidate survives the sweep: {once}"
+        );
+        assert_eq!(once.matches("[REDACTED:aws_key]").count(), 10);
     }
 
     #[test]

@@ -12,3 +12,19 @@ exclude_paths:
   # GitHub-Actions pinning pattern misreads the local `$`-prefixed action
   # refs as unpinned third-party actions and reports false positives.
   - ".github/**"
+  # The redaction tests hold synthetic secret-shaped fixture literals
+  # (gitleaks github-pat, github-fine-grained-pat, aws-access-token,
+  # private-key): by construction, they must match the redaction patterns.
+  # The production redaction.rs stays analyzed — the inline test module
+  # moved out of it so this exclusion never hides production code.
+  - "**/redaction/tests.rs"
+  # Same class as redaction/tests.rs: synthetic token literals for the
+  # filter/pipeline fixtures.
+  - "**/pipeline_fixture.rs"
+  # One synthetic token literal (a proptest fixture).
+  - "**/segment_props.rs"
+  # One synthetic token literal (a quarantine seed fixture).
+  - "**/retrieve_reads.rs"
+  # The secret-scan config itself carries the exact fixture literals as
+  # its allow-rule regexes, so every scanner flags them on the file.
+  - "trivy-secret.yaml"

@@ -157,11 +157,14 @@ fn context_window(text: &str, start: usize, end: usize) -> &str {
 /// The maximal runs of base64-ish secret characters in `text`, as
 /// `(start, end)` byte offsets. Secret characters are all ASCII, so the
 /// byte lengths are exact. An `=` followed by an alphanumeric character,
-/// `/`, or `+` ends its run: base64 `=` padding only ever sits at a
-/// run's end, so `=KEY` is an assignment separator (`KEY=value`), not
-/// padding — the split keeps a `LABEL=value` bridge from fusing the
-/// label into the value's run and defeating the exact-length checks,
-/// and a value starting `/` or `+` would otherwise bridge the same way.
+/// `/`, or `+` ends its run — and never starts one: base64 `=` padding
+/// only ever sits at a run's end, so `=KEY` is an assignment separator
+/// (`KEY=value`), not padding — the split keeps a `LABEL=value` bridge
+/// from fusing the label into the value's run and defeating the
+/// exact-length checks (a run starting at such an `=` counts its own
+/// byte, so `KEY =wJalr…` became a 41-byte run the exact-40 check
+/// rejected), and a value starting `/` or `+` would otherwise bridge the
+/// same way.
 fn secret_runs(text: &str) -> Vec<(usize, usize)> {
     let mut runs = Vec::new();
     let mut start: Option<usize> = None;
@@ -177,7 +180,7 @@ fn secret_runs(text: &str) -> Vec<(usize, usize)> {
                 runs.push((s, idx));
                 start = None;
             }
-            None if is_secret_char(c) => start = Some(idx),
+            None if is_secret_char(c) && !ends_run => start = Some(idx),
             _ => {}
         }
     }
@@ -296,11 +299,12 @@ fn resolve(text: &str, aws_context_required: bool) -> Vec<Detection> {
 /// `[REDACTED:<kind>]` marker. Idempotent: the pass iterates
 /// resolve-and-rewrite to a fixed point, so re-redacting redacted output
 /// returns it unchanged. Overlapping detections collapse into one marker
-/// for the larger span. When the pass bound runs out — the context-gated
-/// AWS rule can chain, one candidate per pass — the sweep drops the
-/// context requirement, fail closed, and keeps iterating to the fixed
-/// point: markers break secret runs at their brackets, so the sweep
-/// cannot create new candidates and the loop settles.
+/// for the larger span. When the gated passes do not converge at the
+/// pass bound — the context-gated AWS rule can chain, one candidate per
+/// pass — the sweep drops the context requirement, fail closed, and
+/// keeps iterating to the fixed point: markers break secret runs at
+/// their brackets, so the sweep cannot create new candidates and the
+/// loop settles.
 #[must_use]
 pub fn redact(text: &str) -> String {
     let mut current = text.to_owned();
@@ -310,6 +314,14 @@ pub fn redact(text: &str) -> String {
             return current;
         }
         current = next;
+    }
+    // The last gated pass may have removed the final chained candidate
+    // without the loop ever re-checking: one more gated pass decides.
+    // Converged output must return here — the context-free sweep redacts
+    // unrelated exact-40 runs too, and a converged input has no
+    // candidates left for it.
+    if redact_pass(&current, true) == current {
+        return current;
     }
     // Counts only: logs carry provenance, never content.
     tracing::warn!(
@@ -464,6 +476,21 @@ mod tests {
         assert!(
             out.contains("[REDACTED:aws_key]"),
             "the no-space assignment must redact: {out}"
+        );
+        assert!(!out.contains(AWS_SECRET));
+    }
+
+    #[test]
+    fn redacts_an_aws_secret_after_a_space_padded_assignment() {
+        // The assignment sign padded on the left only (`KEY =value`): a
+        // run starting AT the `=` counts its own byte, so the value's run
+        // came out 41 bytes and the exact-40 check rejected it, leaving
+        // the secret raw.
+        let text = format!("AWS_SECRET_ACCESS_KEY ={AWS_SECRET}");
+        let out = redact(&text);
+        assert!(
+            out.contains("[REDACTED:aws_key]"),
+            "the space-padded assignment must redact: {out}"
         );
         assert!(!out.contains(AWS_SECRET));
     }
@@ -632,6 +659,31 @@ mod tests {
             "no raw candidate survives the sweep: {once}"
         );
         assert_eq!(once.matches("[REDACTED:aws_key]").count(), 10);
+    }
+
+    #[test]
+    fn keeps_an_unrelated_run_when_the_gated_passes_converge_at_the_cap() {
+        // Eight chained candidates settle exactly at the 8-pass bound:
+        // the eighth pass removes the final candidate, and one
+        // re-checked gated pass confirms convergence — the fail-closed
+        // sweep must not run, or it would redact the unrelated
+        // context-free exact-40 run too.
+        let digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b";
+        let mut text = String::new();
+        for _ in 0..8 {
+            text.push_str(&"A".repeat(40));
+            text.push_str(&".".repeat(60));
+        }
+        text.push_str(" aws");
+        text.push_str(&".".repeat(100));
+        text.push_str(digest);
+        let once = redact(&text);
+        assert_eq!(redact(&once), once, "redact must reach a fixed point");
+        assert_eq!(once.matches("[REDACTED:aws_key]").count(), 8);
+        assert!(
+            once.contains(digest),
+            "the unrelated run must survive a converged redaction: {once}"
+        );
     }
 
     #[test]

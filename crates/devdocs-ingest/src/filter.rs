@@ -288,16 +288,19 @@ fn fence_on(line: &str) -> Option<(char, usize)> {
     Some((marker, run))
 }
 
-/// Whether `line` closes a fence opened with `(marker, run)`: after up to
-/// three leading indent columns (same tab accounting as [`fence_on`]),
-/// the line is only marker characters of the same kind, at least the
-/// opening run (docs/implementation/07 §Injection filter, the fence
+/// Whether `line` closes a fence opened with `(marker, run)`: any leading
+/// indent (spaces or tabs) strips, and the rest is marker characters of
+/// the same kind only, at least the opening run. The indent strips
+/// without the absolute column rule [`fence_on`] applies — inside a
+/// list-item margin a tab-indented closer is `CommonMark`-valid (the tab
+/// counts against the margin), while a root-level tab opener still never
+/// opens. Stripping the indent can close a fence one line early in some
+/// shapes, which only widens the fenced range — the recall-safe
+/// direction (docs/implementation/07 §Injection filter, the fence
 /// scanner).
 fn fence_closes(open: (char, usize), line: &str) -> bool {
-    let Some((marker, run)) = fence_on(line) else {
-        return false;
-    };
-    marker == open.0 && run >= open.1 && line.trim().chars().all(|c| c == marker)
+    let content = line.trim_start_matches([' ', '\t']).trim_end();
+    !content.is_empty() && content.chars().all(|c| c == open.0) && content.chars().count() >= open.1
 }
 
 /// The maximal backtick runs of one line, as `(start, end)` byte ranges.

@@ -291,7 +291,10 @@ fn fence_closes(open: (char, usize), line: &str) -> bool {
 /// fence's info string plus first body line, and the fenced regions' byte
 /// ranges — each from the fence-opener line's start through its closer
 /// line's end (or the text end for an unterminated fence). An
-/// unterminated fence runs to the end of the text.
+/// unterminated fence runs to the end of the text. Outside fences, an
+/// HTML comment opened by a line holding `<!--` without a same-line
+/// `-->` runs to the first `-->` per `CommonMark`, and its lines never
+/// open or close fences; comments inside a real fence stay fenced.
 pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
     let mut out_of_code = String::with_capacity(text.len());
     let mut fences: Vec<Fence> = Vec::new();
@@ -299,45 +302,55 @@ pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize
     let mut open: Option<(char, usize)> = None;
     let mut current_fence: Option<Fence> = None;
     let mut fence_start = 0usize;
+    let mut comment_open = false;
     let mut pos = 0usize;
     for line in text.split('\n') {
         let line_start = pos;
         pos += line.len() + 1;
-        match open {
-            Some(fence) => {
-                if let Some(fenced) = &mut current_fence
-                    && fenced.first_body_line.is_none()
-                    && !fence_closes(fence, line)
-                {
-                    // The body's first line: the line after the opening
-                    // marker, when that line is not the closer itself.
-                    fenced.first_body_line = Some(line.to_owned());
-                }
-                if fence_closes(fence, line) {
-                    open = None;
-                    fenced_ranges.push(fence_start..line_start + line.len());
-                }
+        if let Some(fence) = open {
+            if let Some(fenced) = &mut current_fence
+                && fenced.first_body_line.is_none()
+                && !fence_closes(fence, line)
+            {
+                // The body's first line: the line after the opening
+                // marker, when that line is not the closer itself.
+                fenced.first_body_line = Some(line.to_owned());
             }
-            None => {
-                if let Some(fence) = fence_on(line) {
-                    open = Some(fence);
-                    fence_start = line_start;
-                    current_fence = Some(Fence {
-                        info: line
-                            .trim_start()
-                            .chars()
-                            .skip(fence.1)
-                            .collect::<String>()
-                            .trim()
-                            .to_owned(),
-                        first_body_line: None,
-                    });
-                } else {
-                    if !out_of_code.is_empty() {
-                        out_of_code.push('\n');
-                    }
-                    out_of_code.push_str(line);
+            if fence_closes(fence, line) {
+                open = None;
+                fenced_ranges.push(fence_start..line_start + line.len());
+            }
+        } else {
+            let mut is_fence = false;
+            if comment_open {
+                // The comment's lines never reach `fence_on`: a
+                // ``` line inside a comment is comment text, and the
+                // first `-->` closes the comment.
+                if line.contains("-->") {
+                    comment_open = false;
                 }
+            } else if let Some(fence) = fence_on(line) {
+                is_fence = true;
+                open = Some(fence);
+                fence_start = line_start;
+                current_fence = Some(Fence {
+                    info: line
+                        .trim_start()
+                        .chars()
+                        .skip(fence.1)
+                        .collect::<String>()
+                        .trim()
+                        .to_owned(),
+                    first_body_line: None,
+                });
+            } else if line.contains("<!--") && !line.contains("-->") {
+                comment_open = true;
+            }
+            if !is_fence {
+                if !out_of_code.is_empty() {
+                    out_of_code.push('\n');
+                }
+                out_of_code.push_str(line);
             }
         }
         if open.is_none()

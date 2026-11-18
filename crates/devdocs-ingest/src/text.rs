@@ -114,42 +114,11 @@ fn skip_escape(bytes: &[u8], start: usize) -> usize {
                 bytes.len()
             }
         }
-        // OSC (`ESC ]`): a payload terminated by BEL (`0x07`) or ST
-        // (`ESC \` or the two-byte UTF-8 encoding of the C1 byte
-        // U+009C).
-        b']' => {
-            let mut i = start + 2;
-            while i < bytes.len() {
-                match bytes[i] {
-                    0x07 => return i + 1,
-                    0x1b if bytes.get(i + 1) == Some(&b'\\') => return i + 2,
-                    0xc2 if bytes.get(i + 1) == Some(&0x9c) => return i + 2,
-                    _ => i += 1,
-                }
-            }
-            bytes.len()
-        }
-        // The other string-mode sequences — DCS (`ESC P`), SOS
-        // (`ESC X`), PM (`ESC ^`), APC (`ESC _`): xterm terminates them
-        // with ST only (`ESC \` or the two-byte UTF-8 encoding of
-        // U+009C), so a BEL inside the payload is payload and never ends
-        // them. A lone `0x9C` byte is a continuation byte of legitimate
-        // text and never terminates — only the `0xC2 0x9C` pair is the
-        // C1 ST. Unterminated, the rest of the input drops with the
-        // payload — the documented over-strip direction.
-        b'P' | b'X' | b'^' | b'_' => {
-            let mut i = start + 2;
-            while i < bytes.len() {
-                if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
-                    return i + 2;
-                }
-                if bytes[i] == 0xc2 && bytes.get(i + 1) == Some(&0x9c) {
-                    return i + 2;
-                }
-                i += 1;
-            }
-            bytes.len()
-        }
+        // OSC (`ESC ]`).
+        b']' => skip_osc_payload(bytes, start + 2),
+        // The other string-mode sequences: DCS (`ESC P`), SOS
+        // (`ESC X`), PM (`ESC ^`), APC (`ESC _`).
+        b'P' | b'X' | b'^' | b'_' => skip_string_payload(bytes, start + 2),
         // Any other escape: `ESC` plus intermediate bytes (`0x20..=0x2F`)
         // and one final byte (`0x30..=0x7E`) — a charset designate such
         // as `ESC ( B`, a cursor save such as `ESC 7`. Unterminated, the
@@ -166,6 +135,45 @@ fn skip_escape(bytes: &[u8], start: usize) -> usize {
             }
         }
     }
+}
+
+/// Returns the index just past the OSC payload starting at `from` (the
+/// byte after `ESC ]`): a payload terminated by BEL (`0x07`) or ST
+/// (`ESC \` or the two-byte UTF-8 encoding of the C1 byte U+009C), or
+/// `bytes.len()` when the payload is unterminated.
+fn skip_osc_payload(bytes: &[u8], from: usize) -> usize {
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x07 => return i + 1,
+            0x1b if bytes.get(i + 1) == Some(&b'\\') => return i + 2,
+            0xc2 if bytes.get(i + 1) == Some(&0x9c) => return i + 2,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// Returns the index just past the DCS/SOS/PM/APC payload starting at
+/// `from` (the byte after the two-byte escape head): xterm terminates
+/// those payloads with ST only (`ESC \` or the two-byte UTF-8 encoding
+/// of U+009C), so a BEL inside the payload is payload and never ends
+/// them. A lone `0x9C` byte is a continuation byte of legitimate text
+/// and never terminates — only the `0xC2 0x9C` pair is the C1 ST.
+/// Unterminated, the rest of the input drops with the payload — the
+/// documented over-strip direction.
+fn skip_string_payload(bytes: &[u8], from: usize) -> usize {
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+            return i + 2;
+        }
+        if bytes[i] == 0xc2 && bytes.get(i + 1) == Some(&0x9c) {
+            return i + 2;
+        }
+        i += 1;
+    }
+    bytes.len()
 }
 
 #[cfg(test)]

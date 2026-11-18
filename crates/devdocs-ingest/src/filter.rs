@@ -251,14 +251,27 @@ pub(crate) struct Fence {
 }
 
 /// The `CommonMark` fence verdict for one line: the marker character
-/// and its run length when the line (after up to three leading ASCII
-/// spaces or tabs) starts with three or more backticks or tildes.
-/// A backtick-fence info string carrying a backtick does not open — the
-/// `CommonMark` rule this v0 scanner keeps.
+/// and its run length when the line (after up to three leading indent
+/// columns; `CommonMark` §Tabs — a space is one column, a tab advances
+/// to the next 4-column tab stop) starts with three or more backticks
+/// or tildes. A backtick-fence info string carrying a backtick does not
+/// open — the `CommonMark` rule this v0 scanner keeps.
 fn fence_on(line: &str) -> Option<(char, usize)> {
+    let mut columns = 0usize;
     let mut stripped = line;
-    for _ in 0..3 {
-        stripped = stripped.strip_prefix([' ', '\t']).unwrap_or(stripped);
+    loop {
+        if let Some(rest) = stripped.strip_prefix(' ') {
+            stripped = rest;
+            columns += 1;
+        } else if let Some(rest) = stripped.strip_prefix('\t') {
+            stripped = rest;
+            columns = (columns / 4 + 1) * 4;
+        } else {
+            break;
+        }
+    }
+    if columns > 3 {
+        return None;
     }
     let marker = stripped.chars().next()?;
     if marker != '`' && marker != '~' {
@@ -276,9 +289,10 @@ fn fence_on(line: &str) -> Option<(char, usize)> {
 }
 
 /// Whether `line` closes a fence opened with `(marker, run)`: after up to
-/// three leading ASCII spaces or tabs, the line is only marker
-/// characters of the same kind, at least the opening run
-/// (docs/implementation/07 §Injection filter, the fence scanner).
+/// three leading indent columns (same tab accounting as [`fence_on`]),
+/// the line is only marker characters of the same kind, at least the
+/// opening run (docs/implementation/07 §Injection filter, the fence
+/// scanner).
 fn fence_closes(open: (char, usize), line: &str) -> bool {
     let Some((marker, run)) = fence_on(line) else {
         return false;

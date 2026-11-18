@@ -300,15 +300,54 @@ fn fence_closes(open: (char, usize), line: &str) -> bool {
     marker == open.0 && run >= open.1 && line.trim().chars().all(|c| c == marker)
 }
 
+/// The maximal backtick runs of one line, as `(start, end)` byte ranges.
+fn backtick_runs(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut runs = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            runs.push((start, i));
+        } else {
+            i += 1;
+        }
+    }
+    runs
+}
+
+/// The inline-code spans of one line as `(start, end)` byte ranges over
+/// the span content: equal-length backtick runs pair left-to-right
+/// (the `CommonMark` rule), and a pair's span covers the bytes between
+/// the two runs. An unpaired run spans nothing.
+fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in backtick_runs(line) {
+        let len = end - start;
+        if let Some(at) = open.iter().rposition(|&(open_len, _)| open_len == len) {
+            let (_, open_start) = open.swap_remove(at);
+            spans.push((open_start + len, start));
+        } else {
+            open.push((len, start));
+        }
+    }
+    spans
+}
+
 /// Scans `text` once over its lines: returns the out-of-code text (the
 /// complement of the fenced regions, lines joined with `\n`), every
 /// fence's info string plus first body line, and the fenced regions' byte
 /// ranges — each from the fence-opener line's start through its closer
 /// line's end (or the text end for an unterminated fence). An
-/// unterminated fence runs to the end of the text. Outside fences, an
-/// HTML comment opened by a line holding `<!--` without a same-line
-/// `-->` runs to the first `-->` per `CommonMark`, and its lines never
-/// open or close fences; comments inside a real fence stay fenced.
+/// unterminated fence runs to the end of the text. Outside fences, each
+/// `<!--` opens an HTML comment and each `-->` closes it, acting in
+/// offset order on the line; a `<!--` inside an inline code span is
+/// quoted text and never opens. A comment's lines never open or close
+/// fences; comments inside a real fence stay fenced.
 pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
     let mut out_of_code = String::with_capacity(text.len());
     let mut fences: Vec<Fence> = Vec::new();
@@ -336,14 +375,7 @@ pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize
             }
         } else {
             let mut is_fence = false;
-            if comment_open {
-                // The comment's lines never reach `fence_on`: a
-                // ``` line inside a comment is comment text, and the
-                // first `-->` closes the comment.
-                if line.contains("-->") {
-                    comment_open = false;
-                }
-            } else if let Some(fence) = fence_on(line) {
+            if !comment_open && let Some(fence) = fence_on(line) {
                 is_fence = true;
                 open = Some(fence);
                 fence_start = line_start;
@@ -357,8 +389,29 @@ pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize
                         .to_owned(),
                     first_body_line: None,
                 });
-            } else if line.contains("<!--") && !line.contains("-->") {
-                comment_open = true;
+            } else {
+                // The comment's lines never reach `fence_on`: a ```
+                // line inside a comment is comment text. The line's
+                // markers act in offset order — each `<!--` opens, each
+                // `-->` closes — so `<!-- closed --> <!-- open` leaves
+                // the state open. A `<!--` inside an inline code span is
+                // quoted text, not a comment opener.
+                let spans = code_span_ranges(line);
+                let mut markers: Vec<(usize, bool)> = line
+                    .match_indices("<!--")
+                    .map(|(at, _)| (at, true))
+                    .chain(line.match_indices("-->").map(|(at, _)| (at, false)))
+                    .collect();
+                markers.sort_unstable();
+                for (at, opens) in markers {
+                    if opens {
+                        if !spans.iter().any(|&(s, e)| s <= at && at + 4 <= e) {
+                            comment_open = true;
+                        }
+                    } else {
+                        comment_open = false;
+                    }
+                }
             }
             if !is_fence {
                 if !out_of_code.is_empty() {

@@ -137,8 +137,13 @@ pub fn oversized_comment_spans(
         }
         // The empty form's closer shares the opener's last dash, so the
         // cursor check below would discard it and the text after would
-        // hide to the page end as an unterminated comment.
-        if opens {
+        // hide to the page end as an unterminated comment. Only a
+        // standalone form counts: while a comment is open, a nested
+        // opener is noise, and CommonMark ends the comment at its first
+        // closer — which may overlap the nested opener (`<!--->`), so
+        // the cursor steps past only the opener's first byte to leave
+        // that closer reachable.
+        if opens && open_at.is_none() {
             let empty_form = if text[at..].starts_with("<!--->") {
                 Some(6)
             } else if text[at..].starts_with("<!-->") {
@@ -151,7 +156,12 @@ pub fn oversized_comment_spans(
                 continue;
             }
         }
-        cursor = at + if opens { 4 } else { 3 };
+        cursor = at
+            + match (opens, open_at.is_some()) {
+                (true, true) => 1,
+                (true, false) => 4,
+                (false, _) => 3,
+            };
         match (open_at, opens) {
             (None, true) => open_at = Some(at),
             (Some(open), false) => {

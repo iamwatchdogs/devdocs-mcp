@@ -182,6 +182,22 @@ fn oversized_comment_spans_treat_the_empty_comment_forms_as_complete() {
 }
 
 #[test]
+fn oversized_comment_spans_ignores_a_nested_empty_form_inside_a_comment() {
+    // The nested `<!--->` shares its dashes with the outer comment's
+    // first closer (`<!--->` contains `-->` at its fourth byte), and
+    // CommonMark ends the comment at that first closer. The old shape
+    // consumed the nested empty form while the outer comment was open,
+    // stepped past the overlapping closer, and reported the visible
+    // tail after EOF as an oversized unterminated comment.
+    let text = format!("<!-- outer <!--->{}", "a".repeat(2_100));
+    assert_eq!(
+        oversized_spans(&text).len(),
+        0,
+        "the comment closes at its first closer and the tail stays visible"
+    );
+}
+
+#[test]
 fn hidden_text_spares_a_small_comment() {
     let text = "## Notes\n\n<!-- a short reviewer note -->\n\nReal content follows.\n";
     assert!(

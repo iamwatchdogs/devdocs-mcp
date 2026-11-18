@@ -17,26 +17,26 @@ expression: chunks
     "token_count": 33
   },
   {
-    "body": "The API accepts bearer tokens only. Send the key in the `Authorization`\nheader; a key scoped to a project sees that project's widgets and nothing\nelse.\n\n```http\nAuthorization: Bearer sk-test-not-a-real-key\n```",
-    "content_hash": "8e8b9d02366bebebe93dde0937565155c7582852149b8d96e0e95e6db36a7031",
+    "body": "The API accepts bearer tokens only. Send the key in the `Authorization`\nheader; a key scoped to a project sees that project's widgets and nothing\nelse.\n\n```http\n[REDACTED:bearer_header]\n```",
+    "content_hash": "c7fb369d5598fd96cc28e4c6a5088415ed1d9060d9db9dda29f5a1b181bf66ed",
     "header": "[acme 2.1.0 › Acme API Reference › Authentication]",
     "page_range": [
       138,
-      347
+      327
     ],
     "section_path": [
       "Acme API Reference",
       "Authentication"
     ],
-    "token_count": 66
+    "token_count": 61
   },
   {
     "body": "Rotation issues a second key that runs beside the first for one week. Both\nkeys stay valid during the overlap, so a deploy can cut over without a\nmaintenance window.",
     "content_hash": "9d0a2473be950f348d6fb746871365b6d5183a16f3dc6b7280b2d0c9abfa7094",
     "header": "[acme 2.1.0 › Acme API Reference › Authentication › Key rotation]",
     "page_range": [
-      367,
-      532
+      347,
+      512
     ],
     "section_path": [
       "Acme API Reference",
@@ -50,8 +50,8 @@ expression: chunks
     "content_hash": "53f97ad80004e9675a69aa176886eb3a0b6f7ec88a29dc1ba68df203f8e820d4",
     "header": "[acme 2.1.0 › Acme API Reference › Widgets › List widgets]",
     "page_range": [
-      564,
-      718
+      544,
+      698
     ],
     "section_path": [
       "Acme API Reference",
@@ -65,8 +65,8 @@ expression: chunks
     "content_hash": "01592455f1224ac0ff8646d6952e9c248c3c09a4b5af5ddd25ec8af7e35e3b5a",
     "header": "[acme 2.1.0 › Acme API Reference › Widgets › Create a widget]",
     "page_range": [
-      741,
-      895
+      721,
+      875
     ],
     "section_path": [
       "Acme API Reference",
@@ -80,8 +80,8 @@ expression: chunks
     "content_hash": "8f4b82adb1a126d368a50e82e0592fd6ba0219aa43f9e6523a981899dac05534",
     "header": "[acme 2.1.0 › Acme API Reference › A very large fenced block]",
     "page_range": [
-      927,
-      1108
+      907,
+      1088
     ],
     "section_path": [
       "Acme API Reference",
@@ -94,8 +94,8 @@ expression: chunks
     "content_hash": "b39ded28abe1fc1122034ec924e8b8bbddde8405604b91a6eef10e6cb694d740",
     "header": "[acme 2.1.0 › Acme API Reference › A very large fenced block]",
     "page_range": [
-      1110,
-      3037
+      1090,
+      3017
     ],
     "section_path": [
       "Acme API Reference",

@@ -201,7 +201,16 @@ fn generated_pages_satisfy_the_segmentation_properties() {
                 chunk.content_hash,
                 devdocs_store::content_hash(&chunk.body)
             );
-            prop_assert_eq!(&page[chunk.page_range.clone()], &chunk.body);
+            // The segmenter no longer redacts: the pipeline redacts the
+            // page body pre-segmentation, so every chunk body is a plain
+            // byte-exact slice of the page it segmented
+            // (docs/implementation/07 §Normalization pipeline, the
+            // redaction pass).
+            prop_assert_eq!(
+                chunk.body.as_str(),
+                &page[chunk.page_range.clone()],
+                "chunk bodies are byte-exact slices of the page"
+            );
         }
     });
 }
@@ -246,11 +255,68 @@ fn stripped_corpora_reassemble_from_their_chunks() {
             assert_no_content_lost(&doc.body, &chunks)?;
             for chunk in &chunks {
                 prop_assert_eq!(
+                    chunk.body.as_str(),
                     &doc.body[chunk.page_range.clone()],
-                    &chunk.body,
                     "chunk bodies are byte-exact slices of the stripped body"
                 );
             }
+        }
+    });
+}
+
+/// The redaction pass property over secret-carrying pages, in the
+/// pipeline shape (docs/implementation/07 §Normalization pipeline, the
+/// redaction pass): the page body is redacted before segmentation, so the
+/// stored text of every chunk — body, header, and symbols included —
+/// carries no raw secret shape, the stored hash matches the stored body,
+/// and the chunk spans stay valid slices of the redacted page.
+#[test]
+fn secret_pages_satisfy_the_redaction_properties() {
+    let secret_page = page_strategy().prop_map(|page| {
+        format!(
+            "{page}\n\nThe setup prints token ghp_0123456789abcdefghijklmnopqrstuvwxyz \
+             in prose.\n\n```http\nAuthorization: Bearer abc123def456ghi789\n```\n"
+        )
+    });
+    proptest!(Config::with_cases(256), |(page in secret_page)| {
+        // The pipeline shape: redact the page, then segment the redacted
+        // text (docs/implementation/07 §Normalization pipeline, the
+        // redaction pass).
+        let redacted_page = devdocs_model::redaction::redact(&page);
+        prop_assert!(
+            redacted_page.matches("[REDACTED:").count() >= 2,
+            "the secret fixture must redact"
+        );
+        let segmenter = Segmenter::with_limits(40, 8).unwrap();
+        let (chunks, _stats) = segmenter.segment_with_stats("lib", "1.0", &redacted_page);
+        for chunk in &chunks {
+            // No unredacted secret shape survives into the stored text:
+            // the raw token prefix and the raw bearer credential are gone.
+            prop_assert!(
+                !chunk.text.contains("ghp_"),
+                "a raw ghp_ shape must not survive: {:?}",
+                chunk.text
+            );
+            prop_assert!(
+                !chunk.text.contains("abc123def456ghi789"),
+                "a raw bearer credential must not survive: {:?}",
+                chunk.text
+            );
+            // The stored hash is the hash of the stored body.
+            prop_assert_eq!(
+                chunk.content_hash,
+                devdocs_store::content_hash(&chunk.body),
+                "the stored hash must cover the stored body"
+            );
+            // Boundaries never move: the span stays a valid byte-exact
+            // slice of the redacted page.
+            prop_assert!(chunk.page_range.start < chunk.page_range.end);
+            prop_assert!(chunk.page_range.end <= redacted_page.len());
+            prop_assert_eq!(
+                chunk.body.as_str(),
+                &redacted_page[chunk.page_range.clone()],
+                "chunk bodies are byte-exact slices of the redacted page"
+            );
         }
     });
 }

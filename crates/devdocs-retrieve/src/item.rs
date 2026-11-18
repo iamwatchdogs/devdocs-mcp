@@ -31,7 +31,10 @@ pub fn allows_verbatim(license_status: &str) -> bool {
 /// policy. The ref derives from the library, version, slugified section
 /// path, and the slugified symbol as fragment (absent without a symbol).
 /// The snippet serves only under [`allows_verbatim`]: a lower approved
-/// state keeps the metadata but carries no verbatim text.
+/// state keeps the metadata but carries no verbatim text. The served
+/// snippet runs through [`devdocs_model::redaction::redact`] — the
+/// output-side second gate
+/// (docs/implementation/09 §Secrets and redaction).
 #[must_use]
 pub fn to_result_item(
     hit: &Hit,
@@ -40,7 +43,7 @@ pub fn to_result_item(
     confidence: f64,
 ) -> ResultItem {
     let snippet = if allows_verbatim(&hit.license_status) {
-        hit.snippet.clone().unwrap_or_else(|| hit.text.clone())
+        devdocs_model::redaction::redact(&hit.snippet.clone().unwrap_or_else(|| hit.text.clone()))
     } else {
         String::new()
     };
@@ -62,6 +65,7 @@ pub fn to_result_item(
         attribution: None,
         confidence,
         token_count: u64::from(hit.token_count),
+        code_caution: hit.code_caution,
     }
 }
 

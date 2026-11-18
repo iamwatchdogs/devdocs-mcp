@@ -28,6 +28,7 @@ fn item(doc_ref: &str, attribution: Option<&str>) -> ResultItem {
         attribution: attribution.map(String::from),
         confidence: 1.0,
         token_count: 8,
+        code_caution: false,
     }
 }
 

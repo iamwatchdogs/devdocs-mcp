@@ -3,7 +3,7 @@ type: guide
 title: Retrieval and Interfaces (L3 + L4)
 description: The hybrid retrieval pipeline, version resolution, budget enforcement, fallback ladder, the result shape, the full CLI contract, and the MCP adapter.
 tags: [devdocs, retrieval, cli, mcp, rrf, max-tokens]
-timestamp: 2026-11-17T11:06:00Z
+timestamp: 2026-11-18T00:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -82,7 +82,7 @@ Entered only on low confidence or an explicit `miss_reason` match (research: ret
 
 A cold miss returns `not_indexed` with a sync hint. An abstention is a valid result (research: retrieval-design.md §3.7).
 
-`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`, `symbol_absent` — the last one the exact symbol lookup's miss when the target resolved but no symbol matched (hint names `devdocs search <symbol>`). The JSON error on exit 2 carries `miss_reason` and a `hint`; a cold miss — the library or the requested version absent — carries `error = "PKG_NOT_INDEXED"`; a license-blocked miss carries `error = "NOT_AVAILABLE"` with `miss_reason: license_blocked` (docs/implementation/09 §License gate enforcement points); every other valid-query miss `error = "NO_RESULT"` (docs/implementation/05 §Error model).
+`miss_reason` values: `not_indexed`, `version_absent`, `license_blocked`, `quarantined_only`, `low_confidence`, `symbol_absent` — the last one the exact symbol lookup's miss when the target resolved but no symbol matched (hint names `devdocs search <symbol>`), and `quarantined_only` the miss when the rungs matched only quarantined chunks — the injection filter held every match — with the hint naming `devdocs db quarantine list` (docs/implementation/07 §Injection filter). The JSON error on exit 2 carries `miss_reason` and a `hint`; a cold miss — the library or the requested version absent — carries `error = "PKG_NOT_INDEXED"`; a license-blocked miss carries `error = "NOT_AVAILABLE"` with `miss_reason: license_blocked` (docs/implementation/09 §License gate enforcement points); every other valid-query miss `error = "NO_RESULT"` (docs/implementation/05 §Error model).
 
 ## Result envelope
 
@@ -104,13 +104,16 @@ The unified shape for CLI JSON and MCP structured output (research: retrieval-de
     "content_hash": "<hex sha256>",
     "license_status": "approved_snippet",
     "confidence": 0.94,
-    "token_count": 142
+    "token_count": 142,
+    "code_caution": false
   }],
   "truncated": false,
   "next_cursor": null,
   "served_at": "2026-10-28T00:00:00Z"
 }
 ```
+
+`code_caution` appears only when a filter rule annotated the chunk's code with a caution — the key is absent from the JSON when false, so identical-DB output stays byte-identical (docs/implementation/07 §Injection filter). A review-flagged chunk still serves, but its fused confidence carries the fixed × 0.5 penalty (docs/implementation/07 §Injection filter). The served snippet and page text pass through the output-side secret redaction (docs/implementation/09 §Secrets and redaction).
 
 Session dedup: with `--session <id>` (and session id in MCP calls), served chunk ids land in `session_trajectory`, and later queries in the same session down-rank already-served chunks instead of re-serving identical text (research: retrieval-design.md §3.8. The Ref measurement motivating it: −5,500 tokens average per request).
 
@@ -137,7 +140,9 @@ Commands:
 | `devdocs source list` | Registry entries with their store-authoritative states; runs the expiry sweep first |
 | `devdocs skill install [--path P] [--force]` | Write the SKILL.md companion file |
 | `devdocs mcp [--transport stdio]` | Start the MCP server on stdio |
-| `devdocs db migrate|vacuum|stats|quarantine list` | Database operations |
+| `devdocs db migrate|vacuum|stats` | Database operations |
+| `devdocs db quarantine list` | List the chunks the injection filter quarantined or flagged for review (docs/implementation/07 §Injection filter); `--json` carries chunk id, library, version, section path, rule names, state, ordinal, and page URL |
+| `devdocs db quarantine release <chunk_id> [--operator O] [--note N]` | Release a reviewed chunk back into serving, with the audit line in `meta`; the audit operator defaults to `operator:cli`; an unknown or unflagged chunk refuses with USAGE exit 1 |
 | `devdocs config init|show|validate|path` | Configuration operations |
 | `devdocs eval run <suite> [--db PATH] [--config PATH] [--golden-dir DIR] [--runs-dir DIR] [--devdocs-bin PATH] [--json]` | Run a golden-set suite through the eval harness; prints the gate table, or the `--json` outcome object; exit 2 on any gate FAIL or INCONCLUSIVE ([14](14-benchmark-eval.md) §Harness flow) |
 
@@ -156,7 +161,7 @@ Contract properties (research: architecture.md §L4, GEM §5 checklist):
 - Pagination: `--cursor C` resumes a truncated page — for `search` the cursor is the last served chunk id, for `open` the character offset into the chunk.
 - Exit codes 0/1/2/3/4 per [05](05-architecture.md) (usage errors remap clap's default 2 to 1).
 
-`devdocs symbol <library[@version]> <symbol>` resolves the target first. A library the index lacks is `PKG_NOT_INDEXED` (`not_indexed`), a version it lacks is `PKG_NOT_INDEXED` (`version_absent`) — both exit 2. An unpinned target pins to the highest active version under the alias rule (§Version resolution), and the match ladder applies across the pinned target's origins with ladder precedence holding over source order. The target resolved, the symbol rung runs alone through the same fusion-and-pack path as `search`. An empty fusion is the `symbol_absent` miss with the `devdocs search <symbol>` hint. `--cursor C` resumes after the last served chunk id of a truncated page, the same chunk-id cursor `search` uses; pagination walks headroom-sized windows past the cursor, so matches beyond the retrieval head stay reachable and `truncated` stays accurate. The command defines no `--limit` flag; the limit is the search default (8). A malformed or empty target is a usage error, exit 1.
+`devdocs symbol <library[@version]> <symbol>` resolves the target first. A library the index lacks is `PKG_NOT_INDEXED` (`not_indexed`), a version it lacks is `PKG_NOT_INDEXED` (`version_absent`) — both exit 2. An unpinned target pins to the highest active version under the alias rule (§Version resolution), and the match ladder applies across the pinned target's origins with ladder precedence holding over source order. The target resolved, the symbol rung runs alone through the same fusion-and-pack path as `search`. An empty fusion is the `symbol_absent` miss with the `devdocs search <symbol>` hint. When the only matches sit on quarantined chunks, the miss is `quarantined_only` instead (§Fallback ladder, the `miss_reason` list). `--cursor C` resumes after the last served chunk id of a truncated page, the same chunk-id cursor `search` uses; pagination walks headroom-sized windows past the cursor, so matches beyond the retrieval head stay reachable and `truncated` stays accurate. The command defines no `--limit` flag; the limit is the search default (8). A malformed or empty target is a usage error, exit 1.
 - Progressive disclosure: `devdocs list --json` is the ~20-token discovery surface. `devdocs versions <lib> --json` the per-library surface. `search` and `open` the full read. No prose man page. `--help` stays short.
 - No secrets in argv or stdout. The tool holds no credentials in v1 (public sources only). A future private-source feature will read tokens from the environment or an OS keystore, never from config files.
 - One static binary. No daemon. `devdocs mcp` reuses the same process.
@@ -200,7 +205,7 @@ Stop after 3 searches per question. verify_doc confirms a citation before you re
 
 Settled semantics:
 
-The `detail` parameter trims each item in the MCP layer. The retrieve core stays unchanged. Omitted or `full` serves the exact CLI envelope, so byte-identity applies. `summary` drops the `examples` field per item. `name` keeps only `ref`, `title`, `served_version`, and `version_status` per item. The envelope-level fields stay in all variants.
+The `detail` parameter trims each item in the MCP layer. The retrieve core stays unchanged. Omitted or `full` serves the exact CLI envelope, so byte-identity applies. `summary` drops the `examples` field per item; `code_caution` stays (absent from the JSON when false, §Result envelope). `name` keeps only `ref`, `title`, `served_version`, and `version_status` per item. The envelope-level fields stay in all variants.
 
 Recoverable failures — a miss, a bad ref, a hash mismatch, a store error — return a tool result with `isError = true`. The text content is the exact CLI error envelope JSON, the single line the CLI prints on stderr. An unknown tool stays a JSON-RPC protocol error: the rmcp router answers `INVALID_PARAMS` before any handler runs. Malformed arguments return a tool-level error whose text is the error envelope JSON: the code is `USAGE`, the hint names the tool schema in `tools/list`, and the detail carries the rmcp deserialization message.
 

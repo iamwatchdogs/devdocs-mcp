@@ -25,6 +25,24 @@ const LICENSE_PLACEHOLDER: &str = "{license_clause}";
 const UNSERVED_LICENSE_CLAUSE: &str =
     "AND s.license_status NOT IN ('denied', 'expired', 'revoked', 'pending_review')";
 
+/// The placeholder the serving queries carry for the quarantine filter;
+/// [`fts_sql`] and [`plain_sql`] substitute
+/// [`UNSERVED_QUARANTINE_CLAUSE`] for it when they compose the final SQL.
+const QUARANTINE_PLACEHOLDER: &str = "{quarantine_clause}";
+
+/// The WHERE clause that drops quarantined chunks out of every serving
+/// read at query time (docs/implementation/07 §Injection filter): a
+/// quarantined chunk stays stored for the operator list but never serves,
+/// even on an exact-text match. One string, shared by every serving query
+/// through the [`QUARANTINE_PLACEHOLDER`] in the composed SQL.
+const UNSERVED_QUARANTINE_CLAUSE: &str = "AND c.quarantined = 0";
+
+/// The clause the quarantined-match count substitutes for the same
+/// placeholder — it reads exactly the rows [`UNSERVED_QUARANTINE_CLAUSE`]
+/// drops, so the miss classification counts what serving excluded
+/// (docs/implementation/07 §Injection filter).
+const QUARANTINED_ONLY_CLAUSE: &str = "AND c.quarantined = 1";
+
 /// One search or lookup result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -62,6 +80,13 @@ pub struct Hit {
     pub source_commit: Option<String>,
     /// The source's license approval stage.
     pub license_status: String,
+    /// Whether a filter rule annotated the chunk's code with a caution;
+    /// content-derived, so it survives a release
+    /// (docs/implementation/07 §Injection filter).
+    pub code_caution: bool,
+    /// Whether the filter flagged the chunk for operator review; does not
+    /// block the serve (docs/implementation/07 §Injection filter).
+    pub review_flagged: bool,
 }
 
 impl Hit {
@@ -84,7 +109,7 @@ impl Hit {
 }
 
 /// Reads a `chunks.section_path` JSON string array out of a row column.
-fn section_path(
+pub(crate) fn section_path(
     row: &rusqlite::Row<'_>,
     idx: usize,
     chunk_id: i64,
@@ -104,7 +129,7 @@ fn section_path(
 /// The chunk and source columns both queries share, in a fixed order:
 /// `chunk_id, source_id, library, version, section_path, symbol, text,
 /// token_count, content_hash, origin_url, commit_sha, license_status,
-/// page_url` at indices 0..13.
+/// page_url, code_caution, review_flagged` at indices 0..15.
 struct BaseColumns {
     chunk_id: i64,
     source_id: i64,
@@ -119,6 +144,8 @@ struct BaseColumns {
     source_commit: Option<String>,
     license_status: String,
     page_url: Option<String>,
+    code_caution: bool,
+    review_flagged: bool,
 }
 
 /// Reads [`BaseColumns`] from a row laid out at the shared column order.
@@ -138,6 +165,8 @@ fn base_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaseColumns> {
         source_commit: row.get(10)?,
         license_status: row.get(11)?,
         page_url: row.get(12)?,
+        code_caution: row.get(13)?,
+        review_flagged: row.get(14)?,
     })
 }
 
@@ -155,7 +184,7 @@ fn hash_bytes(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<[u8; 32]>
 }
 
 /// Maps an FTS row laid out at the shared column order to a [`Hit`] with
-/// its `snippet()` fragment and bm25 rank (indices 13, 14).
+/// its `snippet()` fragment and bm25 rank (indices 15, 16).
 fn fts_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
     let base = base_columns(row)?;
     Ok(Hit {
@@ -166,15 +195,17 @@ fn fts_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         section_path: base.section_path,
         symbol: base.symbol,
         symbol_kind: None,
-        snippet: Some(row.get(13)?),
+        snippet: Some(row.get(15)?),
         text: base.text,
         token_count: base.token_count,
-        rank: Some(row.get(14)?),
+        rank: Some(row.get(16)?),
         content_hash: base.content_hash,
         source_url: base.source_url,
         source_commit: base.source_commit,
         license_status: base.license_status,
         page_url: base.page_url,
+        code_caution: base.code_caution,
+        review_flagged: base.review_flagged,
     })
 }
 
@@ -189,7 +220,7 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         version: base.version,
         section_path: base.section_path,
         symbol: base.symbol,
-        symbol_kind: row.get(13)?,
+        symbol_kind: row.get(15)?,
         snippet: None,
         text: base.text,
         token_count: base.token_count,
@@ -199,6 +230,8 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         source_commit: base.source_commit,
         license_status: base.license_status,
         page_url: base.page_url,
+        code_caution: base.code_caution,
+        review_flagged: base.review_flagged,
     })
 }
 
@@ -206,17 +239,18 @@ fn plain_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
 /// fixed order the row readers ([`base_columns`]) index: `chunk_id`,
 /// `source_id`, `library`, `version`, `section_path`, the symbol slot,
 /// `text`, `token_count`, `content_hash`, `origin_url`, `commit_sha`,
-/// `license_status`, `page_url` at indices 0..13. Each query appends its
-/// query-specific suffix columns behind them. The `$symbol` slot is the
-/// only difference between [`BASE_COLUMNS`] and [`SYMBOL_BASE_COLUMNS`],
-/// so a column added to one list cannot silently miss the other.
+/// `license_status`, `page_url`, `code_caution`, `review_flagged` at
+/// indices 0..15. Each query appends its query-specific suffix columns
+/// behind them. The `$symbol` slot is the only difference between
+/// [`BASE_COLUMNS`] and [`SYMBOL_BASE_COLUMNS`], so a column added to one
+/// list cannot silently miss the other.
 macro_rules! base_columns {
     ($symbol:literal) => {
         concat!(
             "c.chunk_id, c.source_id, s.library, s.version, c.section_path, ",
             $symbol,
             "c.text, c.token_count, c.content_hash, s.origin_url, s.commit_sha, \
-             s.license_status, c.page_url"
+             s.license_status, c.page_url, c.code_caution, c.review_flagged"
         )
     };
 }
@@ -231,7 +265,7 @@ const BASE_COLUMNS: &str = base_columns!("c.symbol, ");
 const SYMBOL_BASE_COLUMNS: &str = base_columns!("sym.symbol, ");
 
 /// The FTS suffix columns behind [`BASE_COLUMNS`]: the `snippet()` fragment
-/// at index 13 and the bm25 rank at index 14, with the documented weights.
+/// at index 15 and the bm25 rank at index 16, with the documented weights.
 const FTS_COLUMNS: &str = "snippet(chunks_fts, 1, '<mark>', '</mark>', '…', 16), \
      bm25(chunks_fts, 5.0, 1.0)";
 
@@ -245,8 +279,12 @@ const FTS_FROM: &str = "chunks_fts \
 /// predicate: the FTS match plus the active-source filter, then the
 /// `{license_clause}` placeholder ([`UNSERVED_LICENSE_CLAUSE`]) that drops
 /// unserved-license sources at query time
-/// (docs/implementation/09 §License gate enforcement points, point 3).
-const FTS_MATCH_CLAUSE: &str = "chunks_fts MATCH ?1 AND s.active = 1 {license_clause}";
+/// (docs/implementation/09 §License gate enforcement points, point 3),
+/// then the `{quarantine_clause}` placeholder
+/// ([`UNSERVED_QUARANTINE_CLAUSE`]) that drops quarantined chunks
+/// (docs/implementation/07 §Injection filter).
+const FTS_MATCH_CLAUSE: &str =
+    "chunks_fts MATCH ?1 AND s.active = 1 {license_clause} {quarantine_clause}";
 
 /// The library-scoped predicate, bound to `?3`, appended to
 /// [`FTS_MATCH_CLAUSE`] before the limit — so the limit counts
@@ -278,9 +316,9 @@ const SYMBOL_FROM: &str = "symbols sym \
      CROSS JOIN sources s ON s.source_id = c.source_id";
 
 /// The symbol-lookup WHERE clause: the exact symbol of one source, active
-/// only, with the unserved-license placeholder.
+/// only, with the unserved-license and quarantine placeholders.
 const SYMBOL_CLAUSE: &str =
-    "sym.symbol = ?1 AND c.source_id = ?2 AND s.active = 1 {license_clause}";
+    "sym.symbol = ?1 AND c.source_id = ?2 AND s.active = 1 {license_clause} {quarantine_clause}";
 
 /// How a symbol query matches the stored `symbols.symbol` values, from the
 /// strongest shape down (docs/implementation/08 §Retrieval ladder, the
@@ -330,12 +368,17 @@ fn like_escape(prefix: &str) -> String {
 
 /// The WHERE predicate, the match-quality expression, and the escaped
 /// match pattern of one symbol-match mode. `?1` binds the raw identifier
-/// (equality and match quality); the complete pattern sits at `?3` in the
-/// prefix modes (bound whole, not concatenated in SQL, so LIKE and GLOB
-/// can use a prefix index) and Exact carries none. The quality expression
-/// orders exact matches before prefixes, inside the per-chunk pick and
-/// across chunks.
-fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<String>) {
+/// (equality and match quality); the complete pattern sits at
+/// `pattern_idx` in the prefix modes (bound whole, not concatenated in
+/// SQL, so LIKE and GLOB can use a prefix index) and Exact carries none —
+/// the serving query passes 3 (the pattern sits behind the `LIMIT ?2`),
+/// the unbounded count passes 2. The quality expression orders exact
+/// matches before prefixes, inside the per-chunk pick and across chunks.
+fn match_shape(
+    mode: SymbolMatch,
+    symbol: &str,
+    pattern_idx: usize,
+) -> (String, String, Option<String>) {
     match mode {
         SymbolMatch::Exact => (
             String::from("sym.symbol = ?1"),
@@ -343,7 +386,7 @@ fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<Strin
             None,
         ),
         SymbolMatch::CaseSensitivePrefix => (
-            String::from("sym.symbol GLOB ?3"),
+            format!("sym.symbol GLOB ?{pattern_idx}"),
             String::from("(sym.symbol = ?1)"),
             Some(format!("{}*", glob_escape(symbol))),
         ),
@@ -351,7 +394,7 @@ fn match_shape(mode: SymbolMatch, symbol: &str) -> (String, String, Option<Strin
             // The prefix pattern already covers the exact match, so the
             // predicate is the LIKE alone — one indexable term. The
             // quality expression keeps exact matches ahead of prefixes.
-            String::from("sym.symbol LIKE ?3 ESCAPE '\\'"),
+            format!("sym.symbol LIKE ?{pattern_idx} ESCAPE '\\'"),
             String::from("(sym.symbol = ?1 COLLATE NOCASE)"),
             Some(format!("{}%", like_escape(symbol))),
         ),
@@ -383,7 +426,9 @@ impl Store {
     /// ordering stays deterministic in the mode and scope. The
     /// unserved-license clause drops sources that cannot serve content at
     /// query time
-    /// (docs/implementation/09 §License gate enforcement points, point 3).
+    /// (docs/implementation/09 §License gate enforcement points, point 3),
+    /// and the unserved-quarantine clause drops quarantined chunks
+    /// (docs/implementation/07 §Injection filter).
     pub fn search_symbols(
         &self,
         symbol: &str,
@@ -396,8 +441,8 @@ impl Store {
         // `?2` the limit; the escaped match pattern sits at `?3` in the
         // prefix modes, the scope value takes the next index when the
         // scope narrows, and the offset follows the last used index.
-        let (predicate, quality, pattern) = match_shape(mode, symbol);
-        let scope_idx = if pattern.is_some() { 4 } else { 3 };
+        let (predicate, quality, pattern) = match_shape(mode, symbol, 3);
+        let scope_idx = 3 + usize::from(pattern.is_some());
         let (scope_clause, scope_value) = scope_filter(scope, scope_idx);
         let offset_idx = 3 + usize::from(pattern.is_some()) + usize::from(scope_value.is_some());
         let mut bind = vec![
@@ -417,13 +462,15 @@ impl Store {
                             ORDER BY {quality} DESC, sym.symbol, sym.kind\
                         ) AS rn \
                  FROM {SYMBOL_FROM} \
-                 WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}{scope_clause}\
+                 WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}\
+                       {QUARANTINE_PLACEHOLDER}{scope_clause}\
              ) \
              WHERE rn = 1 \
              ORDER BY quality DESC, chunk_id \
              LIMIT ?2 OFFSET ?{offset_idx}"
         )
-        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE);
+        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+        .replace(QUARANTINE_PLACEHOLDER, UNSERVED_QUARANTINE_CLAUSE);
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let mut stmt = conn.prepare_cached(&sql)?;
         if let Some(value) = scope_value {
@@ -441,8 +488,9 @@ const SOURCE_CHUNKS_FROM: &str = "chunks c \
      JOIN sources s ON s.source_id = c.source_id";
 
 /// The full-chunk-read WHERE clause: every chunk of one active source,
-/// with the unserved-license placeholder.
-const SOURCE_CHUNKS_CLAUSE: &str = "c.source_id = ?1 AND s.active = 1 {license_clause}";
+/// with the unserved-license and quarantine placeholders.
+const SOURCE_CHUNKS_CLAUSE: &str =
+    "c.source_id = ?1 AND s.active = 1 {license_clause} {quarantine_clause}";
 
 /// Composes one FTS query from a WHERE clause: the shared projection, the
 /// FTS join, the clause, and the bm25 ordering with the limit. Deterministic
@@ -457,6 +505,7 @@ fn fts_sql(where_clause: &str) -> String {
          LIMIT ?2"
     )
     .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+    .replace(QUARANTINE_PLACEHOLDER, UNSERVED_QUARANTINE_CLAUSE)
 }
 
 /// Composes the pinned-source-set clause: [`FTS_MATCH_CLAUSE`] plus
@@ -476,6 +525,24 @@ fn fts_source_set_clause(count: usize) -> String {
     format!("{FTS_MATCH_CLAUSE} AND s.source_id IN ({placeholders})")
 }
 
+/// Composes the quarantined-match count query from a WHERE clause: the
+/// shared chunk-id projection, the FTS join, the clause, and the bm25
+/// ordering with the limit. Like [`fts_sql`], but the quarantine
+/// placeholder substitutes [`QUARANTINED_ONLY_CLAUSE`] — the count reads
+/// exactly the rows the serving queries drop. Deterministic in
+/// `where_clause`, so `prepare_cached` stays effective.
+fn quarantined_sql(where_clause: &str) -> String {
+    format!(
+        "SELECT c.chunk_id \
+         FROM {FTS_FROM} \
+         WHERE {where_clause} \
+         ORDER BY bm25(chunks_fts, 5.0, 1.0) \
+         LIMIT ?2"
+    )
+    .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+    .replace(QUARANTINE_PLACEHOLDER, QUARANTINED_ONLY_CLAUSE)
+}
+
 /// Composes one ordinal-ordered query (symbol lookups, full-chunk reads):
 /// one projection column list, one query-specific suffix column at index
 /// 13, the FROM/JOIN, and the clause. Deterministic in its arguments, so
@@ -489,6 +556,7 @@ fn plain_sql(columns: &str, from_clause: &str, where_clause: &str, suffix_column
          ORDER BY c.ordinal"
     )
     .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+    .replace(QUARANTINE_PLACEHOLDER, UNSERVED_QUARANTINE_CLAUSE)
 }
 
 /// The source lookup SQL: the lowest active source id for one exact
@@ -627,6 +695,117 @@ impl Store {
         let rows = stmt.query_map(rusqlite::params_from_iter(bind), fts_hit)?;
         rows.collect::<Result<Vec<Hit>, _>>()
             .map_err(StoreError::Sql)
+    }
+
+    /// Counts the quarantined chunks an FTS expression matches within the
+    /// scope, bounded by `limit` (docs/implementation/07 §Injection
+    /// filter): the miss classification reads this when the serving rungs
+    /// fused empty, to answer `quarantined_only` instead of
+    /// `low_confidence`. Non-empty `source_ids` scope the count to the
+    /// pinned source set, then a `library` name narrows it
+    /// case-insensitively, and neither gives the every-active-source
+    /// scope — the same narrowing the serving FTS queries apply, only
+    /// counting the rows those queries drop (`quarantined = 1`).
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    pub fn count_quarantined_matches(
+        &self,
+        match_expr: &str,
+        library: Option<&str>,
+        source_ids: &[i64],
+        limit: u32,
+    ) -> Result<usize, StoreError> {
+        if source_ids.is_empty() && library.is_none() {
+            return self.count_quarantined_in(FTS_MATCH_CLAUSE, params![match_expr, limit]);
+        }
+        if !source_ids.is_empty() {
+            let clause = fts_source_set_clause(source_ids.len());
+            let mut bind = Vec::with_capacity(source_ids.len() + 2);
+            bind.push(rusqlite::types::Value::from(match_expr.to_owned()));
+            bind.push(rusqlite::types::Value::from(i64::from(limit)));
+            bind.extend(
+                source_ids
+                    .iter()
+                    .map(|id| rusqlite::types::Value::from(*id)),
+            );
+            return self.count_quarantined_in(&clause, rusqlite::params_from_iter(bind));
+        }
+        self.count_quarantined_in(
+            &format!("{FTS_MATCH_CLAUSE}{FTS_LIBRARY_PREDICATE}"),
+            params![match_expr, limit, library.unwrap_or_default()],
+        )
+    }
+
+    /// Counts the quarantined chunks a symbol-ladder attempt matches in
+    /// `scope` (docs/implementation/07 §Injection filter). The miss
+    /// classification reads this beside
+    /// [`Store::count_quarantined_matches`] when the serving rungs fused
+    /// empty. A quarantined-symbol-only match then answers
+    /// `quarantined_only` instead of `low_confidence` or
+    /// `symbol_absent`. The composition mirrors [`Store::search_symbols`]
+    /// — the same match predicate, scope narrowing, and unserved-license
+    /// clause. It counts only the rows that query drops
+    /// (`quarantined = 1`), one per distinct chunk. The count is
+    /// unbounded: the miss path only needs the non-zero answer, and the
+    /// symbol rows it scans are already index-bounded by the match
+    /// predicate.
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    pub fn count_quarantined_symbol_matches(
+        &self,
+        symbol: &str,
+        mode: SymbolMatch,
+        scope: SymbolScope,
+    ) -> Result<usize, StoreError> {
+        let (predicate, _quality, pattern) = match_shape(mode, symbol, 2);
+        let scope_idx = 2 + usize::from(pattern.is_some());
+        let (scope_clause, scope_value) = scope_filter(scope, scope_idx);
+        let mut bind = vec![rusqlite::types::Value::from(symbol.to_owned())];
+        if let Some(pattern) = pattern {
+            bind.push(rusqlite::types::Value::from(pattern));
+        }
+        let sql = format!(
+            "SELECT COUNT(DISTINCT c.chunk_id) \
+             FROM {SYMBOL_FROM} \
+             WHERE ({predicate}) AND s.active = 1 {LICENSE_PLACEHOLDER}\
+                   {QUARANTINE_PLACEHOLDER}{scope_clause}"
+        )
+        .replace(LICENSE_PLACEHOLDER, UNSERVED_LICENSE_CLAUSE)
+        .replace(QUARANTINE_PLACEHOLDER, QUARANTINED_ONLY_CLAUSE);
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
+        if let Some(value) = scope_value {
+            bind.push(value);
+        }
+        let count: i64 = stmt.query_row(rusqlite::params_from_iter(bind), |row| row.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+    }
+
+    /// Runs one composed quarantined-match count query: the scope clause
+    /// carries the `{license_clause}` and `{quarantine_clause}`
+    /// placeholders, which [`quarantined_sql`] substitutes; the caller's
+    /// bind list carries the match expression at `?1` and the limit at
+    /// `?2`, then any scope values.
+    ///
+    /// # Errors
+    /// [`StoreError::Sql`] on query failures.
+    fn count_quarantined_in(
+        &self,
+        clause: &str,
+        bind: impl rusqlite::Params,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let sql = quarantined_sql(clause);
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(bind, |row| row.get::<_, i64>(0))?;
+        let mut count = 0usize;
+        for row in rows {
+            row.map_err(StoreError::Sql)?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     /// Every chunk of one source in ordinal order — the `open` read path.

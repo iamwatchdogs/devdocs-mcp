@@ -180,7 +180,9 @@ pub fn seed_source(conn: &Connection, library: &str, active: bool) -> Result<i64
     Ok(conn.last_insert_rowid())
 }
 
-/// Inserts one chunk row with a fixed hash and returns its id.
+/// Inserts one chunk row with a fixed hash and returns its id. The
+/// quarantine and review columns rely on their schema defaults, so a
+/// seeded chunk stays served.
 pub fn seed_chunk(
     conn: &Connection,
     source_id: i64,
@@ -199,6 +201,51 @@ pub fn seed_chunk(
             symbol,
             text,
             ordinal
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// The quarantine and review state [`seed_flagged_chunk`] writes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChunkFlags<'a> {
+    /// `chunks.quarantined`: excluded from every serving read.
+    pub quarantined: bool,
+    /// `chunks.review_flagged`: listed for review, still served.
+    pub review_flagged: bool,
+    /// The comma-joined filter rule list; `None` stores NULL.
+    pub rule_names: Option<&'a str>,
+    /// `chunks.code_caution`: content-derived caution.
+    pub code_caution: bool,
+}
+
+/// Inserts one flagged chunk row with a fixed hash and returns its id:
+/// [`seed_chunk`] plus the quarantine and review state the serving and
+/// quarantine tests drive.
+pub fn seed_flagged_chunk(
+    conn: &Connection,
+    source_id: i64,
+    ordinal: i64,
+    section_path: &str,
+    symbol: Option<&str>,
+    text: &str,
+    flags: ChunkFlags<'_>,
+) -> Result<i64, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO chunks(source_id, content_hash, section_path, symbol, text, token_count, \
+         ordinal, quarantined, review_flagged, rule_names, code_caution) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 8, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            source_id,
+            &[7u8; 32][..],
+            section_path,
+            symbol,
+            text,
+            ordinal,
+            i64::from(flags.quarantined),
+            i64::from(flags.review_flagged),
+            flags.rule_names,
+            i64::from(flags.code_caution),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -227,6 +274,8 @@ pub fn sample_hit(chunk_id: i64, token_count: u32) -> devdocs_store::Hit {
         page_url: None,
         source_commit: None,
         license_status: "approved_index".to_owned(),
+        code_caution: false,
+        review_flagged: false,
     }
 }
 
@@ -298,6 +347,14 @@ pub struct StoredChunk {
     pub token_count: i64,
     /// The chunk position inside the source.
     pub ordinal: i64,
+    /// The injection filter's quarantine flag.
+    pub quarantined: bool,
+    /// The injection filter's review flag.
+    pub review_flagged: bool,
+    /// The comma-joined rule names, or `None` for a clean chunk.
+    pub rule_names: Option<String>,
+    /// The caution annotation on the chunk's code fences.
+    pub code_caution: bool,
 }
 
 /// Reads every chunk row of every active source, joined with its source
@@ -309,7 +366,8 @@ pub fn read_chunks(path: &Path) -> Result<Vec<StoredChunk>, rusqlite::Error> {
     let conn = Connection::open(path)?;
     let mut statement = conn.prepare(
         "SELECT c.source_id, s.library, s.version, c.content_hash, c.section_path, c.text, \
-                c.token_count, c.ordinal \
+                c.token_count, c.ordinal, c.quarantined, c.review_flagged, c.rule_names, \
+                c.code_caution \
          FROM chunks c JOIN sources s ON s.source_id = c.source_id \
          WHERE s.active = 1 \
          ORDER BY s.library, s.version, c.ordinal",
@@ -324,6 +382,10 @@ pub fn read_chunks(path: &Path) -> Result<Vec<StoredChunk>, rusqlite::Error> {
             text: row.get(5)?,
             token_count: row.get(6)?,
             ordinal: row.get(7)?,
+            quarantined: row.get(8)?,
+            review_flagged: row.get(9)?,
+            rule_names: row.get(10)?,
+            code_caution: row.get(11)?,
         })
     })?;
     rows.collect()
@@ -337,6 +399,25 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{StoredChunk, open_migrated, read_chunks};
+
+    /// A fixture surfaces the underlying insert error instead of
+    /// swallowing it: a connection with no schema has no `chunks` table
+    /// to insert into, so [`super::seed_flagged_chunk`] propagates the
+    /// error.
+    #[test]
+    fn seed_flagged_chunk_propagates_an_insert_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let result = super::seed_flagged_chunk(
+            &conn,
+            0,
+            0,
+            "[\"Guide\"]",
+            None,
+            "text",
+            super::ChunkFlags::default(),
+        );
+        assert!(result.is_err(), "the insert without a schema errors");
+    }
 
     /// Seeded rows read back in order, and a deactivated source drops out.
     #[test]

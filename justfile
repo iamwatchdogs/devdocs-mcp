@@ -56,10 +56,11 @@ test-slow:
 docs:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 
-# License, advisory, ban, and source checks.
+# License, advisory, ban, and source checks. All features, so the local
+# gate sees the same crate graph as the CI deny job.
 deny:
     @if command -v cargo-deny >/dev/null 2>&1; then \
-        cargo deny check; \
+        cargo deny --all-features check; \
     else \
         echo "cargo-deny not installed: cargo binstall --no-confirm cargo-deny"; \
         exit 1; \
@@ -108,9 +109,22 @@ opengrep:
 # secrets. HIGH or CRITICAL findings fail. Not part of `just ci` and not
 # a CI job — the dependency review workflow gates advisories on PRs (gap
 # named per the agent-ready-repo contract).
+#
+# The second scan is a canary: trivy never scans its own active secret
+# config, so a token planted in trivy-secret.yaml itself would be
+# invisible to the first scan. The config is copied to a temp dir under
+# a different name and scanned there. Residual limitation: the
+# allow-rule regexes are global, so a token shaped exactly like a
+# synthetic redaction fixture stays exempt even in the canary.
 trivy:
     @if command -v trivy >/dev/null 2>&1; then \
-        trivy fs . --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --skip-dirs target; \
+        status=0; \
+        trivy fs . --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --skip-dirs target || status=1; \
+        tmp=$(mktemp -d); \
+        cp trivy-secret.yaml "$tmp/trivy-secret-canary.yaml"; \
+        trivy fs "$tmp" --scanners secret --exit-code 1 --secret-config trivy-secret.yaml || status=1; \
+        rm -rf "$tmp"; \
+        exit $status; \
     else \
         echo "trivy not installed: brew install trivy"; \
         exit 1; \

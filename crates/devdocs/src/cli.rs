@@ -5,6 +5,7 @@
 //! `config` is real. The CLI edge in the binary entry point maps errors to
 //! exit codes and JSON error envelopes on stderr.
 
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
 
@@ -265,6 +266,18 @@ pub enum DbOp {
 pub enum QuarantineOp {
     /// List quarantined chunks.
     List,
+    /// Release a flagged chunk back into serving after operator review
+    /// (docs/implementation/07 §Injection filter).
+    Release {
+        /// The chunk id from the quarantine list.
+        chunk_id: i64,
+        /// The operator stamping the audit line.
+        #[arg(long)]
+        operator: Option<String>,
+        /// The audit note for the release.
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 /// `devdocs config <op>`.
@@ -332,6 +345,9 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
         Command::Db {
             op: DbOp::Migrate { force },
         } => run_db_migrate_command(cli, *force),
+        Command::Db {
+            op: DbOp::Quarantine { op },
+        } => run_db_quarantine_command(cli, op),
         Command::Search {
             query,
             library,
@@ -463,6 +479,55 @@ fn run_db_migrate_command(cli: &Cli, force: bool) -> Result<(), Error> {
     print_line(&result)
 }
 
+/// Runs `devdocs db quarantine <op>` (docs/implementation/08 §CLI
+/// contract): `--json` prints the `serde_json` report on stdout, the human
+/// mode prints one summary line per row or the release outcome.
+fn run_db_quarantine_command(cli: &Cli, op: &QuarantineOp) -> Result<(), Error> {
+    let config = Config::load(&overrides(cli))?;
+    match op {
+        QuarantineOp::List => {
+            let rows = crate::commands::run_db_quarantine_list(&config)?;
+            if cli.json {
+                print_line(&crate::commands::quarantine_list_report(&rows))
+            } else {
+                write_stdout_text(&summarize_quarantine_list(&rows))
+            }
+        }
+        QuarantineOp::Release {
+            chunk_id,
+            operator,
+            note,
+        } => {
+            let from = crate::commands::run_db_quarantine_release(
+                &config,
+                *chunk_id,
+                operator.as_deref(),
+                note.as_deref(),
+            )?;
+            if cli.json {
+                print_line(&crate::commands::quarantine_release_report(
+                    *chunk_id,
+                    &from,
+                    operator.as_deref(),
+                    note.as_deref(),
+                ))?;
+            } else {
+                // defensive: the write-failure arm is not forgeable offline —
+                // a closed pipe maps to success, and every other stdout
+                // failure needs a broken terminal, which no test drives.
+                write_stdout_line(&format!(
+                    "released chunk {chunk_id} from {}{}",
+                    from.as_str(),
+                    note.as_deref()
+                        .map(|note| format!(" — {note}"))
+                        .unwrap_or_default()
+                ))?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Runs `devdocs eval run <suite>` (docs/implementation/14 §Harness flow):
 /// proxies to the eval harness with the same flags — `--db` arrives on the
 /// global flag layer, the rest are the subcommand's. The gate table (or
@@ -583,7 +648,11 @@ fn run_verify_command(cli: &Cli, doc_ref: &str) -> Result<(), Error> {
     } else {
         let item = envelope.results.first();
         write_stdout_line(&match item {
-            Some(item) => format!("{} verified ({})", item.doc_ref, item.content_hash),
+            Some(item) => format!(
+                "{} verified ({})",
+                escape_control(&item.doc_ref),
+                item.content_hash
+            ),
             // defensive: `verify` answers with exactly one result or an
             // error, so the envelope never arrives empty; the arm keeps
             // the match total.
@@ -635,8 +704,79 @@ fn summarize_source_list(envelope: &devdocs_model::SourceListEnvelope) -> String
     out
 }
 
+/// Re-escapes terminal control sequences in stored content as literal
+/// text: every control character (`U+0000`–`U+001F`, `U+007F`–`U+009F`)
+/// except newline and tab becomes its literal `\u{…}` spelling, which
+/// neutralizes the sequences an indexed document can plant — a
+/// quarantined chunk's rule names and section titles, a served snippet —
+/// so the human output cannot repaint the terminal
+/// (docs/implementation/09 §Secrets and redaction). Ingest normalization
+/// keeps CR (`0x0d`) in text, so a raw CR in a served snippet would
+/// overwrite the terminal line, and other C0 controls (BS, VT, …) mangle
+/// output the same way. `U+009B` is the 8-bit CSI introducer terminals
+/// honor, and `serde_json` does not escape C1 (only bytes below `0x20`),
+/// so the C1 range needs its own pass on the JSON path too — the JSON
+/// output gate rewrites the serialized line. Newlines and tabs stay
+/// untouched — they shape the output.
+#[must_use]
+pub fn escape_control(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\n' || c == '\t' || !c.is_control() {
+            out.push(c);
+        } else {
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
+        }
+    }
+    out
+}
+
+/// Replaces the raw C1 control characters (`U+0080`–`U+009F`) in a
+/// serialized JSON line with their `\u00XX` escapes. `serde_json` emits C1
+/// raw — they are valid JSON string content — but a terminal honors
+/// `U+009B` as an 8-bit CSI introducer, so the byte must not reach
+/// stdout. The byte pair only occurs inside JSON string literals (every
+/// structural byte of the envelope is ASCII), so the rewrite keeps the
+/// line valid JSON.
+fn escape_json_c1(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        if ('\u{80}'..='\u{9f}').contains(&c) {
+            let _ = write!(out, "\\u{:04x}", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The human-readable quarantine list without `--json`: one line per
+/// flagged chunk, with the rule names and the section path — the section
+/// titles are chunk content, so they render escaped
+/// ([`escape_control`]).
+fn summarize_quarantine_list(rows: &[devdocs_store::QuarantineRow]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{} {} {} [{} · {} · {}] {}",
+            row.chunk_id,
+            row.state.as_str(),
+            escape_control(&row.section_path.join(" > ")),
+            escape_control(&row.library),
+            escape_control(&row.version),
+            row.ordinal,
+            escape_control(row.rule_names.as_deref().unwrap_or("no rules"))
+        );
+    }
+    out
+}
+
 /// The human-readable search summary without `--json`: one line per
-/// result, in fusion order, plus the truncation notice.
+/// result, in fusion order, plus the truncation notice. The title is
+/// chunk content, so it renders escaped ([`escape_control`]).
 fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
     use std::fmt::Write as _;
 
@@ -645,7 +785,11 @@ fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
         let _ = writeln!(
             out,
             "{}  {}  [{} · {} · {} tokens]",
-            item.doc_ref, item.title, item.served_version, item.version_status, item.token_count
+            escape_control(&item.doc_ref),
+            escape_control(&item.title),
+            escape_control(&item.served_version),
+            item.version_status,
+            item.token_count
         );
     }
     if envelope.truncated
@@ -658,19 +802,20 @@ fn summarize_search(envelope: &devdocs_model::ResultEnvelope) -> String {
 
 /// The human-readable `open` output: the served text, the attribution
 /// line when one joins from the config, then the continuation notice when
-/// the budget cut the chunk.
+/// the budget cut the chunk. The served text is chunk content, so it
+/// renders escaped ([`escape_control`]).
 fn summarize_open(envelope: &devdocs_model::ResultEnvelope) -> String {
     use std::fmt::Write as _;
 
     let mut out = envelope
         .results
         .first()
-        .map(|item| item.snippet.clone())
+        .map(|item| escape_control(&item.snippet))
         .unwrap_or_default();
     if let Some(item) = envelope.results.first()
         && let Some(attribution) = &item.attribution
     {
-        let _ = writeln!(out, "\n{attribution}");
+        let _ = writeln!(out, "\n{}", escape_control(attribution));
     }
     if envelope.truncated
         && let Some(cursor) = &envelope.next_cursor
@@ -802,7 +947,7 @@ fn print_line<T: Serialize>(value: &T) -> Result<(), Error> {
         code: devdocs_model::UpstreamCode::UpstreamError,
         detail: format!("cannot serialize the output: {e}"),
     })?;
-    write_stdout_line(&line)
+    write_stdout_line(&escape_json_c1(&line))
 }
 
 /// Write raw text to stdout without panicking. A closed pipe (the reader
@@ -934,4 +1079,41 @@ fn user_config_template() -> String {
         "# expires = \"2027-11-06\"\n",
         "# refresh_days = 2\n",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    // Tests use unwrap/expect for setup and asserts; a panic fails the test (tracked in #87).
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::{escape_control, summarize_quarantine_list};
+    use devdocs_store::{QuarantineRow, QuarantineState};
+
+    #[test]
+    fn a_c0_control_other_than_newline_and_tab_escapes_as_a_unicode_literal() {
+        assert_eq!(
+            escape_control("first\rreplacement"),
+            "first\\u{d}replacement"
+        );
+        assert_eq!(escape_control("a\u{8}b"), "a\\u{8}b");
+        assert_eq!(escape_control("\u{1b}[31m"), "\\u{1b}[31m");
+        assert_eq!(escape_control("\u{9b}"), "\\u{9b}");
+        assert_eq!(escape_control("a\nb\tc"), "a\nb\tc");
+    }
+
+    #[test]
+    fn the_quarantine_list_escapes_control_characters_in_metadata_fields() {
+        let row = QuarantineRow {
+            chunk_id: 1,
+            library: String::from("ac\rme"),
+            version: String::from("1.0\u{8}"),
+            section_path: vec![String::from("Guide")],
+            rule_names: None,
+            state: QuarantineState::Quarantined,
+            ordinal: 0,
+            page_url: None,
+        };
+        let out = summarize_quarantine_list(&[row]);
+        assert!(out.contains("ac\\u{d}me · 1.0\\u{8}"));
+    }
 }

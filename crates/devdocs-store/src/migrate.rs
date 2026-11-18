@@ -58,6 +58,15 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         )),
         destructive: false,
     },
+    EmbeddedMigration {
+        version: 5,
+        name: "0005_quarantine_flags",
+        sql: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0005_quarantine_flags.sql"
+        )),
+        destructive: false,
+    },
 ];
 
 /// How many migrations ship with the store, in application order.
@@ -291,8 +300,9 @@ mod tests {
         assert_eq!(applied.len(), 1);
     }
 
-    /// The shipped run ends at `user_version` 4, adds the `chunks.page_url`
-    /// column, and re-running on the migrated database applies nothing.
+    /// The shipped run ends at `user_version` 5, adds the `chunks.page_url`
+    /// column and the quarantine flags, and re-running on the migrated
+    /// database applies nothing.
     #[test]
     fn shipped_migrations_land_the_page_url_column() {
         let dir = tempfile::tempdir().unwrap();
@@ -304,7 +314,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
 
         let page_url: i64 = conn
             .query_row(
@@ -314,6 +324,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(page_url, 1, "chunks.page_url must exist after 0003");
+
+        let quarantined: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('chunks') WHERE name = 'quarantined'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(quarantined, 1, "chunks.quarantined must exist after 0005");
 
         let rerun = apply_all(&mut conn, super::MIGRATIONS, MigrateOptions::default()).unwrap();
         assert!(

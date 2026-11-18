@@ -50,6 +50,20 @@ pub struct IngestEvents {
     /// re-runs full and checks the commit out
     /// (docs/implementation/07 §Git adapter).
     pub sha_fetch_fallbacks: usize,
+    /// Chunks the injection filter quarantined
+    /// (docs/implementation/07 §Injection filter).
+    pub quarantined_chunks: usize,
+    /// Chunks the injection filter review-flagged
+    /// (docs/implementation/07 §Injection filter).
+    pub review_flagged_chunks: usize,
+    /// Chunks carrying a code fence that writes outside the workspace —
+    /// the `code_caution` annotation
+    /// (docs/implementation/07 §Injection filter).
+    pub code_caution_chunks: usize,
+    /// Secret-shaped matches the ingest redaction pass replaced
+    /// (docs/implementation/07 §Normalization pipeline, the redaction
+    /// pass).
+    pub redactions: usize,
 }
 
 impl IngestEvents {
@@ -92,6 +106,19 @@ impl IngestEvents {
                 "commit pins served by the full-clone fallback",
                 self.sha_fetch_fallbacks,
             ),
+            (
+                "chunks quarantined by the injection filter",
+                self.quarantined_chunks,
+            ),
+            (
+                "chunks review-flagged by the injection filter",
+                self.review_flagged_chunks,
+            ),
+            (
+                "chunks carrying a caution-worthy code fence",
+                self.code_caution_chunks,
+            ),
+            ("secrets redacted before the hash", self.redactions),
         ];
         for (category, count) in counters {
             if count > 0 {

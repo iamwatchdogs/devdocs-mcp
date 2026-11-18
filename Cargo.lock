@@ -1074,6 +1074,7 @@ dependencies = [
  "ignore",
  "insta",
  "proptest",
+ "regex",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -1117,12 +1118,14 @@ name = "devdocs-model"
 version = "0.1.0"
 dependencies = [
  "dirs 7.0.0",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "time",
  "toml",
+ "tracing",
  "url",
 ]
 

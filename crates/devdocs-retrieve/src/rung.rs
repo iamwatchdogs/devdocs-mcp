@@ -186,6 +186,33 @@ fn store_scope(scope: Scope<'_>) -> SymbolScope {
     }
 }
 
+/// The quarantined-only count of the symbol rung
+/// (docs/implementation/07 §Injection filter): the quarantined chunks
+/// the ladder attempts would have matched. The count sums over every
+/// attempt. In the fused-empty path every attempt served nothing, so any
+/// attempt's quarantined match names the `quarantined_only` miss. That
+/// miss replaces `low_confidence` and `symbol_absent`. The same ladder
+/// [`symbol_rung`] walks, driven by the store's quarantined count.
+///
+/// # Errors
+/// [`RetrieveError::Store`] when the store query fails.
+pub fn symbol_quarantined_count(
+    store: &Store,
+    query: &str,
+    scope: Scope<'_>,
+) -> Result<usize, RetrieveError> {
+    let normalized = normalize_symbol(query);
+    if normalized.is_empty() {
+        return Ok(0);
+    }
+    let store_scope = store_scope(scope);
+    let mut total = 0usize;
+    for (mode, candidate) in ladder_attempts(&normalized) {
+        total += store.count_quarantined_symbol_matches(&candidate, mode, store_scope.clone())?;
+    }
+    Ok(total)
+}
+
 /// The lookup ladder, strongest shape first. A dotted form also tries its
 /// last dot-segment as a secondary exact attempt
 /// (docs/implementation/13 §M5 step 3) before the prefix modes fall
@@ -237,7 +264,7 @@ mod tests {
     use time::OffsetDateTime;
     use url::Url;
 
-    use super::{Scope, fts_rung, normalize_symbol, symbol_rung};
+    use super::{Scope, fts_rung, normalize_symbol, symbol_quarantined_count, symbol_rung};
     use crate::fusion::fuse;
 
     /// Normalization strips the trailing call group and keeps dots.
@@ -311,6 +338,10 @@ mod tests {
                 content_hash: content_hash(text),
                 page_url: None,
                 ordinal: u32::try_from(ordinal).unwrap_or(0),
+                quarantined: false,
+                review_flagged: false,
+                rule_names: Vec::new(),
+                code_caution: false,
             })
             .collect();
         store.publish_generation(&record, &new_chunks).unwrap();
@@ -325,6 +356,17 @@ mod tests {
         let store = symbol_store(&dir, "next.js", "16.2.9", &[("useRouter", "hook")]);
         let hits = symbol_rung(&store, "()", Scope::All, 32).unwrap();
         assert_eq!(hits, [] as [devdocs_store::Hit; 0]);
+    }
+
+    /// The quarantined-only count answers zero for a query that
+    /// normalizes to nothing: the count returns before any store query,
+    /// the same shape the rung takes.
+    #[test]
+    fn the_quarantined_count_serves_zero_for_an_empty_normalized_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = symbol_store(&dir, "next.js", "16.2.9", &[("useRouter", "hook")]);
+        let count = symbol_quarantined_count(&store, "()", Scope::All).unwrap();
+        assert_eq!(count, 0);
     }
 
     /// The rung finds an exact symbol through the store.

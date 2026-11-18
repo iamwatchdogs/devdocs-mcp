@@ -72,6 +72,7 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
             (2, "0002_symbols_symbol_nocase".to_owned()),
             (3, "0003_page_url".to_owned()),
             (4, "0004_license_gate".to_owned()),
+            (5, "0005_quarantine_flags".to_owned()),
         ]
     );
 
@@ -89,13 +90,26 @@ fn fresh_database_reaches_the_latest_version_with_all_objects() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 
     // The page-url column exists on chunks.
     assert!(
         column_exists(&conn, "chunks", "page_url"),
         "chunks.page_url must exist after migration"
     );
+
+    // The quarantine and review columns exist on chunks.
+    for column in [
+        "quarantined",
+        "review_flagged",
+        "rule_names",
+        "code_caution",
+    ] {
+        assert!(
+            column_exists(&conn, "chunks", column),
+            "chunks.{column} must exist after migration"
+        );
+    }
 
     // The expiry column exists, is nullable, and existing rows carry no
     // expiry.
@@ -127,7 +141,7 @@ fn re_migrating_an_up_to_date_database_applies_nothing() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let created_after: String = conn
         .query_row(
             "SELECT value FROM meta WHERE key = 'schema_created_at'",

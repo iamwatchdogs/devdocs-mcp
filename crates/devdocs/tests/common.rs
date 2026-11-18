@@ -110,6 +110,14 @@ impl Env {
     }
 }
 
+// `new` keeps the TempDir on purpose (the env outlives any single run), so
+// the drop must clean it up — otherwise every test leaks its temp root.
+impl Drop for Env {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 /// Run and return (exit code, stdout, stderr).
 pub fn output(mut cmd: Command, args: &[&str]) -> (i32, String, String) {
     let out = cmd.args(args).output().expect("binary runs");

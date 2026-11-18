@@ -42,9 +42,14 @@ fn snapshot_chunk(chunk: &devdocs_ingest::PreparedChunk) -> serde_json::Value {
 
 #[test]
 fn quickstart_page_segments_stably() {
+    // The pipeline redacts the page body pre-segmentation
+    // (docs/implementation/07 §Normalization pipeline, the redaction
+    // pass), so the snapshot segments the redacted page the way the
+    // pipeline hands it to the segmenter.
+    let page = devdocs_model::redaction::redact(QUICKSTART);
     let chunks: Vec<_> = Segmenter::new()
         .unwrap()
-        .segment("acme", "2.1.0", QUICKSTART)
+        .segment("acme", "2.1.0", &page)
         .iter()
         .map(snapshot_chunk)
         .collect();
@@ -53,9 +58,10 @@ fn quickstart_page_segments_stably() {
 
 #[test]
 fn api_reference_page_segments_stably() {
+    let page = devdocs_model::redaction::redact(API_REFERENCE);
     let chunks: Vec<_> = Segmenter::new()
         .unwrap()
-        .segment("acme", "2.1.0", API_REFERENCE)
+        .segment("acme", "2.1.0", &page)
         .iter()
         .map(snapshot_chunk)
         .collect();

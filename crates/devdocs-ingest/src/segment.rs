@@ -6,9 +6,11 @@
 //! block over the target but within twice the target splits with the
 //! configured overlap; a block over twice the target becomes its own chunk,
 //! never truncated. Code fences never split. Chunk bodies are byte-exact
-//! slices of the page body, so the exclusive (non-overlap) spans of a
-//! document tile it; the contextual header is prepended at chunk assembly
-//! and excluded from the content hash.
+//! slices of the page body, which the pipeline has already ANSI-stripped
+//! and secret-redacted page-wide
+//! (docs/implementation/07 §Normalization pipeline) — so the exclusive
+//! (non-overlap) spans of a document tile it; the contextual header is
+//! prepended at chunk assembly and excluded from the content hash.
 
 use std::ops::Range;
 
@@ -170,8 +172,11 @@ fn fence_symbols(
     };
     if fence_language_unknown(&blocked.info) {
         stats.unknown_fence_languages += 1;
+        // The info string is untrusted content: log the first token only,
+        // never the whole string (.agents/instructions/observability).
+        let reported = format!("fence language: {lang}");
         tracing::debug!(
-            language = %blocked.info.trim(),
+            language = %reported,
             "fenced code block carries an unknown language"
         );
         return Vec::new();
@@ -315,17 +320,23 @@ impl Segmenter {
         for section in &sections {
             for candidate in self.pack_section(section, &mut stats) {
                 let span = candidate.span;
-                let body = &page_body[span.start..span.end];
+                // The page body arrived ANSI-stripped and secret-redacted
+                // page-wide (docs/implementation/07 §Normalization
+                // pipeline), so the body, the hash, the header, and the
+                // token count all compute on redacted text and the chunk
+                // stays a byte-exact slice of the page.
+                let body = page_body[span.start..span.end].to_owned();
                 let header = contextual_header(library, version, &section.breadcrumb);
                 let text = format!("{header}\n\n{body}");
                 let token_count = u32::try_from(self.sizer.size(&text)).unwrap_or(u32::MAX);
+                let content_hash = devdocs_store::content_hash(&body);
                 chunks.push(PreparedChunk {
                     section_path: section.breadcrumb.clone(),
                     header,
-                    body: body.to_owned(),
+                    body,
                     text,
                     token_count,
-                    content_hash: devdocs_store::content_hash(body),
+                    content_hash,
                     page_range: span,
                     symbols: candidate.symbols,
                 });

@@ -379,14 +379,14 @@ fn mcp_startup_runs_the_store_migrations() {
 
     // The index file sits at the data root the config resolves to, and
     // the schema ran every shipped migration (the same floor `db
-    // migrate` reports: user_version 4).
+    // migrate` reports: user_version 5).
     let db = env.root.join("data").join("docs.db");
     assert!(db.exists(), "the index file exists under the data root");
     let conn = rusqlite::Connection::open(&db).expect("the db opens");
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("the user_version reads");
-    assert_eq!(version, 4, "the schema ran every shipped migration");
+    assert_eq!(version, 5, "the schema ran every shipped migration");
     let tables: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'chunks'",

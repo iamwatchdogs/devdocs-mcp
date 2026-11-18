@@ -6,6 +6,7 @@
 pub mod chrome;
 pub mod error;
 pub mod events;
+pub mod filter;
 pub mod fixture;
 pub mod git;
 pub mod guard;
@@ -18,10 +19,12 @@ pub mod resolver;
 
 pub mod segment;
 pub mod symbols;
+pub mod text;
 
 pub use chrome::{ChromeReport, PageDocument, strip_chrome};
 pub use error::IngestError;
 pub use events::IngestEvents;
+pub use filter::{FilterReport, run as run_injection_filter};
 pub use fixture::{FixtureSet, RecordedResponse};
 pub use guard::{FetchGuard, GuardError};
 pub use license::{
@@ -32,3 +35,4 @@ pub use pipeline::{GitPin, IngestJob, IngestOutcome, TOTAL_INGEST_CAP};
 pub use record::Recorder;
 pub use segment::{PreparedChunk, Segmenter, contextual_header};
 pub use symbols::{ExtractedSymbol, extract, grammar_for};
+pub use text::strip_ansi;

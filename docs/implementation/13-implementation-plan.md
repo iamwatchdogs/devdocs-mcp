@@ -3,7 +3,7 @@ type: guide
 title: Implementation Plan
 description: The step-by-step build order for devdocs with concrete commands, module sketches, and function signatures, plus the risk register and the do-not-build list.
 tags: [devdocs, implementation, plan, risks]
-timestamp: 2026-11-17T11:35:00Z
+timestamp: 2026-11-17T14:00:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -123,7 +123,7 @@ Work in `devdocs-ingest` (extraction) and `devdocs-retrieve` (rung). All four st
 1. Landed. Grammar registry with feature-gated grammars (rust, go, python, javascript. TS deferred — see [01](01-tech-stack-decision.md)). The aggregate feature `symbols` carries all four and is default-on.
 2. Landed, with one extension. Extraction runs during segmentation: for each fenced code block, parse with the fence-info language, walk for definition nodes, emit `(symbol, kind, line)`. Store to `symbols`. Unknown fence info skips, counts, and reports in ingest events; missing fence info skips without counting or reporting. The events carry two counters — `unknown_fence_languages` (a named language outside the known set) and `unsupported_fence_languages` (a symbol-capable language whose grammar feature is off).
 3. Landed. Query-side normalization: strip trailing balanced call, index, and generic groups (`useRouter()` → `useRouter`), keep dots, then try exact, the last dot-segment of a dotted form as a second exact attempt, case-sensitive prefix, case-insensitive.
-4. Landed. The symbol rung is live in the planner's fusion list. `devdocs symbol` serves the rung alone; an empty fusion is the `symbol_absent` miss.
+4. Landed. The symbol rung is live in the planner's fusion list. `devdocs symbol` serves the rung alone; an empty fusion is the `symbol_absent` miss — `quarantined_only` when the only matches sit on quarantined chunks (M11a) ([08](08-retrieval-interfaces.md)).
 
 Tests: per-grammar extraction fixtures (a known sample file per language with the expected symbol list). Symbol recall measured on the pilot golden set (the first partial gate run). The pilot run waits for the fixture corpus; the numbers it reports today are placeholders ([14](14-benchmark-eval.md)).
 

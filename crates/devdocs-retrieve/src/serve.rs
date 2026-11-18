@@ -20,7 +20,9 @@ use crate::fusion::fuse;
 use crate::item::{match_ref, to_result_item};
 use crate::matchexpr::rung_match_expr;
 use crate::resolver::{ProjectContext, Query, resolve};
-use crate::rung::{Scope, fts_rung, symbol_rung, symbol_rungs, symbol_rungs_attempt};
+use crate::rung::{
+    Scope, fts_rung, symbol_quarantined_count, symbol_rung, symbol_rungs, symbol_rungs_attempt,
+};
 use crate::version::{Version, is_migration_query, pick};
 
 /// The search/open knobs the CLI carries.
@@ -173,12 +175,23 @@ pub fn search_packed(
     // Fuse the rungs and pack under the count cap and the token budget.
     let fused = fuse(plan.rrf_k, &rung_hits);
     if fused.is_empty() {
-        return Err(empty_fusion_miss(store, query.library.as_deref())?);
+        return Err(empty_fusion_miss(
+            store,
+            query,
+            &resolved,
+            served.as_ref(),
+            headroom,
+        )?);
     }
-    let fused = resume_after_cursor(fused, plan.cursor)?;
+    // The review-flag confidence penalty (docs/implementation/07
+    // §Injection filter) — see [`apply_review_penalty`]. The fused order
+    // stays as fused — the penalty moves the reported confidence, not the
+    // packed rank.
+    let penalized = apply_review_penalty(fused);
+    let penalized = resume_after_cursor(penalized, plan.cursor)?;
 
     let packed = pack(
-        fused,
+        penalized,
         usize::try_from(plan.limit).unwrap_or(usize::MAX),
         plan.max_tokens,
     );
@@ -223,6 +236,18 @@ pub fn symbol(
     // walks headroom-sized windows past the retrieval head.
     let fused = symbol_stream(store, symbol, &source_ids, plan, headroom)?;
     let Some(fused) = fused else {
+        // The quarantined-only check (docs/implementation/07 §Injection
+        // filter): the rungs matched only quarantined chunks — the pinned
+        // sources carry a symbol the query named, the serving queries
+        // dropped them — names `quarantined_only` instead of
+        // `symbol_absent`.
+        let mut quarantined = 0usize;
+        for id in &source_ids {
+            quarantined += symbol_quarantined_count(store, symbol, Scope::Source(*id))?;
+        }
+        if quarantined > 0 {
+            return Err(MissReason::QuarantinedOnly.into());
+        }
         return Err(MissReason::SymbolAbsent.into());
     };
     let pick_status = if served_version.is_some() {
@@ -231,7 +256,7 @@ pub fn symbol(
         VersionStatus::Alias
     };
     let packed = pack(
-        fused,
+        apply_review_penalty(fused),
         usize::try_from(plan.limit).unwrap_or(usize::MAX),
         plan.max_tokens,
     );
@@ -555,27 +580,82 @@ fn migration_rung(
     )?))
 }
 
+/// The fixed confidence factor a review-flagged hit carries
+/// (docs/implementation/07 §Injection filter).
+const REVIEW_FLAG_PENALTY: f64 = 0.5;
+
+/// Applies the review-flag confidence penalty to a fused list: a
+/// review-flagged chunk serves, but its fused confidence carries the
+/// fixed × 0.5 factor. The factor is a power of two, so the halving is
+/// exact and identical-DB output stays byte-identical. Shared by the
+/// search and symbol paths — both run "the same fusion-and-pack path"
+/// (docs/implementation/08 §Retrieval ladder).
+fn apply_review_penalty(fused: Vec<(Hit, f64)>) -> Vec<(Hit, f64)> {
+    fused
+        .into_iter()
+        .map(|(hit, score)| {
+            if hit.review_flagged {
+                (hit, score * REVIEW_FLAG_PENALTY)
+            } else {
+                (hit, score)
+            }
+        })
+        .collect()
+}
+
 /// The miss reason for a valid query that serves nothing (exit 2): the
-/// reason distinguishes an empty index from a query that simply matched
-/// nothing (docs/08 §Error codes). A direct-name query on a
-/// license-refused source (`expired`, `revoked`, `denied`) names the
-/// refusal instead (docs/implementation/09 §License gate enforcement
-/// points, point 5); plain `search` stays silent for terminal sources —
-/// the store's unserved-license clause already keeps them out of the
-/// rungs. The store failure surfaces — the miss classification must not
-/// swallow it (`.agents/instructions/` error-handling: no swallowed
-/// errors).
+/// reason distinguishes an empty index, a quarantined-only match set, and
+/// a query that simply matched nothing (docs/08 §Error codes). A
+/// direct-name query on a license-refused source (`expired`, `revoked`,
+/// `denied`) names the refusal instead (docs/implementation/09 §License
+/// gate enforcement points, point 5); plain `search` stays silent for
+/// terminal sources — the store's unserved-license clause already keeps
+/// them out of the rungs. When the rungs matched only quarantined chunks
+/// — the store's serving queries dropped them — the miss names
+/// `quarantined_only` so the operator knows the corpus carries the match
+/// (docs/implementation/07 §Injection filter). The store failure
+/// surfaces — the miss classification must not swallow it
+/// (`.agents/instructions/` error-handling: no swallowed errors).
 ///
 /// # Errors
-/// [`RetrieveError::Store`] when the source listing fails.
+/// [`RetrieveError::Store`] when the source listing or the quarantined
+/// count fails.
 fn empty_fusion_miss(
     store: &Store,
-    named_library: Option<&str>,
+    query: &Query,
+    resolved: &crate::resolver::Resolved,
+    served: Option<&ServedVersion>,
+    headroom: u32,
 ) -> Result<RetrieveError, RetrieveError> {
-    if let Some(library) = named_library
+    if let Some(library) = query.library.as_deref()
         && license_blocked(store, library)?
     {
         return Ok(MissReason::LicenseBlocked.into());
+    }
+    // The quarantined count runs over the same match expression and scope
+    // the serving rungs ran: the pinned source set when a version served,
+    // else the library scope, else every active source. The FTS rungs
+    // count through the FTS expression; the symbol rung counts through
+    // the same ladder it walked — either rung matching only quarantined
+    // chunks names the quarantined-only miss.
+    let expr = rung_match_expr(&query.text);
+    let (library, source_ids) = match served {
+        Some(served) => (None, served.source_ids.as_slice()),
+        None => (resolved.library.as_deref(), [].as_slice()),
+    };
+    let quarantined = store.count_quarantined_matches(&expr, library, source_ids, headroom)?;
+    let symbol_quarantined = match served {
+        Some(served) => {
+            let mut total = 0usize;
+            for id in &served.source_ids {
+                total += symbol_quarantined_count(store, &query.text, Scope::Source(*id))?;
+            }
+            total
+        }
+        None => symbol_quarantined_count(store, &query.text, scope_for(resolved))?,
+    };
+    if quarantined > 0 || symbol_quarantined > 0 {
+        return Ok(MissReason::QuarantinedOnly.into());
     }
     let has_active = store.list_sources()?.iter().any(|s| s.active);
     Ok(if has_active {
@@ -726,7 +806,7 @@ pub fn open(store: &Store, doc_ref: &str, plan: &Plan) -> Result<ResultEnvelope,
             (String::new(), 0, false, None)
         };
 
-    let item = served_item(&chunk, doc_ref, Some(&parsed.version), page, used, 1.0);
+    let item = served_item(&chunk, doc_ref, Some(&parsed.version), &page, used, 1.0);
 
     Ok(ResultEnvelope {
         results: vec![item],
@@ -776,14 +856,16 @@ fn served_item(
     chunk: &Hit,
     doc_ref: &str,
     requested_version: Option<&str>,
-    snippet: String,
+    snippet: &str,
     token_count: u64,
     confidence: f64,
 ) -> ResultItem {
     // The render gate (docs/09 enforcement point 4): below
     // `approved_snippet` no verbatim text serves; the metadata still does.
+    // The served page runs through [`redact`] — the output-side second
+    // gate (docs/implementation/09 §Secrets and redaction).
     let snippet = if crate::item::allows_verbatim(&chunk.license_status) {
-        snippet
+        devdocs_model::redaction::redact(snippet)
     } else {
         String::new()
     };
@@ -809,6 +891,7 @@ fn served_item(
         attribution: None,
         confidence,
         token_count,
+        code_caution: chunk.code_caution,
     }
 }
 
@@ -864,7 +947,7 @@ pub fn verify(store: &Store, doc_ref: &str) -> Result<ResultEnvelope, RetrieveEr
         &chunk,
         doc_ref,
         Some(&parsed.version),
-        chunk.snippet.clone().unwrap_or_else(|| chunk.text.clone()),
+        chunk.snippet.as_deref().unwrap_or(chunk.text.as_str()),
         u64::from(chunk.token_count),
         1.0,
     );
@@ -935,7 +1018,7 @@ mod tests {
             &with_page,
             "docs://next.js/v16.2.9/index",
             None,
-            "s".to_owned(),
+            "s",
             42,
             1.0,
         );
@@ -946,7 +1029,7 @@ mod tests {
             &without_page,
             "docs://next.js/v16.2.9/index",
             None,
-            "s".to_owned(),
+            "s",
             42,
             1.0,
         );

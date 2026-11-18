@@ -374,13 +374,25 @@ fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
 /// quoted text and never opens. A comment's lines never open or close
 /// fences; comments inside a real fence stay fenced.
 pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
+    let (out_of_code, fences, fenced_ranges, _) = scan_with_state(text, false);
+    (out_of_code, fences, fenced_ranges)
+}
+
+/// [`scan`] with the comment state seeded `comment_open`: a chunk cut out
+/// of the page mid-comment starts inside an open comment, and the seed
+/// lets its own scan carry that state in
+/// (docs/implementation/07 §Injection filter). Also returns the comment
+/// state the walk ends on, which [`comment_open_at`] reads back.
+pub(crate) fn scan_with_state(
+    text: &str,
+    mut comment_open: bool,
+) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>, bool) {
     let mut out_of_code = String::with_capacity(text.len());
     let mut fences: Vec<Fence> = Vec::new();
     let mut fenced_ranges: Vec<std::ops::Range<usize>> = Vec::new();
     let mut open: Option<(char, usize)> = None;
     let mut current_fence: Option<Fence> = None;
     let mut fence_start = 0usize;
-    let mut comment_open = false;
     let mut pos = 0usize;
     for line in text.split('\n') {
         let line_start = pos;
@@ -454,7 +466,17 @@ pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize
         fences.push(fenced);
         fenced_ranges.push(fence_start..text.len());
     }
-    (out_of_code, fences, fenced_ranges)
+    (out_of_code, fences, fenced_ranges, comment_open)
+}
+
+/// Whether the page byte offset `at` sits inside an open HTML comment:
+/// the comment state the scanner holds when its cursor reaches `at`.
+/// The pipeline seeds each chunk's filter run from this so a chunk cut
+/// out of the page mid-comment carries the comment state across the
+/// boundary (docs/implementation/07 §Injection filter).
+#[must_use]
+pub(crate) fn comment_open_at(text: &str, at: usize) -> bool {
+    scan_with_state(&text[..at], false).3
 }
 
 /// The whitespace tokens of `text` (docs/implementation/07 §Injection
@@ -469,7 +491,18 @@ fn token_count(text: &str) -> usize {
 /// string and first body line.
 #[must_use]
 pub fn run(text: &str) -> FilterReport {
-    let (out_of_code, fences, _) = scan(text);
+    run_with_state(text, false)
+}
+
+/// [`run`] with the comment state seeded `comment_open`: the pipeline
+/// passes the page's comment state at the chunk's cut point, so a chunk
+/// that starts inside an open HTML comment treats its comment text as
+/// comment text — a fence-like line inside it never opens a fence, and
+/// the directives after it stay exposed to the rules. Seeding only
+/// widens the checked set (docs/implementation/07 §Injection filter).
+#[must_use]
+pub fn run_with_state(text: &str, comment_open: bool) -> FilterReport {
+    let (out_of_code, fences, _, _) = scan_with_state(text, comment_open);
 
     let mut quarantine_rules = Vec::new();
     if MODEL_DIRECTIVE.iter().any(|re| re.is_match(&out_of_code)) {

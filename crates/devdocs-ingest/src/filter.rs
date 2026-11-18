@@ -135,10 +135,8 @@ pub fn oversized_comment_spans(
         if range_at < fenced.len() && fenced[range_at].start <= at {
             continue;
         }
-        // `<!-->` and `<!--->` are complete empty comments per
-        // `CommonMark` 0.31.2: consume the whole form and record no
-        // opener. The form's own closer shares the opener's last dash,
-        // so the cursor check would discard it and the text after would
+        // The empty form's closer shares the opener's last dash, so the
+        // cursor check below would discard it and the text after would
         // hide to the page end as an unterminated comment.
         if opens {
             let empty_form = if text[at..].starts_with("<!--->") {
@@ -318,13 +316,10 @@ fn fence_on(line: &str) -> Option<(char, usize)> {
 /// Whether `line` closes a fence opened with `(marker, run)`: any leading
 /// indent (spaces or tabs) strips, and the rest is marker characters of
 /// the same kind only, at least the opening run. The indent strips
-/// without the absolute column rule [`fence_on`] applies — inside a
-/// list-item margin a tab-indented closer is `CommonMark`-valid (the tab
-/// counts against the margin), while a root-level tab opener still never
-/// opens. Stripping the indent can close a fence one line early in some
-/// shapes, which only widens the fenced range — the recall-safe
-/// direction (docs/implementation/07 §Injection filter, the fence
-/// scanner).
+/// without the absolute column rule [`fence_on`] applies — a container
+/// margin can make a wider indent the `CommonMark`-valid closer. The
+/// recall-first rationale and its limits live in
+/// docs/implementation/07 §Injection filter (the fence scanner).
 fn fence_closes(open: (char, usize), line: &str) -> bool {
     let content = line.trim_start_matches([' ', '\t']).trim_end();
     !content.is_empty() && content.chars().all(|c| c == open.0) && content.chars().count() >= open.1
@@ -421,11 +416,8 @@ pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize
                 });
             } else {
                 // The comment's lines never reach `fence_on`: a ```
-                // line inside a comment is comment text. The line's
-                // markers act in offset order — each `<!--` opens, each
-                // `-->` closes — so `<!-- closed --> <!-- open` leaves
-                // the state open. A `<!--` inside an inline code span is
-                // quoted text, not a comment opener.
+                // line inside a comment is comment text. A `<!--` inside
+                // an inline code span is quoted text, not an opener.
                 let spans = code_span_ranges(line);
                 let mut markers: Vec<(usize, bool)> = line
                     .match_indices("<!--")

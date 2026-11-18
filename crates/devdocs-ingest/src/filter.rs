@@ -87,7 +87,9 @@ const HIDDEN_COMMENT_MIN_INTERIOR: usize = 2000;
 
 /// The byte spans of the oversized HTML comments in `text`, each covering
 /// the whole comment from `<!--` through its own closer — the first `-->`
-/// after the opener (docs/implementation/07 §Injection filter).
+/// after the opener (docs/implementation/07 §Injection filter). The empty
+/// comment forms `<!-->` and `<!--->` are complete per `CommonMark`
+/// 0.31.2 and span nothing.
 /// Segmentation splits a standalone block over the token target, so a
 /// comment over the 2k threshold almost never fits one chunk and the
 /// per-chunk oversized-comment rule rarely fires; the pipeline scans the
@@ -118,13 +120,38 @@ pub fn oversized_comment_spans(
 
     let mut spans = Vec::new();
     let mut open_at: Option<usize> = None;
-    // A consumed opener spans its own bytes, so a closer sharing the
-    // opener's last dash (`<!--->`) never closes — the old per-iteration
-    // re-find skipped it the same way.
     let mut cursor = 0usize;
+    // The marker's fenced-range index: markers and ranges are both
+    // offset-ordered, so one index advances as the cursor passes each
+    // range's end instead of re-checking every range per marker.
+    let mut range_at = 0usize;
     for (at, opens) in markers {
-        if at < cursor || fenced.iter().any(|range| range.contains(&at)) {
+        if at < cursor {
             continue;
+        }
+        while range_at < fenced.len() && fenced[range_at].end <= at {
+            range_at += 1;
+        }
+        if range_at < fenced.len() && fenced[range_at].start <= at {
+            continue;
+        }
+        // `<!-->` and `<!--->` are complete empty comments per
+        // `CommonMark` 0.31.2: consume the whole form and record no
+        // opener. The form's own closer shares the opener's last dash,
+        // so the cursor check would discard it and the text after would
+        // hide to the page end as an unterminated comment.
+        if opens {
+            let empty_form = if text[at..].starts_with("<!--->") {
+                Some(6)
+            } else if text[at..].starts_with("<!-->") {
+                Some(5)
+            } else {
+                None
+            };
+            if let Some(len) = empty_form {
+                cursor = at + len;
+                continue;
+            }
         }
         cursor = at + if opens { 4 } else { 3 };
         match (open_at, opens) {

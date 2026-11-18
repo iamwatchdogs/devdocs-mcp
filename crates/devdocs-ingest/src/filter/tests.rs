@@ -166,13 +166,19 @@ fn hidden_text_fires_on_an_oversized_html_comment() {
 }
 
 #[test]
-fn oversized_comment_spans_keep_a_closer_overlapping_its_opener_consumed() {
-    // In `<!--->` the closer shares the opener's last dash: the opener
-    // consumes it, the comment stays unterminated and hides to the end.
-    let text = format!("<!--->{}", "a".repeat(2_100));
-    let spans = oversized_spans(&text);
-    assert_eq!(spans.len(), 1);
-    assert_eq!(spans[0], 0..text.len());
+fn oversized_comment_spans_treat_the_empty_comment_forms_as_complete() {
+    // `<!-->` and `<!--->` are complete empty comments per CommonMark
+    // 0.31.2: the whole form consumes and no opener records, so the text
+    // after stays visible. The old shape discarded the closer sharing
+    // the opener's last dash and hid the tail to the page end.
+    for opener in ["<!-->", "<!--->"] {
+        let text = format!("{opener}{}", "a".repeat(2_100));
+        assert_eq!(
+            oversized_spans(&text).len(),
+            0,
+            "{opener} is a complete comment and hides nothing"
+        );
+    }
 }
 
 #[test]

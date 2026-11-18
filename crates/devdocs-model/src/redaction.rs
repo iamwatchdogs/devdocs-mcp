@@ -6,9 +6,10 @@
 //! fixed point (bounded): a replacement can shift surviving text into a
 //! detection's context window, so one pass cannot always catch
 //! everything, and re-redacting already-redacted output is a no-op, so
-//! the pass can run at more than one pipeline stage. When the bound runs
-//! out — the context-gated AWS rule can chain, each marker supplying the
-//! next candidate's context — one context-free sweep takes every
+//! the pass can run at more than one pipeline stage. When the gated
+//! passes do not converge at the bound — the context-gated AWS rule can
+//! chain, each marker supplying the next candidate's context —
+//! context-free passes repeat to their own fixed point, taking every
 //! remaining exact-40 run, fail closed (docs/implementation/09).
 //!
 //! All patterns are RE2-compatible (no lookarounds, no backreferences) so

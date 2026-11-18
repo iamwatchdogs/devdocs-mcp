@@ -3,7 +3,7 @@ type: guide
 title: Security Implementation
 description: The mapping from the research threat model to concrete controls in code, the fetch-guard invariants and tests, injection-filter operations, storage controls, and the security checklist.
 tags: [devdocs, security, ssrf, injection, licensing]
-timestamp: 2026-11-18T01:30:00Z
+timestamp: 2026-11-18T16:35:00Z
 resource: docs
 derives-from: [docs/research]
 ---
@@ -69,7 +69,7 @@ The filter flags. It does not silently rewrite (research: security-licensing.md 
 
 - A redaction pass runs at ingest over chunk text: common token shapes (`ghp_…`, `sk-…`, AWS key shapes, PEM blocks, Bearer headers) are replaced with `[REDACTED:<kind>]` before persistence.
 - The same pass runs over output rendering as a second gate.
-- The pass iterates resolve-and-rewrite to a fixed point: a replacement can shift surviving text into a later candidate's context window, and the context-gated AWS rule can chain marker-to-marker. When the iteration bound runs out, the pass fails closed — one context-free sweep takes every remaining candidate. Over-redaction costs a manual review; a surviving secret costs a poisoned context (recall-first above).
+- The pass iterates resolve-and-rewrite to a fixed point: a replacement can shift surviving text into a later candidate's context window, and the context-gated AWS rule can chain marker-to-marker. When the gated passes still change the text at the iteration bound — they did not converge — the pass fails closed: context-free passes repeat, taking every remaining candidate, to their own fixed point. Over-redaction costs a manual review; a surviving secret costs a poisoned context (recall-first above).
 - Logs carry provenance, not user queries (research: security-licensing.md §2 item 8). `--verbose` prints queries locally. Nothing leaves the machine in v1 because there is no telemetry.
 
 ## Local storage controls

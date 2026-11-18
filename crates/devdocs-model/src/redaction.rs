@@ -150,11 +150,12 @@ fn context_window(text: &str, start: usize, end: usize) -> &str {
 
 /// The maximal runs of base64-ish secret characters in `text`, as
 /// `(start, end)` byte offsets. Secret characters are all ASCII, so the
-/// byte lengths are exact. An `=` followed by an alphanumeric character
-/// ends its run: base64 `=` padding only ever sits at a run's end, so
-/// `=KEY` is an assignment separator (`KEY=value`), not padding — the
-/// split keeps a `LABEL=value` bridge from fusing the label into the
-/// value's run and defeating the exact-length checks.
+/// byte lengths are exact. An `=` followed by an alphanumeric character,
+/// `/`, or `+` ends its run: base64 `=` padding only ever sits at a
+/// run's end, so `=KEY` is an assignment separator (`KEY=value`), not
+/// padding — the split keeps a `LABEL=value` bridge from fusing the
+/// label into the value's run and defeating the exact-length checks,
+/// and a value starting `/` or `+` would otherwise bridge the same way.
 fn secret_runs(text: &str) -> Vec<(usize, usize)> {
     let mut runs = Vec::new();
     let mut start: Option<usize> = None;
@@ -162,9 +163,9 @@ fn secret_runs(text: &str) -> Vec<(usize, usize)> {
     while let Some((idx, c)) = chars.next() {
         let ends_run = !is_secret_char(c)
             || (c == '='
-                && chars
-                    .peek()
-                    .is_some_and(|&(_, next)| next.is_ascii_alphanumeric()));
+                && chars.peek().is_some_and(|&(_, next)| {
+                    next.is_ascii_alphanumeric() || next == '/' || next == '+'
+                }));
         match start {
             Some(s) if ends_run => {
                 runs.push((s, idx));
@@ -444,6 +445,24 @@ mod tests {
             "the no-space assignment must redact: {out}"
         );
         assert!(!out.contains(AWS_SECRET));
+    }
+
+    #[test]
+    fn redacts_an_aws_secret_value_starting_with_a_base64_sign() {
+        // A value starting `/` or `+` used to bridge at the `=`: the
+        // split fired only for alphanumeric values, so the fused 43-byte
+        // run failed the exact-40 check and the secret survived raw. A
+        // `/` or `+` after a padding `=` is not valid base64, so the
+        // split cannot break a legit padded run.
+        for head in ['/', '+'] {
+            let text = format!("AWS_SECRET_ACCESS_KEY={head}{}", "A".repeat(39));
+            let out = redact(&text);
+            assert!(
+                out.contains("[REDACTED:aws_key]"),
+                "the {head}-headed value must redact: {out}"
+            );
+            assert!(!out.contains("AAAA"), "no raw value survives: {out}");
+        }
     }
 
     #[test]

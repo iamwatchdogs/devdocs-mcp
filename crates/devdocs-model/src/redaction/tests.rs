@@ -168,10 +168,13 @@ fn keeps_a_longer_blob_with_base64_padding() {
 
 #[test]
 fn keeps_a_40_char_string_without_aws_context() {
-    // A bare SHA-1-shaped hex run with no AWS context nearby.
-    let text = "digest 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2a0";
-    assert!(text.len() >= 40);
-    assert_eq!(redact(text), text);
+    // A bare SHA-1-shaped hex run with no AWS context nearby. The
+    // digest is exactly 40 characters so the redactor's exact-40 rule
+    // is genuinely in play.
+    let digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b";
+    assert_eq!(digest.len(), 40);
+    let text = format!("digest {digest}");
+    assert_eq!(redact(&text), text);
 }
 
 #[test]

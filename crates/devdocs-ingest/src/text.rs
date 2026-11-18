@@ -16,9 +16,10 @@
 ///   end of the input.
 /// - String-mode sequences: `ESC ]` (OSC) through a BEL (`0x07`) or an
 ///   ST (`ESC \`); `ESC P` (DCS), `ESC X` (SOS), `ESC ^` (PM), and
-///   `ESC _` (APC) through an ST (xterm terminates those with ST only;
-///   a BEL is tolerated as a harmless over-strip). An unterminated
-///   string-mode sequence runs to the end of the input.
+///   `ESC _` (APC) through an ST — xterm terminates those with ST only,
+///   so a BEL inside their payload is payload, not a terminator (a BEL
+///   terminator there under-strips, leaving payload tail live). An
+///   unterminated string-mode sequence runs to the end of the input.
 /// - Every other ECMA-48 escape: `ESC` plus its intermediate bytes
 ///   (`0x20..=0x2F`) and final byte (`0x30..=0x7E`) — cursor saves,
 ///   charset designates, and their kin. An unterminated one runs to the
@@ -112,12 +113,9 @@ fn skip_escape(bytes: &[u8], start: usize) -> usize {
                 bytes.len()
             }
         }
-        // OSC (`ESC ]`) and the other string-mode sequences — DCS
-        // (`ESC P`), SOS (`ESC X`), PM (`ESC ^`), APC (`ESC _`): a
-        // payload terminated by BEL or ST (`ESC \`). xterm terminates
-        // the non-OSC modes with ST only, and a BEL terminator is a
-        // harmless over-strip.
-        b']' | b'P' | b'X' | b'^' | b'_' => {
+        // OSC (`ESC ]`): a payload terminated by BEL (`0x07`) or ST
+        // (`ESC \`).
+        b']' => {
             let mut i = start + 2;
             while i < bytes.len() {
                 match bytes[i] {
@@ -125,6 +123,21 @@ fn skip_escape(bytes: &[u8], start: usize) -> usize {
                     0x1b if bytes.get(i + 1) == Some(&b'\\') => return i + 2,
                     _ => i += 1,
                 }
+            }
+            bytes.len()
+        }
+        // The other string-mode sequences — DCS (`ESC P`), SOS
+        // (`ESC X`), PM (`ESC ^`), APC (`ESC _`): xterm terminates them
+        // with ST only, so a BEL inside the payload is payload and never
+        // ends them. Unterminated, the rest of the input drops with the
+        // payload — the documented over-strip direction.
+        b'P' | b'X' | b'^' | b'_' => {
+            let mut i = start + 2;
+            while i < bytes.len() {
+                if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                    return i + 2;
+                }
+                i += 1;
             }
             bytes.len()
         }
@@ -199,8 +212,20 @@ mod tests {
         assert_eq!(strip_ansi("a\x1bXsos\x1b\\b"), "ab");
         assert_eq!(strip_ansi("a\x1b^pm\x1b\\b"), "ab");
         assert_eq!(strip_ansi("a\x1b_apc\x1b\\b"), "ab");
-        // A BEL terminator over-strips harmlessly.
-        assert_eq!(strip_ansi("before\x1bPpayload\x07after"), "beforeafter");
+    }
+
+    #[test]
+    fn a_bel_inside_a_non_osc_payload_is_payload_not_a_terminator() {
+        // xterm terminates DCS/SOS/PM/APC with ST only: the BEL inside
+        // the payload must not end it, or the payload tail after the BEL
+        // survives live (an under-strip).
+        assert_eq!(
+            strip_ansi("before\x1bPfirst\x07secret\x1b\\after"),
+            "beforeafter"
+        );
+        // Without an ST the payload is unterminated and runs to the end
+        // of the input — the documented over-strip direction.
+        assert_eq!(strip_ansi("before\x1bPpayload\x07after"), "before");
     }
 
     #[test]

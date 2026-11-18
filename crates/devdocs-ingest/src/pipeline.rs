@@ -674,8 +674,13 @@ impl<'a> IngestJob<'a> {
             for chunk in chunks {
                 let (symbols, symbol) = chunk_symbols(&chunk.header, &chunk.symbols);
                 // The injection filter scores the chunk's text and fills
-                // the flags (docs/implementation/07 §Injection filter).
-                let mut report = crate::filter::run(&chunk.text);
+                // the flags. The seed carries the page's comment state
+                // across the chunk boundary; the recall-first rationale
+                // lives in docs/implementation/07 §Injection filter.
+                let mut report = crate::filter::run_with_state(
+                    &chunk.text,
+                    crate::filter::comment_open_at(&doc.body, chunk.page_range.start),
+                );
                 if hidden_spans.iter().any(|span| {
                     chunk.page_range.start < span.end && span.start < chunk.page_range.end
                 }) && !report.quarantine_rules.contains(&"hidden_text")

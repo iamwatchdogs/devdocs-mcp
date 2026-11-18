@@ -254,10 +254,11 @@ mod tests {
         // terminates.
         assert_eq!(strip_ansi("\x1bPpayload\u{9c}tail"), "tail");
         assert_eq!(strip_ansi("\x1b]0;title\u{9c}rest"), "rest");
-        // A continuation byte 0x9C without the 0xC2 lead (inside CJK
-        // text) is not an ST: the payload keeps running to its real
-        // terminator.
-        assert_eq!(strip_ansi("a\x1bP亜\u{9c}\x1b\\b"), "ab");
+        // A continuation byte 0x9C without the 0xC2 lead (the last
+        // byte of 亜) is not an ST: a scanner that wrongly terminates
+        // on it stops there and leaves the payload tail `tail` visible,
+        // while a correct one consumes it and ends at the real `ESC \`.
+        assert_eq!(strip_ansi("a\x1bP亜tail\x1b\\b"), "ab");
     }
 
     #[test]

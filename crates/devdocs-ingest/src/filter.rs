@@ -106,10 +106,26 @@ pub fn oversized_comment_spans(
     text: &str,
     fenced: &[std::ops::Range<usize>],
 ) -> Vec<std::ops::Range<usize>> {
+    // Both marker sets in one forward pass, merged in offset order:
+    // re-finding each marker over the remaining suffix per iteration is
+    // quadratic on many unclosed `<!--`.
+    let mut markers: Vec<(usize, bool)> = text
+        .match_indices("<!--")
+        .map(|(at, _)| (at, true))
+        .chain(text.match_indices("-->").map(|(at, _)| (at, false)))
+        .collect();
+    markers.sort_unstable();
+
     let mut spans = Vec::new();
-    let mut cursor = 0usize;
     let mut open_at: Option<usize> = None;
-    while let Some((at, opens)) = next_comment_marker(text, cursor, fenced) {
+    // A consumed opener spans its own bytes, so a closer sharing the
+    // opener's last dash (`<!--->`) never closes — the old per-iteration
+    // re-find skipped it the same way.
+    let mut cursor = 0usize;
+    for (at, opens) in markers {
+        if at < cursor || fenced.iter().any(|range| range.contains(&at)) {
+            continue;
+        }
         cursor = at + if opens { 4 } else { 3 };
         match (open_at, opens) {
             (None, true) => open_at = Some(at),
@@ -134,38 +150,6 @@ pub fn oversized_comment_spans(
         }
     }
     spans
-}
-
-/// The next `<!--` or `-->` marker at or after `from`, as
-/// `(offset, opens)`. Markers inside `fenced` byte ranges are skipped —
-/// fenced content is data a tutorial quotes, so a fence never opens or
-/// closes a comment.
-fn next_comment_marker(
-    text: &str,
-    from: usize,
-    fenced: &[std::ops::Range<usize>],
-) -> Option<(usize, bool)> {
-    let mut cursor = from;
-    loop {
-        let open = text[cursor..].find("<!--").map(|at| (cursor + at, true));
-        let close = text[cursor..].find("-->").map(|at| (cursor + at, false));
-        let (at, opens) = match (open, close) {
-            (Some(o), Some(c)) => {
-                if o.0 <= c.0 {
-                    o
-                } else {
-                    c
-                }
-            }
-            (Some(o), None) | (None, Some(o)) => o,
-            (None, None) => return None,
-        };
-        match fenced.iter().find(|range| range.contains(&at)) {
-            None => return Some((at, opens)),
-            // Jump past the fence: its markers never pair.
-            Some(range) => cursor = range.end,
-        }
-    }
 }
 
 /// Quarantine rule, shape 2: zero-width and invisible characters above a

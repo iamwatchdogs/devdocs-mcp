@@ -166,6 +166,16 @@ fn hidden_text_fires_on_an_oversized_html_comment() {
 }
 
 #[test]
+fn oversized_comment_spans_keep_a_closer_overlapping_its_opener_consumed() {
+    // In `<!--->` the closer shares the opener's last dash: the opener
+    // consumes it, the comment stays unterminated and hides to the end.
+    let text = format!("<!--->{}", "a".repeat(2_100));
+    let spans = oversized_spans(&text);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0], 0..text.len());
+}
+
+#[test]
 fn hidden_text_spares_a_small_comment() {
     let text = "## Notes\n\n<!-- a short reviewer note -->\n\nReal content follows.\n";
     assert!(

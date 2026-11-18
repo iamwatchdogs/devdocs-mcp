@@ -275,29 +275,211 @@ pub(crate) struct Fence {
     first_body_line: Option<String>,
 }
 
-/// The `CommonMark` fence verdict for one line: the marker character
-/// and its run length when the line (after up to three leading indent
-/// columns; `CommonMark` §Tabs — a space is one column, a tab advances
-/// to the next 4-column tab stop) starts with three or more backticks
-/// or tildes. A backtick-fence info string carrying a backtick does not
-/// open — the `CommonMark` rule this v0 scanner keeps.
-fn fence_on(line: &str) -> Option<(char, usize)> {
-    let mut columns = 0usize;
-    let mut stripped = line;
-    loop {
-        if let Some(rest) = stripped.strip_prefix(' ') {
-            stripped = rest;
-            columns += 1;
-        } else if let Some(rest) = stripped.strip_prefix('\t') {
-            stripped = rest;
-            columns = (columns / 4 + 1) * 4;
-        } else {
-            break;
+/// A fence the scanner is inside: the opening marker run plus the
+/// container state frozen at the opener — a closer line's container
+/// prefixes measure against it.
+struct OpenFence {
+    marker: char,
+    run: usize,
+    containers: Vec<Container>,
+}
+
+/// One container the scanner tracks while it walks the lines: a block
+/// quote (a line continues it while the line carries a `>` prefix at its
+/// margin) or a list item (a line continues it while the line indents to
+/// its content indent). `indent` is the column where the container's
+/// content starts — the marker's start column plus the marker width plus
+/// the trailing indent columns (`CommonMark` §Block quotes, §List items).
+#[derive(Clone, Copy)]
+enum Container {
+    Quote { indent: usize },
+    List { indent: usize },
+}
+
+impl Container {
+    fn indent(&self) -> usize {
+        match self {
+            Container::Quote { indent } | Container::List { indent } => *indent,
         }
     }
-    if columns > 3 {
+}
+
+/// The content indent of the innermost open container; the root measures
+/// at 0.
+fn innermost(containers: &[Container]) -> usize {
+    containers.last().map_or(0, Container::indent)
+}
+
+/// The column the first non-indent character of `line` sits at when the
+/// line starts at column `col` (`CommonMark` §Tabs — a space is one
+/// column, a tab advances to the next 4-column tab stop), plus the byte
+/// length of the leading indent.
+fn skip_indent(line: &str, col: usize) -> (usize, usize) {
+    let mut columns = col;
+    let mut bytes = 0usize;
+    for c in line.chars() {
+        match c {
+            ' ' => {
+                columns += 1;
+                bytes += 1;
+            }
+            '\t' => {
+                columns = (columns / 4 + 1) * 4;
+                bytes += 1;
+            }
+            _ => break,
+        }
+    }
+    (columns, bytes)
+}
+
+/// Consumes the leading indent of `line` up to column `to`, the line
+/// starting at column `col`. Returns the rest and the column the rest
+/// starts at; a tab that would overshoot `to` stays unconsumed.
+fn take_indent(line: &str, to: usize, col: usize) -> (&str, usize) {
+    let mut at = col;
+    let mut bytes = 0usize;
+    for c in line.chars() {
+        let advance = match c {
+            ' ' => 1,
+            '\t' => (at / 4 + 1) * 4 - at,
+            _ => break,
+        };
+        if at + advance > to {
+            break;
+        }
+        at += advance;
+        bytes += c.len_utf8();
+    }
+    (&line[bytes..], at)
+}
+
+/// Walks the container prefixes of `line` against `containers`
+/// (outermost first): a level the line cannot continue — a list item the
+/// line dedents below, a block quote the line carries no `>` for — pops,
+/// and the levels the line itself opens push. Returns the line's
+/// remainder after the prefixes, the column the remainder starts at, and
+/// whether every open level continued (`false` marks the line as the
+/// container boundary `CommonMark` draws there). Blank lines never walk:
+/// a list item spans its blank lines.
+fn walk_containers<'a>(line: &'a str, containers: &mut Vec<Container>) -> (&'a str, usize, bool) {
+    let mut rest = line;
+    let mut col = 0usize;
+    let mut continued = true;
+    // Continue or drop the open levels, innermost first; the innermost
+    // that continues consumes its prefix.
+    while let Some(level) = containers.last() {
+        match *level {
+            Container::List { indent } => {
+                let (columns, _) = skip_indent(rest, col);
+                if columns < indent {
+                    containers.pop();
+                    continued = false;
+                    continue;
+                }
+                let (at_rest, at_col) = take_indent(rest, indent, col);
+                if at_col < indent {
+                    // A tab overshoots the item's content indent; the
+                    // column split is not representable, so the item
+                    // ends.
+                    containers.pop();
+                    continued = false;
+                    continue;
+                }
+                rest = at_rest;
+                col = at_col;
+                break;
+            }
+            Container::Quote { .. } => {
+                let (columns, bytes) = skip_indent(rest, col);
+                let after = &rest[bytes..];
+                if columns - col > 3 || !after.starts_with('>') {
+                    containers.pop();
+                    continued = false;
+                    continue;
+                }
+                let space = after[1..].starts_with(' ');
+                rest = &after[1 + usize::from(space)..];
+                col = columns + 1 + usize::from(space);
+                break;
+            }
+        }
+    }
+    // Parse the levels the line itself opens, outermost in.
+    loop {
+        let (columns, bytes) = skip_indent(rest, col);
+        let after = &rest[bytes..];
+        if containers.is_empty() && columns > 3 {
+            // A root-level line indented past three columns is an
+            // indented code block, not a container (`CommonMark`
+            // §Indented code blocks).
+            break;
+        }
+        // A block quote: up to three indent columns before a run of `>`
+        // markers.
+        let quote_run = after.chars().take_while(|&c| c == '>').count();
+        if quote_run > 0 && columns - col <= 3 {
+            let space = after[quote_run..].starts_with(' ');
+            col = columns + quote_run + usize::from(space);
+            containers.push(Container::Quote { indent: col });
+            rest = &after[quote_run + usize::from(space)..];
+            continue;
+        }
+        // A list item: a bullet or a 1-9-digit ordered marker followed
+        // by one to four columns of whitespace. The content indent is
+        // the marker's start column plus the marker width plus the
+        // trailing columns; past four the rest is an indented code
+        // block, not item content, so no level opens (`CommonMark`
+        // §List items).
+        let line_bytes = after.as_bytes();
+        let bullet = matches!(line_bytes.first(), Some(b'-' | b'+' | b'*'));
+        let (marker_cols, marker_bytes) = if bullet {
+            (1usize, 1usize)
+        } else {
+            let digits = line_bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+            if (1..10).contains(&digits) && matches!(line_bytes.get(digits), Some(b'.' | b')')) {
+                (digits + 1, digits + 1)
+            } else {
+                break;
+            }
+        };
+        let mut trail_cols = 0usize;
+        let mut trail_bytes = 0usize;
+        for c in after[marker_bytes..].chars() {
+            let at = columns + marker_cols + trail_cols;
+            let advance = match c {
+                ' ' => 1,
+                '\t' => (at / 4 + 1) * 4 - at,
+                _ => break,
+            };
+            trail_cols += advance;
+            trail_bytes += c.len_utf8();
+        }
+        if trail_cols == 0 || trail_cols > 4 {
+            break;
+        }
+        col = columns + marker_cols + trail_cols;
+        containers.push(Container::List { indent: col });
+        rest = &after[marker_bytes + trail_bytes..];
+    }
+    (rest, col, continued)
+}
+
+/// The `CommonMark` fence verdict for one line's remainder after its
+/// container prefixes: the marker character and its run length when the
+/// remainder, measured from column `col` against the innermost open
+/// container's content indent (the root measures at 0), indents at most
+/// three relative columns, and starts with three or more backticks or
+/// tildes. A backtick-fence info string carrying a backtick does not
+/// open — the `CommonMark` rule this v0 scanner keeps. The container
+/// tracking is estimation, not a parser; its limits live in
+/// docs/implementation/07 §Injection filter (the fence scanner).
+fn fence_on(line: &str, col: usize, container: usize) -> Option<(char, usize)> {
+    let (columns, bytes) = skip_indent(line, col);
+    if columns.saturating_sub(container) > 3 {
         return None;
     }
+    let stripped = &line[bytes..];
     let marker = stripped.chars().next()?;
     if marker != '`' && marker != '~' {
         return None;
@@ -313,15 +495,36 @@ fn fence_on(line: &str) -> Option<(char, usize)> {
     Some((marker, run))
 }
 
-/// Whether `line` closes a fence opened with `(marker, run)`: any leading
-/// indent (spaces or tabs) strips, and the rest is marker characters of
-/// the same kind only, at least the opening run. The indent strips
-/// without the absolute column rule [`fence_on`] applies — a container
-/// margin can make a wider indent the `CommonMark`-valid closer. The
-/// recall-first rationale and its limits live in
-/// docs/implementation/07 §Injection filter (the fence scanner).
-fn fence_closes(open: (char, usize), line: &str) -> bool {
-    let content = line.trim_start_matches([' ', '\t']).trim_end();
+/// Whether `rest` — the line's remainder after its container prefixes,
+/// starting at column `col` — closes a fence opened with `(marker,
+/// run)`: the indent measures relative to the fence's innermost
+/// container (the root at 0) and stays within three columns, and the
+/// rest is marker characters of the opening kind only, at least the
+/// opening run. The container-relative measure replaces the absolute
+/// column rule [`fence_on`] applies — a container margin can make a
+/// wider indent the `CommonMark`-valid closer, while a root-level
+/// four-space-indented marker line is an indented code block and never
+/// closes.
+fn fence_closes(open: (char, usize), rest: &str, col: usize, container: usize) -> bool {
+    let (columns, bytes) = skip_indent(rest, col);
+    if columns.saturating_sub(container) > 3 {
+        return false;
+    }
+    marker_run(open, &rest[bytes..])
+}
+
+/// The blind-strip closer check, kept for lines that cannot continue the
+/// fence's containers: `CommonMark` ends the containers there, and
+/// accepting the closer keeps the fence from sheltering past the
+/// boundary. Over-accepting a closer only widens the rule-checked set,
+/// never the sheltered one (docs/implementation/07 §Injection filter).
+fn fence_closes_blind(open: (char, usize), line: &str) -> bool {
+    marker_run(open, line.trim_start_matches([' ', '\t']).trim_end())
+}
+
+/// Whether `content` is a marker-only run of the opening kind, at least
+/// the opening run.
+fn marker_run(open: (char, usize), content: &str) -> bool {
     !content.is_empty() && content.chars().all(|c| c == open.0) && content.chars().count() >= open.1
 }
 
@@ -368,11 +571,16 @@ fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
 /// fence's info string plus first body line, and the fenced regions' byte
 /// ranges — each from the fence-opener line's start through its closer
 /// line's end (or the text end for an unterminated fence). An
-/// unterminated fence runs to the end of the text. Outside fences, each
-/// `<!--` opens an HTML comment and each `-->` closes it, acting in
-/// offset order on the line; a `<!--` inside an inline code span is
-/// quoted text and never opens. A comment's lines never open or close
-/// fences; comments inside a real fence stay fenced.
+/// unterminated fence runs to the end of the text. Fence boundaries are
+/// container-aware: the scanner tracks the list items and block quotes it
+/// walks through and measures fence indents relative to the innermost
+/// open container, so a fence at a list margin or inside a block quote
+/// opens and closes at its container's content indent
+/// (docs/implementation/07 §Injection filter, the fence scanner).
+/// Outside fences, each `<!--` opens an HTML comment and each `-->`
+/// closes it, acting in offset order on the line; a `<!--` inside an
+/// inline code span is quoted text and never opens. A comment's lines
+/// never open or close fences; comments inside a real fence stay fenced.
 pub(crate) fn scan(text: &str) -> (String, Vec<Fence>, Vec<std::ops::Range<usize>>) {
     let (out_of_code, fences, fenced_ranges, _) = scan_with_state(text, false);
     (out_of_code, fences, fenced_ranges)
@@ -390,43 +598,72 @@ pub(crate) fn scan_with_state(
     let mut out_of_code = String::with_capacity(text.len());
     let mut fences: Vec<Fence> = Vec::new();
     let mut fenced_ranges: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut open: Option<(char, usize)> = None;
+    let mut containers: Vec<Container> = Vec::new();
+    let mut open: Option<OpenFence> = None;
     let mut current_fence: Option<Fence> = None;
     let mut fence_start = 0usize;
     let mut pos = 0usize;
     for line in text.split('\n') {
         let line_start = pos;
         pos += line.len() + 1;
-        if let Some(fence) = open {
+        if let Some(fence) = open.as_mut() {
+            // Blank lines are always body: a blank never closes a fence
+            // and never ends a list item.
+            let closes = if line.trim().is_empty() {
+                false
+            } else {
+                // The fence's container state froze at its opener; the
+                // line's prefixes measure against a copy of it.
+                let mut frozen = fence.containers.clone();
+                let (rest, col, continued) = walk_containers(line, &mut frozen);
+                if continued {
+                    fence_closes((fence.marker, fence.run), rest, col, innermost(&frozen))
+                } else {
+                    // The line cannot continue the fence's containers —
+                    // `CommonMark` ends them here. The blind strip
+                    // accepts the closer so the fence never shelters
+                    // past the boundary: over-accepting a closer only
+                    // widens the rule-checked set.
+                    fence_closes_blind((fence.marker, fence.run), line)
+                }
+            };
             if let Some(fenced) = &mut current_fence
                 && fenced.first_body_line.is_none()
-                && !fence_closes(fence, line)
+                && !closes
             {
                 // The body's first line: the line after the opening
                 // marker, when that line is not the closer itself.
                 fenced.first_body_line = Some(line.to_owned());
             }
-            if fence_closes(fence, line) {
+            if closes {
                 open = None;
                 fenced_ranges.push(fence_start..line_start + line.len());
             }
         } else {
             let mut is_fence = false;
-            if !comment_open && let Some(fence) = fence_on(line) {
-                is_fence = true;
-                open = Some(fence);
-                fence_start = line_start;
-                current_fence = Some(Fence {
-                    info: line
-                        .trim_start()
-                        .chars()
-                        .skip(fence.1)
-                        .collect::<String>()
-                        .trim()
-                        .to_owned(),
-                    first_body_line: None,
-                });
-            } else {
+            if !comment_open && !line.trim().is_empty() {
+                let (rest, col, _) = walk_containers(line, &mut containers);
+                if let Some((marker, run)) = fence_on(rest, col, innermost(&containers)) {
+                    is_fence = true;
+                    open = Some(OpenFence {
+                        marker,
+                        run,
+                        containers: containers.clone(),
+                    });
+                    fence_start = line_start;
+                    current_fence = Some(Fence {
+                        info: rest
+                            .trim_start()
+                            .chars()
+                            .skip(run)
+                            .collect::<String>()
+                            .trim()
+                            .to_owned(),
+                        first_body_line: None,
+                    });
+                }
+            }
+            if !is_fence {
                 // The comment's lines never reach `fence_on`: a ```
                 // line inside a comment is comment text. A `<!--` inside
                 // an inline code span is quoted text, not an opener.
@@ -446,8 +683,6 @@ pub(crate) fn scan_with_state(
                         comment_open = false;
                     }
                 }
-            }
-            if !is_fence {
                 if !out_of_code.is_empty() {
                     out_of_code.push('\n');
                 }
